@@ -240,6 +240,12 @@ class BrowserManager:
     """Manages a single persistent Chromium instance to upload images & sniff headers."""
 
     def __init__(self, user_data_dir: str | None = None, headless: bool = True):
+        # HEADLESS by default. This manager is the TOKEN / HEADER / COOKIE
+        # refresh path for Qwen (WAF), MiMo and Gemini — those only need the
+        # browser to mint credentials, never a visible window, so a headed
+        # launch here means a new on-screen Chromium on every refresh. The
+        # actual ghost-tab CHAT sessions (Kimi, DeepSeek) run headed through
+        # ProfileHub instead; z.ai promotes itself headed via ensure_headed().
         if user_data_dir is None:
             from engine.config import get_browser_data_dir
             user_data_dir = str(get_browser_data_dir())
@@ -252,6 +258,10 @@ class BrowserManager:
         # drop the CDP link, never close someone else browser.
         self._adopted = False
         self._cdp_browser = None
+        # Set when we borrowed a live ProfileHub's shared browser (same profile
+        # dir). We own only our tab; the hub owns the browser.
+        self._hub = None
+        self._hub_page = None
 
     @property
     def browser_headless(self) -> bool:
@@ -328,6 +338,59 @@ class BrowserManager:
             return False
         return True
 
+
+    async def _adopt_hub(self) -> bool:
+        """Borrow a live ProfileHub's shared browser for this profile dir.
+
+        Kimi/DeepSeek multiplex their tabs onto ONE Helium per profile via
+        ProfileHub. When this manager targets the SAME dir, reuse that hub's
+        context instead of launching a rival browser (SingletonLock kill-war).
+        We open our own page inside it; the hub keeps ownership, so teardown
+        only closes OUR tab.
+        """
+        try:
+            from connectors.common.profile_hub import ProfileHub
+        except Exception:
+            return False
+        try:
+            hub = ProfileHub.get_live(Path(self.user_data_dir))
+        except Exception:
+            hub = None
+        if hub is None:
+            return False
+        try:
+            ctx = hub.context
+            if ctx is None:
+                return False
+            # Verify the context is genuinely usable before adopting it.
+            _ = ctx.pages
+        except Exception as exc:
+            logger.debug("hub for %s not usable (%s)", self.user_data_dir, exc)
+            return False
+        # We do NOT take ownership: the hub owns the browser, we just ride it.
+        self._hub = hub
+        self.context = ctx
+        self.playwright = getattr(hub, "_pw", None)
+        self._adopted = True
+        self.headless = bool(getattr(hub, "headless", self.headless))
+        try:
+            self.page = await hub.new_tab(self._hub_start_url())
+            self._hub_page = self.page
+        except Exception as exc:
+            logger.debug("hub tab open failed (%s); will relaunch", exc)
+            self._hub = None
+            self._hub_page = None
+            self.context = None
+            self.page = None
+            self._adopted = False
+            return False
+        logger.debug("BrowserManager riding live ProfileHub for %s",
+                     self.user_data_dir)
+        return True
+
+    def _hub_start_url(self) -> str:
+        """Origin this manager needs a tab on (Qwen by default)."""
+        return "https://chat.qwen.ai"
 
     async def _adopt_existing(self) -> bool:
         '''Attach to a live HEADED browser already holding this profile.
@@ -409,14 +472,75 @@ class BrowserManager:
 
     _start_failed: bool = False
 
-    async def start(self):
-        """Lazy-starts the browser context and page if not already running."""
-        if self._start_failed:
-            raise RuntimeError(
-                f"Browser start previously failed for {self.user_data_dir}. "
-                f"Re-login via browser_opener.py or delete the profile directory."
-            )
-        if self.playwright and self.context:
+    def _context_alive(self) -> bool:
+        """True only if our browser link is genuinely usable.
+
+        ``self.context`` can be non-None yet dead — the browser window was
+        closed, the process crashed, or the CDP socket dropped. Touching
+        ``.pages`` raises in that case, which is exactly the condition that
+        used to make header refresh fail hard with no retry.
+        """
+        if self.context is None:
+            return False
+        try:
+            _ = self.context.pages
+            return True
+        except Exception:
+            return False
+
+    async def start(self, max_retries: int = 3):
+        """Lazy-start the browser, self-healing a dead context.
+
+        On any launch failure every browser bound to this profile is killed
+        and the launch is retried up to ``max_retries`` times.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                await self._start_once()
+                return
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Browser start attempt %d/%d failed for %s: %s: %s — "
+                    "killing profile browsers & retrying",
+                    attempt, max_retries, self.user_data_dir,
+                    type(exc).__name__, exc)
+                try:
+                    await self.close()
+                except Exception:
+                    pass
+                try:
+                    from connectors.common.profile_hub import (
+                        _kill_profile_holders as _kill)
+                    await _kill(Path(self.user_data_dir))
+                except Exception as kill_exc:
+                    logger.warning("profile kill failed for %s: %s",
+                                   self.user_data_dir, kill_exc)
+                # Clear the poison flag so the next attempt is allowed.
+                self._start_failed = False
+                if attempt < max_retries:
+                    await asyncio.sleep(min(0.5 * attempt, 2.0))
+        self._start_failed = True
+        raise RuntimeError(
+            f"Browser start failed after {max_retries} attempts for "
+            f"{self.user_data_dir}") from last_exc
+
+    async def _start_once(self):
+        """Single launch attempt (the old ``start`` body)."""
+        if self.playwright and self._context_alive():
+            return
+        if self.playwright and not self._context_alive():
+            # Stale link from a prior dead browser — drop it before relaunch.
+            await self.close()
+
+        # 0) CO-EXIST with a live ProfileHub on the SAME profile dir. Kimi and
+        #    DeepSeek own the shared browser through ProfileHub; Qwen/z.ai/
+        #    Gemini/MiMo ride this BrowserManager. Without this step the manager
+        #    would launch a rival Helium on the same user-data-dir and the two
+        #    would kill-war over SingletonLock. Riding the hub's context means
+        #    ONE browser per profile, multiplexed by tab.
+        if await self._adopt_hub():
             return
 
         # 1) Attach to a live HEADED browser already holding this profile.
@@ -1052,6 +1176,22 @@ class BrowserManager:
         # FIX: context.close() and playwright.stop() are coroutines in the async
         # API — the old sync `def close` never awaited them, so the browser
         # process was never actually torn down (silent leak + RuntimeWarning).
+        # Riding a live ProfileHub: close ONLY our tab. The hub owns the shared
+        # browser (and its playwright), so stopping it here would kill Kimi's /
+        # DeepSeek's session too.
+        if self._hub is not None:
+            try:
+                if self._hub_page is not None:
+                    await self._hub.close_tab(self._hub_page)
+            except Exception:
+                pass
+            self._hub = None
+            self._hub_page = None
+            self.playwright = None
+            self.context = None
+            self.page = None
+            self._adopted = False
+            return
         # Never close a browser we adopted - it belongs to another launcher.
         if self._adopted:
             if self._cdp_browser is not None:

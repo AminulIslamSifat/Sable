@@ -33,9 +33,21 @@ from pathlib import Path
 logger = logging.getLogger("sable.browser_governor")
 
 # ── Tunables (env-overridable) ──────────────────────────────────────────────
+# Per-Sable-instance concurrency cap: each running Sable server may hold at
+# most this many browsers at once. Enforcement is per server process (slots are
+# matched by owner_pid), so a second install / dev tree on the same host no
+# longer steals this server's slots and starves its relaunches.
 MAX_BROWSERS = int(os.environ.get("SABLE_MAX_BROWSERS", "2"))
+# Fleet-wide memory backstop for the SHARED cgroup only — not a concurrency
+# cap. With per-instance caps, total browsers scale with the number of running
+# Sable servers; this bounds what the shared cgroup tolerates before the kernel
+# OOM-kills the group as a unit.
+MAX_BROWSERS_GLOBAL = int(os.environ.get("SABLE_MAX_BROWSERS_GLOBAL", "8"))
 MAX_BYTES = int(os.environ.get("SABLE_BROWSER_MEM_MB", "1024")) * 1024 * 1024
 ACQUIRE_TIMEOUT = float(os.environ.get("SABLE_BROWSER_SLOT_TIMEOUT", "120"))
+# A browser untouched for longer than this is a candidate for eviction when
+# this Sable is at its per-instance cap and needs a slot.
+IDLE_EVICT_SEC = float(os.environ.get("SABLE_BROWSER_IDLE_EVICT", "300"))
 
 _RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
 _SLOT_DIR = _RUNTIME / "sable-browser-slots"
@@ -153,10 +165,12 @@ def _ensure_cgroup_root() -> Path | None:
                         logger.warning("could not enable memory controller: %s", exc)
                         _cgroup_warned = True
         # Aggregate ceiling for the whole fleet, on top of the per-browser cap.
+        # Uses the GLOBAL backstop, not the per-instance cap — many Sable
+        # servers may share this cgroup.
         agg = root / "memory.max"
         if agg.exists():
             try:
-                agg.write_text(str(MAX_BROWSERS * MAX_BYTES))
+                agg.write_text(str(MAX_BROWSERS_GLOBAL * MAX_BYTES))
             except Exception:
                 pass
         return root
@@ -202,6 +216,12 @@ def _release_cgroup(cg_path: str | None) -> None:
 def _prune_dead_locked() -> int:
     """Delete slot files whose owning process is gone. Caller holds the lock."""
     removed = 0
+    now = time.time()
+    # A slot that never bound a browser_pid within this window is an abandoned
+    # launch (find_browser_pids returned empty, launch crashed before attach),
+    # NOT a live browser. Without this, a never-attached slot pins MAX_BROWSERS
+    # forever on the still-alive owner_pid — wedging every future relaunch.
+    attach_grace = float(os.environ.get("SABLE_SLOT_ATTACH_GRACE", "30"))
     for f in _SLOT_DIR.glob("slot-*.json"):
         try:
             data = json.loads(f.read_text())
@@ -209,11 +229,162 @@ def _prune_dead_locked() -> int:
             f.unlink(missing_ok=True)
             removed += 1
             continue
-        pid = data.get("browser_pid") or data.get("owner_pid")
-        if not _pid_alive(int(pid or 0)):
+        bpid = data.get("browser_pid")
+        if bpid is None:
+            age = now - float(data.get("ts", 0) or 0)
+            if age > attach_grace:
+                f.unlink(missing_ok=True)
+                removed += 1
+            continue
+        if not _pid_alive(int(bpid or 0)):
             f.unlink(missing_ok=True)
             removed += 1
     return removed
+
+
+def release_slots_for_profile(user_data_dir) -> int:
+    """Delete every slot file bound to ``user_data_dir``.
+
+    Call AFTER killing a profile's browsers (``_kill_profile_holders``) so the
+    relaunch is not blocked by the old slot still counting against
+    ``MAX_BROWSERS``. Matching is by realpath of the recorded user_data_dir, so
+    a slot whose browser_pid was never attached (the leak that pinned the
+    fleet) is also cleared.
+    """
+    try:
+        want = os.path.realpath(str(user_data_dir))
+    except Exception:
+        return 0
+    removed = 0
+    lock_path = _SLOT_DIR / ".lock"
+    try:
+        _SLOT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                for f in _SLOT_DIR.glob("slot-*.json"):
+                    try:
+                        data = json.loads(f.read_text())
+                    except Exception:
+                        continue
+                    udd = data.get("user_data_dir")
+                    if not udd:
+                        continue
+                    try:
+                        if os.path.realpath(str(udd)) != want:
+                            continue
+                    except Exception:
+                        continue
+                    f.unlink(missing_ok=True)
+                    removed += 1
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except Exception as exc:
+        logger.warning("release_slots_for_profile failed (%s)", exc)
+    if removed:
+        logger.info("released %d stale slot(s) for profile %s",
+                    removed, os.path.basename(want))
+    return removed
+
+
+def _own_slots_locked(owner_pid: int) -> list[tuple[Path, dict]]:
+    """Slot files owned by THIS Sable process. Caller holds the lock."""
+    out: list[tuple[Path, dict]] = []
+    for f in _SLOT_DIR.glob("slot-*.json"):
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            continue
+        if int(data.get("owner_pid") or 0) == owner_pid:
+            out.append((f, data))
+    return out
+
+
+def _slot_last_used(data: dict) -> float:
+    """Best-effort 'when was this browser last touched' timestamp."""
+    for k in ("last_used", "ts"):
+        try:
+            v = float(data.get(k) or 0)
+            if v > 0:
+                return v
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _evict_slot_locked(path: Path, data: dict) -> bool:
+    """Kill the browser behind one slot and delete the slot file.
+
+    Caller holds the lock. Kills the whole process tree (SIGKILL), drops the
+    cgroup, and removes the slot — so the freed capacity is immediately
+    claimable by the caller's relaunch.
+    """
+    bpid = data.get("browser_pid")
+    if bpid and _pid_alive(int(bpid)):
+        logger.info("evicting idle browser pid %d (owner=%s)",
+                    int(bpid), data.get("owner"))
+        _kill_tree(int(bpid), sig=signal.SIGKILL)
+    cg = _cgroup_base()
+    if cg is not None and bpid:
+        _release_cgroup(str(cg / "sable-browsers" / f"browser-{int(bpid)}"))
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        return False
+    return True
+
+
+def _evict_idle_own_locked(owner_pid: int) -> bool:
+    """Evict the least-recently-used IDLE browser owned by this Sable.
+
+    'Idle' = its last_used is older than ``IDLE_EVICT_SEC``. Only touches this
+    process's own slots, so we never kill another Sable server's browser.
+    Caller holds the lock. Returns True if something was evicted.
+    """
+    now = time.time()
+    candidates = [
+        (f, d) for (f, d) in _own_slots_locked(owner_pid)
+        if d.get("browser_pid")
+        and (now - _slot_last_used(d)) > IDLE_EVICT_SEC
+    ]
+    if not candidates:
+        return False
+    candidates.sort(key=lambda fd: _slot_last_used(fd[1]))  # oldest first
+    for f, d in candidates:
+        if _evict_slot_locked(f, d):
+            return True
+    return False
+
+
+def touch(browser_pid: int) -> None:
+    """Mark a browser as recently used so it isn't picked for idle eviction.
+
+    Call on tab open / activity. Cheap: one flock + one file rewrite.
+    """
+    if not browser_pid:
+        return
+    lock_path = _SLOT_DIR / ".lock"
+    try:
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                for f in _SLOT_DIR.glob("slot-*.json"):
+                    try:
+                        data = json.loads(f.read_text())
+                    except Exception:
+                        continue
+                    if int(data.get("browser_pid") or 0) != browser_pid:
+                        continue
+                    data["last_used"] = time.time()
+                    try:
+                        f.write_text(json.dumps(data))
+                    except Exception:
+                        pass
+                    return
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except Exception:
+        pass
 
 
 def _try_claim(owner: str) -> "Slot | None":
@@ -224,21 +395,31 @@ def _try_claim(owner: str) -> "Slot | None":
         # rather than deadlocking the app. Better to run than to wedge.
         return Slot(f"unmanaged-{uuid.uuid4().hex[:8]}", None, owner)
 
+    me = os.getpid()
     lock_path = _SLOT_DIR / ".lock"
     try:
         with open(lock_path, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
                 _prune_dead_locked()
-                if len(list(_SLOT_DIR.glob("slot-*.json"))) >= MAX_BROWSERS:
-                    return None
-                slot_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                # Per-INSTANCE cap: only this process's slots count. A second
+                # Sable server on the host can no longer consume our quota.
+                if len(_own_slots_locked(me)) >= MAX_BROWSERS:
+                    # Full — reclaim capacity by killing our OWN least-recently
+                    # -used idle browser before refusing the claim.
+                    if not _evict_idle_own_locked(me):
+                        return None
+                    if len(_own_slots_locked(me)) >= MAX_BROWSERS:
+                        return None
+                slot_id = f"{me}-{uuid.uuid4().hex[:8]}"
                 path = _SLOT_DIR / f"slot-{slot_id}.json"
+                now = time.time()
                 path.write_text(json.dumps({
                     "owner": owner,
-                    "owner_pid": os.getpid(),
+                    "owner_pid": me,
                     "browser_pid": None,
-                    "ts": time.time(),
+                    "ts": now,
+                    "last_used": now,
                 }))
                 return Slot(slot_id, path, owner)
             finally:
@@ -266,6 +447,7 @@ class Slot:
         if self._released:
             return
         self.browser_pid = pid
+        now = time.time()
         if self.path is not None:
             try:
                 self.path.write_text(json.dumps({
@@ -273,7 +455,8 @@ class Slot:
                     "owner_pid": os.getpid(),
                     "browser_pid": pid,
                     "user_data_dir": user_data_dir,
-                    "ts": time.time(),
+                    "ts": now,
+                    "last_used": now,
                 }))
             except Exception:
                 pass
@@ -330,18 +513,18 @@ async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT) -> Slot:
         slot = _try_claim(owner)
         if slot is not None:
             if slot.path is not None:
-                logger.info("browser slot %s acquired for %s (%d/%d in use)",
-                            slot.id, owner,
-                            len(list(_SLOT_DIR.glob("slot-*.json"))), MAX_BROWSERS)
+                mine = len(_own_slots_locked(os.getpid()))
+                logger.info("browser slot %s acquired for %s (%d/%d in use by this Sable)",
+                            slot.id, owner, mine, MAX_BROWSERS)
             return slot
         if not warned:
-            logger.info("browser limit reached (%d) — %s waiting for a free slot",
+            logger.info("browser limit reached (%d per Sable) — %s waiting for a free slot",
                         MAX_BROWSERS, owner)
             warned = True
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"no browser slot free after {timeout:.0f}s "
-                f"(limit {MAX_BROWSERS}; check for stuck browsers)"
+                f"(limit {MAX_BROWSERS} per Sable; check for stuck browsers)"
             )
         await asyncio.sleep(0.5)
 
@@ -421,10 +604,14 @@ def stats() -> dict:
             slots.append(json.loads(f.read_text()))
         except Exception:
             pass
+    me = os.getpid()
+    own = [s for s in slots if int(s.get("owner_pid") or 0) == me]
     return {
-        "max_browsers": MAX_BROWSERS,
+        "max_browsers": MAX_BROWSERS,          # per Sable instance
+        "max_browsers_global": MAX_BROWSERS_GLOBAL,
         "max_bytes_each": MAX_BYTES,
-        "active": len(slots),
+        "active": len(slots),                  # host-wide
+        "active_own": len(own),                # this instance
         "slots": slots,
         "cgroup_root": str(_ensure_cgroup_root() or ""),
     }

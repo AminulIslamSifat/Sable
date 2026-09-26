@@ -290,6 +290,45 @@ def _clear_singleton(profile: Path) -> None:
             pass
 
 
+async def _kill_profile_holders(profile_dir: Path,
+                                grace: float = 0.6) -> int:
+    """SIGTERM then SIGKILL every process bound to ``profile_dir``.
+
+    Module-level (no hub instance needed) so both ``ProfileHub.acquire``
+    retries and connector code can force a clean slate. Any binary, headed
+    or headless — the caller has already decided this profile must be freed.
+    Returns the number of victims found.
+    """
+    victims = _profile_holder_pids(profile_dir)
+    for vp in victims:
+        try:
+            os.kill(vp, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not any(_pid_alive(vp) for vp in victims):
+            break
+        await asyncio.sleep(0.1)
+    for vp in victims:
+        if _pid_alive(vp):
+            try:
+                os.kill(vp, signal.SIGKILL)
+            except OSError:
+                pass
+    await asyncio.sleep(0.2)
+    _clear_singleton(profile_dir)
+    # Free this profile's governor slots too. A killed browser whose slot was
+    # never attached (or never released) would otherwise keep counting against
+    # MAX_BROWSERS, blocking the relaunch until the outer acquire times out.
+    try:
+        from engine import browser_governor as _gov
+        _gov.release_slots_for_profile(profile_dir)
+    except Exception:
+        pass
+    return len(victims)
+
+
 # ----------------------------------------------------------------------
 # The hub
 # ----------------------------------------------------------------------
@@ -305,12 +344,18 @@ class ProfileHub:
     @classmethod
     async def acquire(cls, profile_dir: Path, helium_bin: str,
                       headless: bool = True,
-                      force_headed: bool = False) -> "ProfileHub":
+                      force_headed: bool = False,
+                      max_retries: int = 3) -> "ProfileHub":
         """Return the live hub for ``profile_dir``, launching it if needed.
 
         ``force_headed=True`` requests a *visible* browser: any headless
         browser currently holding the profile is killed first, and the
         replacement is launched with ``headless=False``.
+
+        On any failure the cached hub is evicted, **every browser bound to
+        the profile is killed**, and acquisition is retried up to
+        ``max_retries`` times. This is what makes a closed/stale/already-used
+        context self-heal instead of failing hard.
         """
         if cls._registry_lock is None:
             cls._registry_lock = asyncio.Lock()
@@ -324,12 +369,77 @@ class ProfileHub:
                     return hub
                 await hub._teardown()
             elif hub is not None:
+                # Cached hub is dead (context closed / browser gone) — drop it.
                 await hub._teardown()
-            hub = cls(Path(profile_dir), helium_bin, headless,
-                      force_headed=force_headed)
-            await hub._ensure()
-            cls._hubs[key] = hub
-            return hub
+            cls._hubs.pop(key, None)
+
+            last_exc: Exception | None = None
+            for attempt in range(1, max_retries + 1):
+                hub = cls(Path(profile_dir), helium_bin, headless,
+                          force_headed=force_headed)
+                try:
+                    await hub._ensure()
+                    cls._hubs[key] = hub
+                    return hub
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "[hub:%s] acquire attempt %d/%d failed: %s: %s — "
+                        "killing all browsers on profile & retrying",
+                        Path(profile_dir).name, attempt, max_retries,
+                        type(exc).__name__, exc)
+                    try:
+                        await hub._teardown()
+                    except Exception:
+                        pass
+                    try:
+                        killed = await _kill_profile_holders(Path(profile_dir))
+                        logger.info("[hub:%s] killed %d holder(s) on retry",
+                                    Path(profile_dir).name, killed)
+                    except Exception as kill_exc:
+                        logger.warning("[hub:%s] kill-holders failed: %s",
+                                       Path(profile_dir).name, kill_exc)
+                    if attempt < max_retries:
+                        await asyncio.sleep(min(0.5 * attempt, 2.0))
+            raise RuntimeError(
+                f"profile {Path(profile_dir).name}: could not acquire a live "
+                f"browser after {max_retries} attempts") from last_exc
+
+    @classmethod
+    def get_live(cls, profile_dir: Path) -> "ProfileHub | None":
+        """Return the cached hub for ``profile_dir`` IF it is still alive.
+
+        Non-mutating and non-launching — lets a co-tenant (the shared
+        BrowserManager) reuse an already-running browser on the same profile
+        instead of spawning a rival. Returns None when nothing is cached or the
+        cached hub's context has died.
+        """
+        key = str(Path(profile_dir).resolve())
+        hub = cls._hubs.get(key)
+        if hub is None:
+            return None
+        try:
+            return hub if hub.is_alive else None
+        except Exception:
+            return None
+
+    @classmethod
+    async def evict(cls, profile_dir: Path) -> None:
+        """Drop the cached hub for ``profile_dir`` and tear its state down.
+
+        Safe when nothing is cached. Tears down only *our* link — it does not
+        kill the browser (use ``_kill_profile_holders`` for that).
+        """
+        if cls._registry_lock is None:
+            cls._registry_lock = asyncio.Lock()
+        key = str(Path(profile_dir).resolve())
+        async with cls._registry_lock:
+            hub = cls._hubs.pop(key, None)
+        if hub is not None:
+            try:
+                await hub._teardown()
+            except Exception:
+                pass
 
     def __init__(self, profile_dir: Path, helium_bin: str, headless: bool,
                  force_headed: bool = False):
@@ -358,7 +468,16 @@ class ProfileHub:
 
     @property
     def is_alive(self) -> bool:
-        return self._context is not None
+        if self._context is None:
+            return False
+        try:
+            # Touching .pages raises if the underlying browser/context died —
+            # closed externally, crashed, or the CDP link dropped. A non-None
+            # but dead context is the #1 cause of "ghost tab chat fails hard".
+            _ = self._context.pages
+            return True
+        except Exception:
+            return False
 
     # -- lifecycle -----------------------------------------------------
 
@@ -511,6 +630,13 @@ class ProfileHub:
         await asyncio.sleep(0.2)
         _clear_singleton(self.profile_dir)
         self._marker.unlink(missing_ok=True)
+        # Drop governor slots bound to this profile so the fresh headed launch
+        # isn't blocked by a slot whose browser we just killed.
+        try:
+            from engine import browser_governor as _gov
+            _gov.release_slots_for_profile(self.profile_dir)
+        except Exception:
+            pass
         return len(victims)
 
     async def _reclaim(self) -> None:
@@ -558,13 +684,30 @@ class ProfileHub:
         slot = await browser_governor.acquire(f"hub:{self.profile_dir.name}")
 
         self._pw = await async_playwright().start()
+        # A headed launch needs a display. On a host with none (server / WSL),
+        # borrow or start an Xvfb via the shared helper — same path the shared
+        # BrowserManager uses — so headed ghosts work everywhere.
+        launch_kwargs: dict = dict(
+            executable_path=self.helium_bin,
+            user_data_dir=str(self.profile_dir),
+            headless=self.headless,
+            args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
+        )
+        if not self.headless:
+            try:
+                from engine.session import _browser_env_with_display
+                _env = _browser_env_with_display()
+                if _env:
+                    launch_kwargs["env"] = _env
+                else:
+                    logger.warning("[hub:%s] no DISPLAY for headed launch",
+                                   self.profile_dir.name)
+            except Exception as exc:
+                logger.warning("[hub:%s] display setup failed: %s",
+                               self.profile_dir.name, exc)
         try:
             self._context = await self._pw.chromium.launch_persistent_context(
-                executable_path=self.helium_bin,
-                user_data_dir=str(self.profile_dir),
-                headless=self.headless,
-                args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
-            )
+                **launch_kwargs)
         except BaseException:
             slot.release()
             raise
@@ -583,6 +726,17 @@ class ProfileHub:
         logger.info("[hub:%s] launched shared browser (port %d)",
                     self.profile_dir.name, port)
 
+    def _touch(self) -> None:
+        """Mark this hub's browser as recently used (governor idle-eviction
+        guard). Cheap and best-effort — never let it break a tab operation."""
+        try:
+            pid = getattr(self._slot, "browser_pid", None) if self._slot else None
+            if pid:
+                from engine import browser_governor as _gov
+                _gov.touch(int(pid))
+        except Exception:
+            pass
+
     # -- tabs ----------------------------------------------------------
 
     async def new_tab(self, url: str):
@@ -590,6 +744,7 @@ class ProfileHub:
         the same host so re-acquires don't pile up duplicate tabs."""
         if self._context is None:
             raise RuntimeError("hub has no browser context")
+        self._touch()
         want_host = urlparse(url).netloc
         for p in self._context.pages:
             try:

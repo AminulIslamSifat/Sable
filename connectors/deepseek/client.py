@@ -993,45 +993,103 @@ class DeepSeekClient:
     # Completion transport — ghost-tab (browser identity) or curl (fallback)
     # ------------------------------------------------------------------
 
-    async def _resolve_ghost(self):
+    def _ghost_account(self) -> str:
+        """Account whose profile the ghost must open.
+
+        Ghost profile follows the ACTIVE TOKEN's account — NOT the global
+        active account. The rotation pool may be serving acc2 while the global
+        setting says acc3; opening acc3's browser with acc2's JWT is an identity
+        mismatch (device headers ≠ token account).
+        """
+        _tok_acct = _account_for_token(self._current_rotate_token)
+        if _tok_acct and _tok_acct != self.account:
+            logger.info("DeepSeek: ghost opening profile %s (token's account) "
+                        "instead of %s (global active)", _tok_acct, self.account)
+        return _tok_acct or self.account
+
+    async def _resolve_ghost(self, force_respawn: bool = False):
         """Return a live GhostSession for this account, or None if unavailable.
-        Never raises — a dead/missing ghost just means we fall back to curl."""
+
+        When ``force_respawn`` is set, the cached session (if any) is evicted
+        and a brand-new browser is acquired — this is how a deliberately-closed
+        browser gets brought back instead of silently degrading to curl.
+        Never raises — an unavailable ghost just means curl fallback.
+        """
         try:
             from connectors.deepseek import ghost as _ghost
             if not _ghost.ghost_enabled():
                 return None
-            if self._ghost_broken:
+            if self._ghost_broken and not force_respawn:
                 logger.info("DeepSeek: ghost failed earlier this message — using curl")
                 return None
-            # Ghost profile follows the ACTIVE TOKEN's account — NOT the global
-            # active account. The rotation pool may be serving acc2 while the
-            # global setting says acc3; opening acc3's browser with acc2's JWT
-            # is an identity mismatch (device headers ≠ token account).
-            _tok_acct = _account_for_token(self._current_rotate_token)
-            if _tok_acct and _tok_acct != self.account:
-                logger.info("DeepSeek: ghost opening profile %s (token's account) instead of %s (global active)",
-                            _tok_acct, self.account)
-            return await _ghost.GhostSession.for_account(_tok_acct or self.account)
+            acct = self._ghost_account()
+            if force_respawn:
+                # Drop the stale session + kill its browser so for_account()
+                # rebuilds from scratch (for_account already checks health, but
+                # a closed-mid-life browser can still read as 'healthy').
+                await self._evict_ghost_session(acct, kill=True)
+                self._ghost_broken = False
+                logger.info("DeepSeek: respawning ghost browser for %s", acct)
+            return await _ghost.GhostSession.for_account(acct)
         except Exception as exc:
             logger.warning("Ghost unavailable (%s) — using curl", exc)
             return None
 
+    async def _evict_ghost_session(self, account: str, kill: bool = False) -> None:
+        """Tear down the cached GhostSession for ``account`` (and optionally
+        kill every browser on its profile) so the next resolve relaunches."""
+        try:
+            from connectors.deepseek import ghost as _ghost
+            s = _ghost.GhostSession._registry.pop(account, None)
+            if s is not None:
+                try:
+                    await s.close()
+                except Exception:
+                    pass
+            if kill:
+                from connectors.common.profile_hub import (
+                    ProfileHub as _PH, _kill_profile_holders as _kill)
+                profile = _ghost._SYSTEM_DIR / account
+                try:
+                    await _PH.evict(profile)
+                except Exception:
+                    pass
+                await _kill(profile)
+        except Exception as exc:
+            logger.warning("DeepSeek: ghost evict failed (%s)", exc)
+
     async def _completion_opener(self, headers: dict[str, str], body: dict[str, Any], ghost):
         """Return an async context manager yielding a response-like object.
-        Prefers ghost (in-page fetch, browser identity). Falls back to curl.
+
+        Prefers ghost (in-page fetch, browser identity). If the ghost stream
+        fails to OPEN — page closed, bridge gone, browser killed — it is
+        respawned once (kill + relaunch + retry) before falling back to curl.
         """
-        if ghost is not None:
-            token = headers.get("Authorization", "")
-            if token.startswith("Bearer "):
-                token = token[7:]
-            pow_hdr = headers.get("X-DS-PoW-Response", "")
+        token = headers.get("Authorization", "")
+        if token.startswith("Bearer "):
+            token = token[7:]
+        pow_hdr = headers.get("X-DS-PoW-Response", "")
+
+        for attempt in (1, 2):
+            if ghost is None:
+                break
             try:
                 # Streaming in-page fetch: SSE lines arrive as they're produced,
                 # with a 30s idle gate enforced both in-page and in the queue drain.
                 return await ghost.open_stream(
                     token, body, pow_hdr, idle_secs=_IDLE_TIMEOUT_SECS)
             except Exception as exc:
-                logger.warning("Ghost stream open failed (%s) — falling back to curl for this request", exc)
+                if attempt == 1:
+                    logger.warning(
+                        "Ghost stream open failed (%s) — respawning browser & retrying",
+                        exc)
+                    ghost = await self._resolve_ghost(force_respawn=True)
+                    if ghost is None:
+                        break
+                    continue
+                logger.warning(
+                    "Ghost stream open failed again after respawn (%s) — "
+                    "falling back to curl for this request", exc)
         http = await self._get_http()
         cm = http.stream("POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers)
         # Bound the connect + response-header phase at 30s idle. Ghost path
@@ -1926,12 +1984,13 @@ class DeepSeekClient:
                     # This is almost always a stale/zombie pooled socket after a
                     # network change. Don't burn 8×35s per token — fail fast so
                     # _get_http() recycles the pool on the next attempt.
-                    if "ghost" in str(_idle_exc).lower():
-                        # Ghost raised the idle gate — don't retry the same dead
-                        # transport; force curl for every remaining attempt.
-                        logger.warning("DeepSeek ghost idle-failed (%s) — forcing curl fallback", _idle_exc)
-                        self._ghost_broken = True
-                        _ghost = None
+                    if _ghost is not None:
+                        # Ghost raised the idle gate — the browser may have been
+                        # closed. Respawn it for the NEXT retry instead of
+                        # permanently degrading to curl. Keep _ghost set so the
+                        # retry loop re-resolves a fresh session.
+                        logger.warning("DeepSeek ghost idle-failed (%s) — will respawn browser on retry", _idle_exc)
+                        _ghost = await self._resolve_ghost(force_respawn=True)
                     last_err = f"idle_timeout ({_IDLE_TIMEOUT_SECS:.0f}s)"
                     self._mark_failure()
                     if _response_parent_id is not None and chat_id:
@@ -1944,11 +2003,10 @@ class DeepSeekClient:
                     self._mark_failure()
                     if isinstance(exc, RuntimeError) and "ghost" in str(exc).lower():
                         # In-page fetch died (page closed, bridge gone, fetch
-                        # error). Retrying ghost just burns the retry budget —
-                        # switch to curl immediately.
-                        logger.warning("DeepSeek ghost stream failed (%s) — forcing curl fallback", exc)
-                        self._ghost_broken = True
-                        _ghost = None
+                        # error). Respawn the browser so the next retry uses a
+                        # fresh ghost, rather than silently dropping to curl.
+                        logger.warning("DeepSeek ghost stream failed (%s) — respawning browser", exc)
+                        _ghost = await self._resolve_ghost(force_respawn=True)
                     # Connection-class errors (reset/refused/DNS/TLS) mean the pool
                     # is poisoned — break immediately instead of hammering dead sockets.
                     _conn_cls = (

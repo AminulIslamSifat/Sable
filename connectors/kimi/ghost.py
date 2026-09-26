@@ -389,10 +389,14 @@ class KimiGhostSession:
     _registry: dict[str, "KimiGhostSession"] = {}
     _registry_lock: asyncio.Lock | None = None
 
-    def __init__(self, account: str, helium_bin: str, profile_dir: Path):
+    def __init__(self, account: str, helium_bin: str, profile_dir: Path,
+                 headless: bool = False):
         self.account = account
         self.helium_bin = helium_bin
         self.profile_dir = profile_dir
+        # Headed (CHAT — needs a real window for shield minting) vs headless
+        # (TOKEN REFRESH only — never spawns a visible browser).
+        self.headless = headless
         self._playwright = None
         self._ctx = None
         self._page = None
@@ -407,22 +411,66 @@ class KimiGhostSession:
     # -- lifecycle -----------------------------------------------------
 
     @classmethod
-    async def for_account(cls, account: str, helium_bin: str | None = None) -> "KimiGhostSession":
-        """Return a running session for ``account``, respawning if dead."""
+    async def for_account(cls, account: str, helium_bin: str | None = None,
+                          headless: bool = False) -> "KimiGhostSession":
+        """Return a running session for ``account``, respawning if dead.
+
+        ``headless=True`` is the TOKEN-REFRESH path: never spawns a visible
+        window. ``headless=False`` (default) is the CHAT path, which needs a
+        real headed Helium for shield minting.
+
+        A live session is reused as-is, with ONE exception: a caller asking for
+        HEADED (chat) when the cached session is HEADLESS upgrades it, because
+        chat cannot run headless. A headless refresh happily reuses an already
+        -headed chat browser.
+        """
         if cls._registry_lock is None:
             cls._registry_lock = asyncio.Lock()
         async with cls._registry_lock:
             existing = cls._registry.get(account)
             if existing is not None and await existing.is_healthy():
-                return existing
-            if existing is not None:
+                if headless or not existing.headless:
+                    return existing
+                # Chat wants headed but the live session is headless — replace.
+                await existing.close()
+            elif existing is not None:
                 await existing.close()
             bin_path = helium_bin or _read_helium_from_settings() or DEFAULT_HELIUM
             profile = _SYSTEM_DIR / account
-            session = cls(account, bin_path, profile)
-            await session.start()
-            cls._registry[account] = session
-            return session
+            # Kill-and-retry: a closed/externally-killed/stale browser context
+            # makes start() blow up hard. On failure evict the hub, kill every
+            # browser on this profile, and try again — max 3 attempts.
+            from connectors.common.profile_hub import (
+                ProfileHub as _PH, _kill_profile_holders as _kill,
+            )
+            last_exc: Exception | None = None
+            for attempt in range(1, 4):
+                session = cls(account, bin_path, profile, headless=headless)
+                try:
+                    await session.start()
+                    cls._registry[account] = session
+                    return session
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "[kimi:%s] start attempt %d/3 failed: %s: %s — "
+                        "killing profile browsers & retrying",
+                        account, attempt, type(exc).__name__, exc)
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+                    try:
+                        await _PH.evict(profile)
+                        await _kill(profile)
+                    except Exception as kill_exc:
+                        logger.warning("[kimi:%s] profile kill failed: %s",
+                                       account, kill_exc)
+                    if attempt < 3:
+                        await asyncio.sleep(min(0.5 * attempt, 2.0))
+            raise RuntimeError(
+                f"kimi:{account}: session failed to start after 3 attempts"
+            ) from last_exc
 
     @classmethod
     async def close_all(cls) -> None:
@@ -441,8 +489,15 @@ class KimiGhostSession:
         # DeepSeek + Gemini-web coexist on the same profile without the
         # SingletonLock kill-war. See connectors/common/profile_hub.py.
         from connectors.common.profile_hub import ProfileHub
+        # CHAT (headless=False) needs a real visible Helium window for shield
+        # minting, so force_headed=True promotes/replaces a headless hub and
+        # clears stale holders. TOKEN REFRESH (headless=True) must NOT kill
+        # anything or spawn a visible window: force_headed=False reuses a live
+        # hub if present, else launches a headless browser.
         self._hub = await ProfileHub.acquire(
-            self.profile_dir, self.helium_bin, headless=True)
+            self.profile_dir, self.helium_bin,
+            headless=self.headless,
+            force_headed=not self.headless)
         self._ctx = self._hub.context
         self._page = await self._hub.new_tab(KIMI_URL)
         logger.info("[kimi:%s] tab ready on shared browser (%s)",

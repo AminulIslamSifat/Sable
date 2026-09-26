@@ -358,10 +358,40 @@ class GhostSession:
                 await existing.close()
             bin_path = helium_bin or _read_helium_from_settings() or DEFAULT_HELIUM
             profile = _SYSTEM_DIR / account
-            session = cls(account, bin_path, profile)
-            await session.start()
-            cls._registry[account] = session
-            return session
+            # Kill-and-retry: a closed/externally-killed/stale browser context
+            # makes start() blow up hard. On failure evict the hub, kill every
+            # browser on this profile, and try again — max 3 attempts.
+            from connectors.common.profile_hub import (
+                ProfileHub as _PH, _kill_profile_holders as _kill,
+            )
+            last_exc: Exception | None = None
+            for attempt in range(1, 4):
+                session = cls(account, bin_path, profile)
+                try:
+                    await session.start()
+                    cls._registry[account] = session
+                    return session
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "[ghost:%s] start attempt %d/3 failed: %s: %s — "
+                        "killing profile browsers & retrying",
+                        account, attempt, type(exc).__name__, exc)
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+                    try:
+                        await _PH.evict(profile)
+                        await _kill(profile)
+                    except Exception as kill_exc:
+                        logger.warning("[ghost:%s] profile kill failed: %s",
+                                       account, kill_exc)
+                    if attempt < 3:
+                        await asyncio.sleep(min(0.5 * attempt, 2.0))
+            raise RuntimeError(
+                f"deepseek:{account}: session failed to start after 3 attempts"
+            ) from last_exc
 
     @classmethod
     async def close_all(cls) -> None:

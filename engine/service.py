@@ -594,9 +594,20 @@ class ChatService:
         ``access_token``. Returns True when the session is ready.
         """
         from connectors.kimi.client import get_client as _kimi_client
-        from connectors.kimi.ghost import KimiGhostSession
+        from connectors.kimi.ghost import KimiGhostSession, get_saved_token
         acct = (_kimi_client(account) if account else _kimi_client()).account
-        session = await KimiGhostSession.for_account(acct)
+        # Reuse a live session if one is already up — no spawn at all.
+        existing = KimiGhostSession._registry.get(acct)
+        if existing is not None and await existing.is_healthy():
+            return await existing.has_token()
+        # No live session, but a valid unexpired token is already on disk: the
+        # refresh is a no-op. Do NOT spin up a browser just to confirm what the
+        # token store already proves.
+        if get_saved_token(acct):
+            return True
+        # Cold path: boot the ghost HEADLESS. Token refresh never needs a
+        # visible window — only chat does.
+        session = await KimiGhostSession.for_account(acct, headless=True)
         return await session.has_token()
 
     async def refresh_deepseek_token(self) -> str:
