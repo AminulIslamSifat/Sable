@@ -1791,6 +1791,11 @@ async def chat(request: ChatRequest):
                         _caps = _cfg.get("capabilities", {})
                         if _caps.get("image", False) and _api_backend in _DIRECT_READ_BACKENDS:
                             _inline_files = (_inline_files or []) + _pending_skill_images
+                        elif _caps.get("image", False) and _api_backend == "deepseek_scraper":
+                            # Scraper transport: no inline-file path either, but the
+                            # engine uploads these through Playwright (upload_file),
+                            # so they ride the same `files` channel as UI attachments.
+                            _inline_files = (_inline_files or []) + _pending_skill_images
                         elif _caps.get("image", False) and _api_backend == "deepseek":
                             # DeepSeek has no inline-file path: images must go through its own
                             # upload endpoint, and the returned file_id rides on ref_file_ids
