@@ -1669,6 +1669,31 @@ async def list_accounts_by_provider() -> dict[str, Any]:
             pass
         return False
 
+    def _profile_has_chatgpt(entry: Path) -> bool:
+        """True if this profile holds a chatgpt.com login.
+
+        ChatGPT auth is a ``__Secure-next-auth.session-token`` cookie (split
+        into ``.0``/``.1`` chunks). Query the live SQLite cookies table for it
+        (not a binary grep, which matches stale deleted rows).
+        """
+        try:
+            import sqlite3
+            ck = entry / "Default" / "Cookies"
+            if ck.is_file():
+                conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
+                try:
+                    cur = conn.execute(
+                        "SELECT name FROM cookies WHERE host_key LIKE '%chatgpt%' "
+                        "AND name LIKE '__Secure-next-auth.session-token%'"
+                    )
+                    if cur.fetchone() is not None:
+                        return True
+                finally:
+                    conn.close()
+        except Exception:
+            pass
+        return False
+
     def _scan_browser_accounts() -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
@@ -1694,6 +1719,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     and _mimo_jar.get("xiaomichatbot_serviceToken")
                 )
                 _has_kimi = _profile_has_kimi(entry)
+                _has_chatgpt = _profile_has_chatgpt(entry)
                 _has_mistral_web = _profile_has_mistral_web(entry)
                 accounts.append({
                     "name": entry.name,
@@ -1706,6 +1732,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "has_gemini": _has_gemini,
                     "has_mimo": _has_mimo,
                     "has_kimi": _has_kimi,
+                    "has_chatgpt": _has_chatgpt,
                     "has_mistral_web": _has_mistral_web,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
@@ -1761,6 +1788,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 "has_gemini": False,
                 "has_mimo": False,
                 "has_kimi": _profile_has_kimi(entry),
+                "has_chatgpt": _profile_has_chatgpt(entry),
                 "has_mistral_web": _profile_has_mistral_web(entry),
                 "exhausted": False,
                 "captcha_blocked": False,
@@ -1829,6 +1857,12 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     kimi_accounts = [a for a in browser_accounts if a.get("has_kimi")]
     kimi_accounts += [a for a in unregistered_browser_data if a.get("has_kimi")]
     providers["kimi"] = _browser_provider("kimi", "Kimi", kimi_accounts)
+
+    # ChatGPT (chatgpt.com): browser-based. Lists every profile holding a
+    # chatgpt.com login — both standard acc* profiles AND dedicated non-acc dirs.
+    chatgpt_accounts = [a for a in browser_accounts if a.get("has_chatgpt")]
+    chatgpt_accounts += [a for a in unregistered_browser_data if a.get("has_chatgpt")]
+    providers["chatgpt"] = _browser_provider("chatgpt", "ChatGPT", chatgpt_accounts)
 
     # Mistral (Web): browser-based. Lists every profile holding a chat.mistral.ai
     # session — both standard acc* profiles AND dedicated non-acc dirs.
@@ -1998,7 +2032,7 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
 # Providers whose account selection is per-provider (pinned) rather than global.
 # Qwen is deliberately excluded: it IS the global active account, so its switch
 # stays on /accounts/switch and every unpinned provider follows it.
-_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web")
+_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt")
 
 
 @router.post("/api/settings/accounts/switch-provider")

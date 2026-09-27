@@ -102,7 +102,7 @@ window.safeCopy = async function(text) {
 
     // Providers whose account selection is per-provider (pinned), not global.
     // Mirrors _PER_PROVIDER_SWITCH in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web"];
+    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
     function _renderBrowserCard(acc, active, providerId) {
@@ -128,6 +128,7 @@ window.safeCopy = async function(text) {
             ${acc.has_gemini ? _badge('gemini') : ''}
             ${acc.has_mimo ? _badge('mimo') : ''}
             ${acc.has_kimi ? _badge('kimi') : ''}
+            ${acc.has_chatgpt ? _badge('chatgpt') : ''}
             ${acc.has_mistral_web ? _badge('mistral') : ''}
             ${acc.has_ds ? _badge('ds') : ''}
             ${acc.exhausted ? _badge('exhausted', true) : ''}
@@ -351,7 +352,7 @@ window.safeCopy = async function(text) {
         const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
-        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "mistral_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter

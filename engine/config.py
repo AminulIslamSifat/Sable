@@ -550,6 +550,22 @@ MODELS = [
             {"id": "high", "label": "Thinking (High)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "high"},
         ],
     },
+    # ── ChatGPT (chatgpt.com, browser-auth ghost tab, no API key) ──
+    # Transport: in-page fetch HIJACK of the SPA's own send (see
+    # connectors/chatgpt/ghost.py). The per-message sentinel bundle cannot be
+    # replayed, so the SPA mints + sends and we rewrite the body + tee the SSE.
+    {
+        "id": "chatgpt-gpt-5",
+        "label": "chatgpt (web)",
+        "api_backend": "chatgpt",
+        "api_model_type": "auto",
+        "max_session_chars": 2_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "thinking"},
+        ],
+    },
 ]
 
 # Default/current model id — kept for backward compatibility with code that
@@ -1171,6 +1187,8 @@ _PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "zai": ("zai",),
     "qwen": ("qwen",),
     "deepseek": ("deepseek",),
+    "kimi": ("kimi",),
+    "chatgpt": ("chatgpt", "openai_chatgpt", "gpt"),
     "mimo": ("mimo", "mimo_studio", "xiaomimimo"),
 }
 

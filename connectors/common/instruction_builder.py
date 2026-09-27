@@ -263,6 +263,7 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
     "zai": _TOOL_FORMAT_QWEN,
     "mimo": _TOOL_FORMAT_MIMO,
     "kimi": _TOOL_FORMAT_QWEN,
+    "chatgpt": _TOOL_FORMAT_QWEN,
     "mistral_web": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,

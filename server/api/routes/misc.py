@@ -209,6 +209,42 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend mistral_web unavailable: %s", exc)
 
+    # ChatGPT (chatgpt.com): ghost-tab transport. Available if a profile holds
+    # a chatgpt.com login — the ghost marker, or a __Secure-next-auth session
+    # cookie in the profile's Cookies SQLite table. The pinned provider account
+    # is checked first, then any browser-data-* profile.
+    try:
+        import sqlite3
+        from engine.config import _SYSTEM as _sys_dir6
+        from engine.config import get_provider_account as _get_cg_pin
+        candidates = []
+        pinned = _get_cg_pin("chatgpt")
+        if pinned:
+            candidates.append(_sys_dir6 / pinned)
+        if _sys_dir6.is_dir():
+            candidates += [d for d in _sys_dir6.iterdir()
+                           if d.is_dir() and d.name.startswith("browser-data-")]
+        for d in candidates:
+            try:
+                if (d / ".chatgpt_ghost.json").is_file():
+                    available.add("chatgpt"); break
+                ck = d / "Default" / "Cookies"
+                if ck.is_file():
+                    conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
+                    try:
+                        cur = conn.execute(
+                            "SELECT name FROM cookies WHERE host_key LIKE '%chatgpt%' "
+                            "AND name LIKE '__Secure-next-auth.session-token%'"
+                        )
+                        if cur.fetchone() is not None:
+                            available.add("chatgpt"); break
+                    finally:
+                        conn.close()
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("Backend chatgpt unavailable: %s", exc)
+
     # API-key-based providers
     _key_providers = {
         "gemini": "connectors.gemini.client",

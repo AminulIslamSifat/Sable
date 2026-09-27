@@ -91,6 +91,9 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     elif backend == "kimi":
         from connectors.kimi.client import get_client
         _registry[backend] = get_client()
+    elif backend == "chatgpt":
+        from connectors.chatgpt.client import get_client
+        _registry[backend] = get_client()
     elif backend == "zai":
         from connectors.zai.client import get_client
         _registry[backend] = get_client()
