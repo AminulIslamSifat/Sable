@@ -30,8 +30,10 @@ from engine.config import (
     LIBRARY_ACADEMICS_PATH,
     LIBRARY_EMBED_DIR,
     LIBRARY_META_DIR,
+    LIBRARY_NOTES_DIR,
     LIBRARY_ORIG_DIR,
     LIBRARY_PDF_DIR,
+    LIBRARY_SRS_DIR,
     LIBRARY_TEXT_DIR,
     LIBRARY_THUMB_DIR,
 )
@@ -42,27 +44,33 @@ from engine.library_ingest import (
     extract_pdf as _shared_extract_pdf,
     pdf_tool,
 )
+from engine import library_catalog as _catalog
 from engine import library_rag as _rag
 from engine import library_search as _search
 from engine import library_sessions as _sessions
 from engine import library_index as _index
+from engine import library_upload as _upload
 
 router = APIRouter()
 logger = logging.getLogger("sable.study")
 
 # Fire-and-forget indexing tasks, kept referenced so they aren't GC'd mid-run.
 _INDEX_TASKS: set[asyncio.Task] = set()
+# Same, for the upload ingest pipelines. A bare create_task() with no strong
+# reference can be garbage-collected mid-run.
+_UPLOAD_TASKS: set[asyncio.Task] = set()
 
 
 def _spawn_index_job(doc_id: str, *, pages: list[int] | None = None,
+                     do_ocr: bool = True, do_search: bool = True,
                      do_ai: bool = False, lang: str = "eng+ben",
                      model: str = "", thinking_mode: str = "") -> None:
     """Run an index job in the background, tracked so it isn't collected."""
     async def _run() -> None:
         try:
             await _index.run_job(
-                doc_id, do_ocr=True, do_ai=do_ai, pages=pages, lang=lang,
-                model=model, thinking_mode=thinking_mode,
+                doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai,
+                pages=pages, lang=lang, model=model, thinking_mode=thinking_mode,
             )
         except Exception:
             logger.warning("index job failed for %s", doc_id, exc_info=True)
@@ -72,6 +80,205 @@ def _spawn_index_job(doc_id: str, *, pages: list[int] | None = None,
     task.add_done_callback(_INDEX_TASKS.discard)
 
 _MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+class _UploadCancelled(Exception):
+    """Raised between pipeline phases when the user cancelled the upload."""
+
+
+def _delete_doc(doc_id: str) -> None:
+    """Remove every trace of a document: files, meta, and derived indexes.
+
+    Shared by the delete endpoint and by upload cancellation, so a cancelled
+    upload can never leave a half-ingested orphan behind.
+    """
+    if not _valid_id(doc_id):
+        return
+    for p in (
+        _pdf_path(doc_id),
+        _meta_path(doc_id),
+        _text_path(doc_id),
+        _meta_lock_path(doc_id),
+        thumb_path(doc_id),
+        *LIBRARY_ORIG_DIR.glob(f"{doc_id}.*"),
+    ):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+    for cleanup in (_search.remove_document, _rag.remove, _catalog.remove_doc):
+        try:
+            cleanup(doc_id)
+        except Exception:
+            logger.warning("index cleanup failed for %s", doc_id, exc_info=True)
+    # A cancelled doc must not keep a job file the Indexing tab would render
+    # as a resumable job for a document that no longer exists.
+    try:
+        _index.delete_job(doc_id)
+    except Exception:
+        pass
+
+
+async def _run_upload_pipeline(upload_id: str, *, filename: str, ext: str) -> None:
+    """Ingest one staged upload, off the request thread.
+
+    Phases: convert -> extract -> persist -> index. Every blocking call is
+    pushed to a worker thread; the event loop stays free so the rest of the app
+    (including the status poll that drives the sidebar bar) keeps responding.
+
+    Cancellation is cooperative and checked between phases, then handed to the
+    index job as its own should_stop. A cancelled upload is deleted outright —
+    no orphan, no partial document.
+    """
+    staged = _upload.staging_path(upload_id, ext)
+    doc_id = ""
+    try:
+        job = _upload.load_job(upload_id) or {}
+        group = job.get("group") or {}
+        index_mode = str(job.get("index_mode") or _DEFAULT_INDEX_MODE)
+        ocr = str(job.get("ocr") or _DEFAULT_OCR_MODE)
+
+        raw = await asyncio.to_thread(staged.read_bytes) if staged.exists() else b""
+        if not raw:
+            _upload.finish(upload_id, "error", error="staged file missing")
+            return
+
+        # ── convert (non-PDF only) ──
+        if _upload.is_cancelled(upload_id):
+            raise _UploadCancelled
+        if ext != _NATIVE_EXT:
+            _upload.set_phase(upload_id, "converting")
+            try:
+                pdf_bytes = await asyncio.to_thread(_convert_to_pdf, raw, ext)
+            except ValueError as e:
+                _upload.finish(upload_id, "error", error=str(e))
+                return
+            converted = True
+        else:
+            pdf_bytes = raw
+            converted = False
+
+        # ── extract ──
+        if _upload.is_cancelled(upload_id):
+            raise _UploadCancelled
+        _upload.set_phase(upload_id, "extracting")
+        try:
+            extracted = await asyncio.to_thread(_extract, pdf_bytes)
+        except ValueError:
+            # No text layer — almost certainly a scanned/image-only PDF. Those
+            # are exactly what OCR exists for, so ingest with blank page text
+            # and let the auto-OCR pass fill it in.
+            pages = await asyncio.to_thread(_pdf_page_count, pdf_bytes)
+            if pages <= 0:
+                _upload.finish(upload_id, "error", error="could not read PDF")
+                return
+            logger.info("no text layer in %s (%d pages) — queuing for OCR", filename, pages)
+            extracted = {"pages": pages, "page_text": [""] * pages, "outline": [], "meta_title": ""}
+
+        # ── persist ──
+        if _upload.is_cancelled(upload_id):
+            raise _UploadCancelled
+        _upload.set_phase(upload_id, "persisting")
+
+        _ensure_dirs()
+        doc_id = uuid.uuid4().hex
+
+        title = (extracted.get("meta_title") or "").strip()
+        if not title or title.lower() in {"untitled", "unknown"}:
+            title = Path(filename).stem
+
+        meta: dict[str, Any] = {
+            "version": _META_VERSION,
+            "id": doc_id,
+            "title": title,
+            "slug": _slugify(title),
+            "filename": filename,
+            "source_ext": ext.lstrip("."),
+            "converted": converted,
+            "pages": extracted["pages"],
+            "size": len(raw),
+            "added": time.time(),
+            "outline": extracted["outline"],
+            "progress": {"current_page": 1, "percent": 0, "last_opened": 0},
+            "highlights": [],
+            "bookmarked": False,
+            "group": group,
+        }
+
+        await asyncio.to_thread(_pdf_path(doc_id).write_bytes, pdf_bytes)
+        if converted:
+            await asyncio.to_thread((LIBRARY_ORIG_DIR / f"{doc_id}{ext}").write_bytes, raw)
+        await asyncio.to_thread(_write_page_text, doc_id, extracted["page_text"])
+        await asyncio.to_thread(_write_meta, doc_id, meta)
+        await asyncio.to_thread(_ensure_topic, group.get("topic") or "Others")
+
+        # Recorded before indexing so a cancel during the index pass still
+        # knows which document to delete.
+        _upload.set_doc_id(upload_id, doc_id, title, int(extracted.get("pages") or 0))
+
+        try:
+            await asyncio.to_thread(
+                _catalog.upsert_doc, doc_id, title, group, meta["added"]
+            )
+        except Exception:
+            logger.warning("catalog upsert failed for %s", doc_id, exc_info=True)
+
+        if _upload.is_cancelled(upload_id):
+            raise _UploadCancelled
+
+        # ── index ──
+        ocr_pages: list[int] | None = None
+        if ocr == "never":
+            ocr_pages = []
+        elif ocr == "force":
+            ocr_pages = list(range(1, int(extracted.get("pages") or 0) + 1))
+        else:
+            try:
+                ocr_pages = await asyncio.to_thread(
+                    _index.pages_needing_ocr, extracted["page_text"]
+                )
+            except Exception:
+                logger.warning("blank-page scan failed for %s", doc_id, exc_info=True)
+                ocr_pages = []
+
+        do_ocr = ocr != "never"
+        do_search = index_mode in ("search", "rag")
+        do_ai = index_mode == "rag"
+
+        if do_ocr or do_search or do_ai:
+            _upload.set_phase(upload_id, "indexing")
+            # Awaited, not spawned: cancelling the upload has to stop the index
+            # pass too, and run_job already owns resumable checkpoints.
+            await _index.run_job(
+                doc_id,
+                pages=ocr_pages,
+                do_ocr=do_ocr,
+                do_search=do_search,
+                do_ai=do_ai,
+                should_stop=lambda: _upload.is_cancelled(upload_id),
+            )
+
+        if _upload.is_cancelled(upload_id):
+            raise _UploadCancelled
+
+        _upload.finish(upload_id, "done")
+
+    except _UploadCancelled:
+        # Cancelled means gone. Delete the document if it got far enough to
+        # have one, then settle the job.
+        if doc_id:
+            await asyncio.to_thread(_delete_doc, doc_id)
+        _upload.finish(upload_id, "cancelled")
+        logger.info("upload %s cancelled%s", upload_id, f" (doc {doc_id})" if doc_id else "")
+    except Exception as exc:
+        logger.warning("upload pipeline failed for %s", upload_id, exc_info=True)
+        if doc_id:
+            await asyncio.to_thread(_delete_doc, doc_id)
+        _upload.finish(upload_id, "error", error=str(exc))
+    finally:
+        _upload.mark_inactive(upload_id)
+        _upload.clear_cancel(upload_id)
+        _upload.discard_staging(upload_id)
 _MAX_RECTS = 200  # highlight rectangles per selection
 _META_VERSION = 1
 _ACADEMICS_VERSION = 2
@@ -414,6 +621,19 @@ def study_list_docs() -> list[dict[str, Any]]:
     return items
 
 
+# How much derived indexing an upload builds. Ordered by cost: each level
+# includes the ones before it. "rag" is the historical default because study
+# Q&A leans on retrieval, but a bulk import of slides rarely needs embeddings.
+_INDEX_MODES = ("none", "search", "rag")
+_DEFAULT_INDEX_MODE = "rag"
+
+# Scanned-page handling. "auto" only touches pages whose extracted text came
+# out blank; "force" re-OCRs every page (slow, for bad extractors); "never"
+# leaves blank pages blank.
+_OCR_MODES = ("auto", "force", "never")
+_DEFAULT_OCR_MODE = "auto"
+
+
 @router.post("/api/study/upload")
 async def study_upload(
     file: UploadFile = File(...),
@@ -421,6 +641,8 @@ async def study_upload(
     session: str = Form(""),
     subject: str = Form(""),
     topic: str = Form(""),
+    index_mode: str = Form(_DEFAULT_INDEX_MODE),
+    ocr: str = Form(_DEFAULT_OCR_MODE),
 ) -> dict[str, Any]:
     """Accept a document, normalize it to PDF, extract text, persist the meta.
 
@@ -432,9 +654,35 @@ async def study_upload(
     Optional ``semester``/``session``/``subject``/``topic`` form fields file
     the document into the academics tree on the way in, so a batch upload can
     be grouped without a second trip through the doc menu.
+
+    ``index_mode`` picks how much derived indexing to build, because the passes
+    differ hugely in cost and not every document needs all of them:
+
+      * ``none``   -- page text only. Reader works; no search, no RAG.
+      * ``search`` -- + SQLite FTS5. Fast, cheap, powers library search.
+      * ``rag``    -- + chunk embeddings. Slow; needed for topic-wide and
+                      semantic retrieval over the document.
+
+    ``ocr`` controls the scanned-page pass: ``auto`` (only blank pages),
+    ``force`` (every page), or ``never``.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="missing filename")
+
+    index_mode = (index_mode or _DEFAULT_INDEX_MODE).strip().lower()
+    if index_mode not in _INDEX_MODES:
+        allowed = ", ".join(sorted(_INDEX_MODES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown index_mode '{index_mode}' — accepted: {allowed}",
+        )
+    ocr = (ocr or _DEFAULT_OCR_MODE).strip().lower()
+    if ocr not in _OCR_MODES:
+        allowed = ", ".join(sorted(_OCR_MODES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown ocr mode '{ocr}' — accepted: {allowed}",
+        )
 
     ext = _ext_of(file.filename)
     if ext not in _ACCEPTED_EXT:
@@ -444,53 +692,40 @@ async def study_upload(
             detail=f"unsupported file type '{ext or '?'}' — accepted: {allowed}",
         )
 
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty file")
-    if len(raw) > _MAX_PDF_BYTES:
-        raise HTTPException(status_code=413, detail="file too large (max 100 MB)")
+    # The request's ONLY job is to get bytes onto disk. Conversion, extraction
+    # and indexing are all slow — a LibreOffice cold start, a full PyMuPDF walk
+    # of every page, then OCR — and every one of them is a SYNCHRONOUS call.
+    # Running them here held the response open for minutes on a textbook, and
+    # because there was no await in sight it froze the event loop with them, so
+    # even /index/status stalled. Everything past staging now lives in a
+    # background pipeline.
+    upload_id = uuid.uuid4().hex
+    staged = _upload.staging_path(upload_id, ext)
 
-    # Normalize non-PDF inputs to PDF bytes (kept in memory; original saved later).
-    converted = False
-    pdf_bytes = raw
-    if ext != _NATIVE_EXT:
-        try:
-            pdf_bytes = _convert_to_pdf(raw, ext)
-            converted = True
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-
+    size = 0
     try:
-        extracted = _extract(pdf_bytes)
-    except ValueError:
-        # No text layer — this is almost certainly a scanned/image-only PDF.
-        # Those are exactly the documents OCR exists for, so DON'T reject the
-        # upload: ingest it with blank page text and let the auto-OCR pass fill
-        # it in. Only the page count is needed up front.
-        pages = _pdf_page_count(pdf_bytes)
-        if pages <= 0:
-            raise HTTPException(status_code=422, detail="could not read PDF")
-        logger.info("no text layer in %s (%d pages) — queuing for OCR", file.filename, pages)
-        extracted = {
-            "pages": pages,
-            "page_text": [""] * pages,
-            "outline": [],
-            "meta_title": "",
-        }
+        with open(staged, "wb") as fh:
+            while True:
+                # Bounded slices keep a 100 MB upload out of RAM, and each
+                # await hands control back so the loop keeps breathing.
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_PDF_BYTES:
+                    raise HTTPException(status_code=413, detail="file too large (max 100 MB)")
+                fh.write(chunk)
+    except HTTPException:
+        _upload.discard_staging(upload_id)
+        raise
+    except Exception as exc:
+        _upload.discard_staging(upload_id)
+        logger.warning("staging write failed for %s: %s", file.filename, exc)
+        raise HTTPException(status_code=500, detail="could not store upload")
 
-    _ensure_dirs()
-    doc_id = uuid.uuid4().hex
-
-    # Prefer the document's own title, then the uploaded filename.
-    title = (extracted.get("meta_title") or "").strip()
-    if not title or title.lower() in {"untitled", "unknown"}:
-        title = Path(file.filename).stem
-
-    _pdf_path(doc_id).write_bytes(pdf_bytes)
-
-    # Preserve the original only when it isn't already the stored PDF.
-    if converted:
-        (LIBRARY_ORIG_DIR / f"{doc_id}{ext}").write_bytes(raw)
+    if size == 0:
+        _upload.discard_staging(upload_id)
+        raise HTTPException(status_code=400, detail="empty file")
 
     group = {
         "semester": semester.strip()[:80],
@@ -500,50 +735,115 @@ async def study_upload(
         # don't pick a topic land in the catch-all "Others" bucket.
         "topic": (topic.strip()[:80] or "Others"),
     }
-    _ensure_topic(group["topic"])
 
-    meta: dict[str, Any] = {
-        "version": _META_VERSION,
-        "id": doc_id,
-        "title": title,
-        "slug": _slugify(title),
+    _upload.create_job(
+        upload_id,
+        filename=file.filename,
+        ext=ext,
+        size=size,
+        group=group,
+        index_mode=index_mode,
+        ocr=ocr,
+    )
+    # Register as live BEFORE the task exists. A status poll landing in the gap
+    # would otherwise see "running" with nothing driving it and report an error.
+    _upload.mark_active(upload_id)
+    task = asyncio.create_task(
+        _run_upload_pipeline(upload_id, filename=file.filename, ext=ext)
+    )
+    _UPLOAD_TASKS.add(task)
+    task.add_done_callback(_UPLOAD_TASKS.discard)
+
+    return {
+        "upload_id": upload_id,
         "filename": file.filename,
-        "source_ext": ext.lstrip("."),
-        "converted": converted,
-        "pages": extracted["pages"],
-        "size": len(raw),
-        "added": time.time(),
-        "outline": extracted["outline"],
-        "progress": {"current_page": 1, "percent": 0, "last_opened": 0},
-        "highlights": [],
-        "bookmarked": False,
-        "group": group,
+        "size": size,
+        "queued": True,
+        "indexing": {
+            "mode": index_mode,
+            "stages": [s for s, on in (
+                ("ocr", ocr != "never"),
+                ("search", index_mode in ("search", "rag")),
+                ("rag", index_mode == "rag"),
+            ) if on],
+            "ocr": ocr,
+        },
     }
-    _write_page_text(doc_id, extracted["page_text"])
-    _write_meta(doc_id, meta)
 
-    # Derived indexes: full-text search + RAG chunks. Both are rebuildable, so
-    # a failure here must never fail the upload itself.
-    try:
-        _search.index_document(doc_id, title, extracted["page_text"])
-    except Exception:
-        logger.warning("search index failed for %s", doc_id, exc_info=True)
-    try:
-        _rag.build(doc_id, extracted["page_text"])
-    except Exception:
-        logger.warning("rag index failed for %s", doc_id, exc_info=True)
 
-    # Auto-OCR: any page that came out blank (a scanned/image-only page) is
-    # queued for OCR in the background. AI embedding is deliberately NOT run
-    # here — it stays a manual, user-driven action.
-    try:
-        needed = _index.pages_needing_ocr(extracted["page_text"])
-        if needed:
-            _spawn_index_job(doc_id, pages=needed)
-    except Exception:
-        logger.warning("auto-OCR kickoff failed for %s", doc_id, exc_info=True)
+# ── Upload jobs (staging → convert → extract → index) ────────────────────────
 
-    return {"uploaded": True, **_summarize(meta)}
+
+@router.get("/api/study/upload/status")
+def study_upload_status(upload_id: str = "") -> dict[str, Any]:
+    """Progress for the sidebar's upload rows.
+
+    Without ``upload_id``: every upload worth showing. Indexing progress for a
+    row in the ``indexing`` phase is folded in from the doc's own index job, so
+    one bar covers the whole upload instead of resetting at the handoff.
+    """
+    jobs = (
+        [_upload.load_job(upload_id) or {}]
+        if _valid_id(upload_id)
+        else _upload.list_jobs()
+    )
+
+    out: list[dict[str, Any]] = []
+    for job in jobs:
+        uid = str(job.get("upload_id") or "")
+        if not _valid_id(uid):
+            continue
+        index_percent: int | None = None
+        doc_id = str(job.get("doc_id") or "")
+        if doc_id and _valid_id(doc_id):
+            try:
+                index_percent = int(_index.status_for(doc_id).get("percent") or 0)
+            except Exception:
+                index_percent = None
+        out.append(_upload.status_for(uid, index_percent=index_percent))
+
+    if _valid_id(upload_id) and not out:
+        raise HTTPException(status_code=404, detail="upload not found")
+
+    return {
+        "uploads": out,
+        "active": sum(1 for u in out if u.get("status") == "running"),
+    }
+
+
+@router.post("/api/study/upload/cancel")
+async def study_upload_cancel(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Cancel an upload and delete whatever it produced.
+
+    Cooperative, like the index stop: the running pipeline finishes the phase
+    it is on, then unwinds. If it already created the document, that document
+    is deleted outright — a cancelled upload leaves nothing behind.
+    """
+    payload = payload or {}
+    upload_id = str(payload.get("upload_id") or "")
+    if not _valid_id(upload_id):
+        raise HTTPException(status_code=400, detail="invalid upload id")
+
+    job = _upload.load_job(upload_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="upload not found")
+
+    status = str(job.get("status") or "")
+    if status in ("done", "error", "cancelled"):
+        return {"status": status, "upload_id": upload_id, "live": False}
+
+    was_live = _upload.request_cancel(upload_id)
+    if was_live:
+        return {"status": "cancelling", "upload_id": upload_id, "live": True}
+
+    # Nothing running: the server restarted mid-upload, so there is no task to
+    # signal and nothing to resume from. Delete any partial doc and settle it.
+    doc_id = str(job.get("doc_id") or "")
+    if doc_id and _valid_id(doc_id) and _read_meta(doc_id):
+        await asyncio.to_thread(_delete_doc, doc_id)
+    _upload.finish(upload_id, "cancelled")
+    _upload.discard_staging(upload_id)
+    return {"status": "cancelled", "upload_id": upload_id, "live": False}
 
 
 @router.get("/api/study/doc/{doc_id}/original")
@@ -775,35 +1075,26 @@ def study_update_group(doc_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         meta["group"] = group
         return group
 
-    return _update_meta(doc_id, mutate)
+    result = _update_meta(doc_id, mutate)
+    # Keep the topic catalog in step with the new grouping so topic-wide
+    # retrieval sees the change on the very next question.
+    try:
+        meta = _read_meta(doc_id) or {}
+        _catalog.upsert_doc(doc_id, str(meta.get("title") or ""), result, added=float(meta.get("added") or 0.0))
+    except Exception:
+        logger.warning("catalog upsert failed for %s", doc_id, exc_info=True)
+    return result
 
 
 @router.delete("/api/study/doc/{doc_id}")
 def study_delete_doc(doc_id: str) -> dict[str, Any]:
-    """Remove the PDF and its meta record."""
+    """Remove the PDF, its meta record, and every derived index."""
     if not _valid_id(doc_id):
         raise HTTPException(status_code=400, detail="invalid id")
-    pdf = _pdf_path(doc_id)
-    meta = _meta_path(doc_id)
-    if not pdf.exists() and not meta.exists():
+    if not _pdf_path(doc_id).exists() and not _meta_path(doc_id).exists():
         raise HTTPException(status_code=404, detail="document not found")
-    for p in (
-        pdf,
-        meta,
-        _text_path(doc_id),
-        _meta_lock_path(doc_id),
-        *LIBRARY_ORIG_DIR.glob(f"{doc_id}.*"),
-    ):
-        try:
-            p.unlink(missing_ok=True)
-        except Exception:
-            pass
-    # Drop every derived index so a deleted doc leaves nothing searchable.
-    for cleanup in (_search.remove_document, _rag.remove):
-        try:
-            cleanup(doc_id)
-        except Exception:
-            logger.warning("index cleanup failed for %s", doc_id, exc_info=True)
+    # Shared with upload cancellation so a doc can never be half-removed.
+    _delete_doc(doc_id)
     return {"deleted": True, "id": doc_id}
 
 
@@ -854,6 +1145,7 @@ def study_reindex(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = payload or {}
     want_search = bool(payload.get("search", True))
     want_rag = bool(payload.get("rag", False))
+    only_missing = bool(payload.get("only_missing", False))
     target = str(payload.get("doc_id") or "")
 
     if target and not _valid_id(target):
@@ -866,6 +1158,10 @@ def study_reindex(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if not meta:
             raise HTTPException(status_code=404, detail="document not found")
         pages = _load_page_text(meta)
+        _catalog.upsert_doc(
+            target, str(meta.get("title") or ""), meta.get("group") or {},
+            added=float(meta.get("added") or 0.0),
+        )
         if want_search:
             count = _search.index_document(target, str(meta.get("title") or ""), pages)
             out["search"] = {"doc_id": target, "pages": count}
@@ -873,8 +1169,41 @@ def study_reindex(payload: dict[str, Any] | None = None) -> dict[str, Any]:
             out["rag"] = _rag.build(target, pages)
         return out
 
+    if not target and payload.get("catalog"):
+        try:
+            out["catalog"] = _catalog.rebuild_from_meta()
+        except Exception:
+            logger.warning("catalog rebuild failed", exc_info=True)
+            out["catalog"] = None
+
     if want_search:
-        out["search"] = _search.rebuild_all()
+        if only_missing:
+            # Walk the library but skip anything already carrying rows, so a
+            # "finish the job" click doesn't redo thousands of indexed pages.
+            try:
+                already = set(_search.indexed_doc_ids())
+            except Exception:
+                already = set()
+            built = 0
+            skipped = 0
+            for path in sorted(LIBRARY_TEXT_DIR.glob("*.json")):
+                doc_id = path.stem
+                if doc_id in already or not _valid_id(doc_id):
+                    skipped += 1
+                    continue
+                try:
+                    pages = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    skipped += 1
+                    continue
+                if not isinstance(pages, list):
+                    skipped += 1
+                    continue
+                _search.index_document(doc_id, "", pages)
+                built += 1
+            out["search"] = {"indexed": built, "skipped": skipped}
+        else:
+            out["search"] = _search.rebuild_all()
     if want_rag:
         _ensure_dirs()
         built = 0
@@ -905,6 +1234,7 @@ async def study_index_start(payload: dict[str, Any] | None = None) -> dict[str, 
     """
     payload = payload or {}
     do_ocr = bool(payload.get("ocr", True))
+    do_search = bool(payload.get("search", True))
     do_ai = bool(payload.get("ai", False))
     lang = str(payload.get("lang") or "eng+ben")
     model = str(payload.get("model") or "")
@@ -919,53 +1249,204 @@ async def study_index_start(payload: dict[str, Any] | None = None) -> dict[str, 
         if not _read_meta(target):
             raise HTTPException(status_code=404, detail="document not found")
         _spawn_index_job(
-            target, pages=pages, do_ai=do_ai, lang=lang,
-            model=model, thinking_mode=thinking_mode,
+            target, pages=pages, do_ocr=do_ocr, do_search=do_search,
+            do_ai=do_ai, lang=lang, model=model, thinking_mode=thinking_mode,
         )
-        return {"status": "started", "doc_id": target, "ocr": do_ocr, "ai": do_ai}
+        return {
+            "status": "started", "doc_id": target,
+            "ocr": do_ocr, "search": do_search, "ai": do_ai,
+        }
 
     # Whole-library kickoff — one background task per document.
     if payload.get("all"):
+        # only_missing: skip docs that already have searchable text, so the
+        # "index everything that isn't indexed" button doesn't re-OCR the
+        # entire library every time it's pressed.
+        skip_ids: set[str] = set()
+        if payload.get("only_missing"):
+            try:
+                skip_ids = set(_search.indexed_doc_ids())
+            except Exception:
+                skip_ids = set()
+
         started = 0
         for path in sorted(LIBRARY_TEXT_DIR.glob("*.json")):
             doc_id = path.stem
-            if _valid_id(doc_id):
-                _spawn_index_job(
-                    doc_id, do_ai=do_ai, lang=lang,
-                    model=model, thinking_mode=thinking_mode,
-                )
-                started += 1
-        return {"status": "started", "docs": started, "ocr": do_ocr, "ai": do_ai}
+            if not _valid_id(doc_id) or doc_id in skip_ids:
+                continue
+            _spawn_index_job(
+                doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai,
+                lang=lang, model=model, thinking_mode=thinking_mode,
+            )
+            started += 1
+        return {
+            "status": "started", "docs": started,
+            "ocr": do_ocr, "search": do_search, "ai": do_ai,
+        }
 
     raise HTTPException(status_code=400, detail="provide doc_id or all=true")
 
 
 @router.post("/api/study/index/pause")
 def study_index_pause(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Pause a doc's job. The next start resumes from the saved cursors."""
+    """Pause a doc's job. The next start resumes from the saved cursors.
+
+    This used to only write status=paused to the job file, which was a lie:
+    the background task kept running and overwrote it on its next checkpoint.
+    It now signals the running pass, which stops at its next page/chunk and
+    sets the status itself.
+    """
     payload = payload or {}
     doc_id = str(payload.get("doc_id") or "")
     if not _valid_id(doc_id):
         raise HTTPException(status_code=400, detail="invalid doc id")
-    job = _index.load_job(doc_id)
-    job["status"] = "paused"
-    _index.save_job(job)
-    return {"status": "paused", "doc_id": doc_id}
+
+    was_live = _index.request_stop(doc_id)
+    if not was_live:
+        # Nothing running to signal — settle the file so the UI agrees.
+        job = _index.load_job(doc_id)
+        if job.get("status") == "running":
+            job["status"] = "paused"
+            job["stage"] = ""
+            _index.save_job(job)
+    return {
+        "status": "pausing" if was_live else "paused",
+        "doc_id": doc_id,
+        "live": was_live,
+    }
+
+
+@router.post("/api/study/index/stop")
+def study_index_stop(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Ask a running index job to stop at its next checkpoint.
+
+    Cooperative, not a hard kill: the running pass finishes the page or chunk
+    it is on, commits its checkpoint, and then unwinds. That keeps the job
+    resumable and never leaves a half-written text file behind.
+
+    body: {doc_id}
+    """
+    payload = payload or {}
+    doc_id = str(payload.get("doc_id") or "")
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="doc_id required")
+    if not _valid_id(doc_id):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+
+    was_live = _index.request_stop(doc_id)
+    return {
+        "status": "stopping" if was_live else "not_running",
+        "doc_id": doc_id,
+        "live": was_live,
+    }
+
+
+def _library_meta_records() -> list[dict[str, Any]]:
+    """Every document record on disk, newest first."""
+    out: list[dict[str, Any]] = []
+    for f in LIBRARY_META_DIR.glob("*.json"):
+        try:
+            meta = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(meta, dict) and _valid_id(str(meta.get("id") or "")):
+            out.append(meta)
+    out.sort(key=lambda m: float(m.get("added") or 0), reverse=True)
+    return out
+
+
+def _index_overview() -> dict[str, Any]:
+    """Every library document joined with its index state.
+
+    The Indexing tab is the one place that answers "what is indexed and what
+    isn't", so it cannot be driven by job files alone: a document that was
+    never indexed has no job file at all, while a document deleted by an older
+    build can still be survived by one. Walking the library instead means the
+    panel always reflects documents that actually exist.
+    """
+    try:
+        searchable = set(_search.indexed_doc_ids())
+    except Exception:
+        searchable = set()
+
+    docs = _library_meta_records()
+    known = {str(m.get("id")) for m in docs}
+
+    # Self-heal: drop job files whose document is gone. Without this, every
+    # doc deleted before job cleanup existed would haunt the panel forever.
+    for job in _index.list_jobs():
+        jid = str(job.get("doc_id") or "")
+        if jid and jid not in known:
+            _index.delete_job(jid)
+
+    jobs: list[dict[str, Any]] = []
+    for meta in docs:
+        doc_id = str(meta.get("id"))
+        st = _index.status_for(doc_id) if _index.job_exists(doc_id) else {}
+        has_rag = _index.has_embeddings(doc_id)
+        is_searchable = doc_id in searchable
+
+        # A live job state always wins — it is the only thing that can explain
+        # a document that is mid-flight. Otherwise the derived indexes decide,
+        # because they are the truth about what is actually queryable.
+        status = str(st.get("status") or "idle")
+        if status in ("running", "paused", "error"):
+            state = status
+        elif is_searchable and has_rag:
+            state = "indexed"
+        elif is_searchable:
+            state = "partial"
+        else:
+            state = "unindexed"
+
+        jobs.append({
+            "doc_id": doc_id,
+            "title": str(meta.get("title") or ""),
+            "pages": int(meta.get("pages") or 0),
+            "size": int(meta.get("size") or 0),
+            "added": float(meta.get("added") or 0.0),
+            "state": state,
+            "indexed_search": is_searchable,
+            "indexed_rag": has_rag,
+            # Job counters, defaulted so the panel never renders "undefined".
+            "status": status,
+            "stage": str(st.get("stage") or ""),
+            "pipeline": st.get("pipeline") or [],
+            "completed": st.get("completed") or [],
+            "live": bool(st.get("live")),
+            "stop_requested": bool(st.get("stop_requested")),
+            "ocr_done": int(st.get("ocr_done") or 0),
+            "ocr_total": int(st.get("ocr_total") or 0),
+            "ocr_failed": int(st.get("ocr_failed") or 0),
+            "search_done": int(st.get("search_done") or 0),
+            "search_total": int(st.get("search_total") or 0),
+            "ai_cursor": int(st.get("ai_cursor") or 0),
+            "ai_total": int(st.get("ai_total") or 0),
+            "percent": int(st.get("percent") or 0),
+            "updated": float(st.get("updated") or 0.0),
+            "error": str(st.get("error") or ""),
+        })
+
+    return {
+        "jobs": jobs,
+        "active": sum(1 for j in jobs if j.get("state") == "running"),
+        "total": len(jobs),
+    }
 
 
 @router.get("/api/study/index/status")
 def study_index_status(doc_id: str = "") -> dict[str, Any]:
-    """Job status for one doc, or a summary of every job in the library."""
+    """Index state for one doc, or for the whole library.
+
+    Without ``doc_id`` every library document is returned, joined with its
+    job state and its derived indexes — so the Indexing tab can list what is
+    running, what is searchable, and what still needs indexing.
+    """
     if doc_id:
         if not _valid_id(doc_id):
             raise HTTPException(status_code=400, detail="invalid doc id")
         return _index.status_for(doc_id)
-    jobs = _index.list_jobs()
-    return {
-        "jobs": [_index.status_for(str(j.get("doc_id"))) for j in jobs if j.get("doc_id")],
-        "active": sum(1 for j in jobs if j.get("status") == "running"),
-        "total": len(jobs),
-    }
+    return _index_overview()
 
 
 @router.post("/api/study/index/stream")
@@ -984,6 +1465,7 @@ async def study_index_stream(payload: dict[str, Any] | None = None) -> Streaming
         raise HTTPException(status_code=404, detail="document not found")
 
     do_ocr = bool(payload.get("ocr", True))
+    do_search = bool(payload.get("search", True))
     do_ai = bool(payload.get("ai", False))
     lang = str(payload.get("lang") or "eng+ben")
     model = str(payload.get("model") or "")
@@ -1001,10 +1483,13 @@ async def study_index_stream(payload: dict[str, Any] | None = None) -> Streaming
     async def _worker() -> None:
         try:
             await _index.run_job(
-                doc_id, do_ocr=do_ocr, do_ai=do_ai, lang=lang,
+                doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai, lang=lang,
                 model=model, thinking_mode=thinking_mode,
                 on_progress=_on_progress,
-                should_stop=lambda: stop_flag["stop"],
+                # Stop when the client goes away OR the job was asked to stop
+                # via /index/stop — otherwise the modal's Stop button would
+                # have no effect on a streamed run.
+                should_stop=lambda: stop_flag["stop"] or _index.is_stop_requested(doc_id),
             )
             queue.put_nowait({"done": True})
         except Exception as exc:
@@ -1012,7 +1497,7 @@ async def study_index_stream(payload: dict[str, Any] | None = None) -> Streaming
 
     async def _gen():
         task = asyncio.create_task(_worker())
-        yield f"data: {_json.dumps({'type': 'init', 'doc_id': doc_id, 'ocr': do_ocr, 'ai': do_ai})}\n\n"
+        yield f"data: {_json.dumps({'type': 'init', 'doc_id': doc_id, 'ocr': do_ocr, 'search': do_search, 'ai': do_ai})}\n\n"
         try:
             while True:
                 try:
@@ -1037,27 +1522,229 @@ async def study_index_stream(payload: dict[str, Any] | None = None) -> Streaming
 
 @router.get("/api/study/search/stats")
 def study_search_stats() -> dict[str, Any]:
-    """Index health — how many docs are searchable vs. on disk."""
+    """Index health: how many docs are searchable, and which ones aren't.
+
+    Returns the two doc lists by name (not just counts) so the rail search
+    panel can show unindexed documents and let each one be indexed on its
+    own, instead of only offering an all-or-nothing rebuild.
+    """
     _ensure_dirs()
-    docs = 0
+
+    docs: list[dict[str, Any]] = []
     for f in LIBRARY_META_DIR.glob("*.json"):
         try:
             meta = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if meta.get("id"):
-            docs += 1
-    indexed = 0
+        if not meta.get("id"):
+            continue
+        docs.append({
+            "id": str(meta.get("id")),
+            "title": str(meta.get("title") or "Untitled"),
+            "pages": int(meta.get("pages") or 0),
+            "has_text": _has_text(meta),
+            "added": meta.get("added", 0),
+        })
+    docs.sort(key=lambda d: d.get("added") or 0, reverse=True)
+
     try:
-        indexed = _search.indexed_doc_count()
+        indexed_ids = set(_search.indexed_doc_ids())
     except Exception:
-        indexed = 0
+        indexed_ids = set()
+
+    indexed = [d for d in docs if d["id"] in indexed_ids]
+    missing = [d for d in docs if d["id"] not in indexed_ids]
+
     rag_indexed = 0
     try:
         rag_indexed = sum(1 for _ in LIBRARY_EMBED_DIR.glob("*.json")) if LIBRARY_EMBED_DIR.exists() else 0
     except Exception:
         rag_indexed = 0
-    return {"docs": docs, "search_indexed": indexed, "rag_indexed": rag_indexed}
+
+    return {
+        "docs": len(docs),
+        "search_indexed": len(indexed),
+        "rag_indexed": rag_indexed,
+        # Full lists — the panel renders these directly.
+        "indexed": indexed,
+        "missing": missing,
+    }
+
+
+# ── Study knowledge graph ────────────────────────────────────────────────────
+
+# A chat opened from the reader gets the id ``study-<docId>-<threadId>``
+# (see study-chat.js). That naming convention is the ONLY link between a
+# library document and its chats -- there is no join table.
+_CHAT_ID_RE = re.compile(r"^study-([0-9a-f]{32})-", re.I)
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    """Best-effort JSON read. A corrupt file must not take the graph down."""
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("could not read %s", path, exc_info=True)
+    return default
+
+
+def _graph_topics(meta: dict[str, Any]) -> list[str]:
+    """Topic names a doc is filed under. Always at least one ("Others")."""
+    name = str(((meta.get("group") or {}).get("topic")) or "").strip()
+    return [name] if name else ["Others"]
+
+
+@router.get("/api/study/graph")
+def study_graph() -> dict[str, Any]:
+    """Topic → document → (chats, notes, decks, highlights) graph.
+
+    Built here rather than in the browser because assembling it client-side
+    would mean cross-joining five separate endpoints. Every edge is derived
+    from an existing field -- nothing is inferred:
+
+      topic → doc        doc.group.topic
+      doc   → chat       chat id prefix ``study-<docId>-``
+      doc   → note       note.refs[].doc_id
+      doc   → deck       deck.doc_id
+      doc   → highlight  meta.highlights[] (one node per doc, with a count)
+    """
+    _ensure_dirs()
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    topics: set[str] = set()
+
+    # ── Documents (+ their highlights) ──
+    docs: list[dict[str, Any]] = []
+    for f in LIBRARY_META_DIR.glob("*.json"):
+        meta = _read_json(f, None)
+        if not isinstance(meta, dict) or not meta.get("id"):
+            continue
+        docs.append(meta)
+    docs.sort(key=lambda m: m.get("added") or 0, reverse=True)
+
+    doc_ids: set[str] = set()
+    for meta in docs:
+        did = str(meta["id"])
+        doc_ids.add(did)
+        title = str(meta.get("title") or "Untitled")
+        n_hl = len(meta.get("highlights") or [])
+
+        for topic in _graph_topics(meta):
+            topics.add(topic)
+            edges.append({"data": {"source": "t:" + topic, "target": "d:" + did, "kind": "contains"}})
+
+        nodes.append({
+            "data": {
+                "id": "d:" + did,
+                "label": title[:40],
+                "kind": "doc",
+                "docId": did,
+                "pages": int(meta.get("pages") or 0),
+                "highlights": n_hl,
+            }
+        })
+
+        if n_hl:
+            hid = "h:" + did
+            nodes.append({
+                "data": {
+                    "id": hid,
+                    "label": f"{n_hl} highlight{'s' if n_hl != 1 else ''}",
+                    "kind": "highlight",
+                    "docId": did,
+                    "count": n_hl,
+                }
+            })
+            edges.append({"data": {"source": "d:" + did, "target": hid, "kind": "highlights"}})
+
+    for t in sorted(topics):
+        nodes.append({"data": {"id": "t:" + t, "label": t, "kind": "topic"}})
+
+    # ── Chats (study-<docId>-<thread>) ──
+    try:
+        from server.database.chats import list_chats as _list_chats
+        chats = _list_chats()
+    except Exception:
+        logger.warning("study graph: could not list chats", exc_info=True)
+        chats = []
+
+    for c in chats:
+        cid = str(c.get("id") or "")
+        m = _CHAT_ID_RE.match(cid)
+        if not m:
+            continue
+        did = m.group(1)
+        if did not in doc_ids:
+            continue
+        nodes.append({
+            "data": {
+                "id": "c:" + cid,
+                "label": str(c.get("title") or "Study chat")[:40],
+                "kind": "chat",
+                "docId": did,
+                "chatId": cid,
+                "updated": c.get("updated_at") or "",
+            }
+        })
+        edges.append({"data": {"source": "d:" + did, "target": "c:" + cid, "kind": "chat"}})
+
+    # ── Notes (refs[].doc_id) ──
+    notes_index = _read_json(LIBRARY_NOTES_DIR / "notes.json", {}) or {}
+    for note in (notes_index.get("notes") or []):
+        nid = str(note.get("id") or "")
+        if not nid:
+            continue
+        # One note can reference several documents; draw an edge to each.
+        linked = {
+            str(r.get("doc_id"))
+            for r in (note.get("refs") or [])
+            if isinstance(r, dict) and r.get("doc_id")
+        }
+        linked &= doc_ids
+        if not linked:
+            continue
+        nodes.append({
+            "data": {
+                "id": "n:" + nid,
+                "label": str(note.get("title") or "Untitled note")[:40],
+                "kind": "note",
+                "noteId": nid,
+                "pinned": bool(note.get("pinned")),
+            }
+        })
+        for did in linked:
+            edges.append({"data": {"source": "d:" + did, "target": "n:" + nid, "kind": "note"}})
+
+    # ── Decks (deck.doc_id) ──
+    decks_index = _read_json(LIBRARY_SRS_DIR / "decks.json", {}) or {}
+    for deck in (decks_index.get("decks") or []):
+        kid = str(deck.get("id") or "")
+        did = str(deck.get("doc_id") or "")
+        if not kid or did not in doc_ids:
+            continue
+        nodes.append({
+            "data": {
+                "id": "k:" + kid,
+                "label": str(deck.get("name") or "Deck")[:40],
+                "kind": "deck",
+                "deckId": kid,
+                "docId": did,
+            }
+        })
+        edges.append({"data": {"source": "d:" + did, "target": "k:" + kid, "kind": "deck"}})
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "counts": {
+            "topics": len(topics),
+            "docs": len(doc_ids),
+            "nodes": len(nodes),
+            "edges": len(edges),
+        },
+    }
 
 
 # ── Study sessions / analytics ───────────────────────────────────────────────

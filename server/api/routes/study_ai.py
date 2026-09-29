@@ -27,6 +27,7 @@ from typing import Any, AsyncGenerator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from engine import library_catalog as _catalog
 from engine import library_rag as _rag
 from engine.config import get_all_models, get_model_config
 from engine.tools_loader import get_study_tool_schemas
@@ -132,6 +133,17 @@ _ACTION_PROMPTS: dict[str, str] = {
     ),
     "glossary": "Build a glossary of the important terms in this document (term — definition).",
 }
+
+# Appended only when sibling-document passages are actually present, so a
+# single-doc answer is never distracted by provenance rules it cannot use.
+_PROVENANCE_HINT = (
+    "Task: Some context passages are tagged [CURRENT DOCUMENT: ...] and others "
+    "[OTHER DOCUMENT: ...]. CURRENT DOCUMENT is the book the user has open; "
+    "OTHER DOCUMENT passages come from other books on the same topic. When a "
+    "fact comes from another document, name that document and its page, and "
+    "say plainly that it is from a different book on the topic. Never imply "
+    "an OTHER DOCUMENT passage came from the open document."
+)
 
 # Task instructions for the note editor's AI menu. Unlike the document actions
 # above, these REWRITE the user's note body and must return markdown only —
@@ -277,12 +289,39 @@ async def study_ai_set_config(payload: dict[str, Any]) -> dict[str, str]:
 # ── Prompt building ──────────────────────────────────────────────────────────
 
 
+def _topic_peers(meta: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    '''Every doc filed under the open document's topic, title-sorted.
+
+    Reads the SQLite catalog rather than walking the meta store, so a topic
+    lookup is one indexed SELECT instead of parsing every meta JSON.
+
+    Topic is the primary organizing axis; semester/subject are legacy
+    metadata and deliberately NOT part of the match. Returns ('', []) for the
+    Others catch-all — that bucket is where unfiled PDFs land, so treating it
+    as a topic would glue unrelated books together.
+    '''
+    topic = str((meta.get('group') or {}).get('topic') or '').strip()
+    if not topic or topic == _catalog.OTHERS:
+        return '', []
+
+    # A library that predates the catalog has an empty table; build it once
+    # from the meta store so the first question after deploy is still fast.
+    if _catalog.count() == 0:
+        try:
+            _catalog.rebuild_from_meta()
+        except Exception:
+            logger.warning('catalog bootstrap failed', exc_info=True)
+
+    return topic, _catalog.docs_in_topic(topic)
+
+
 def _build_context(
     meta: dict[str, Any],
     scope: str,
     page: int,
     selection: str,
     query: str = "",
+    topic_scope: bool = False,
 ) -> str:
     """Slice the document text to fit the requested scope within the budget.
 
@@ -312,13 +351,45 @@ def _build_context(
             return f"[Page {page}]\n{(page_text[page - 1] or '').strip()[:_MAX_CTX_CHARS]}"
         return ""
 
+    doc_id = str(meta.get("id") or "")
+
+    # Topic-wide retrieval first: a question asked while reading one book gets
+    # answered from every indexed book in the topic. Skipped for the Others
+    # bucket and for topics holding only the open doc.
+    if topic_scope and query.strip() and doc_id:
+        topic, peers = _topic_peers(meta)
+        indexed = [p["doc_id"] for p in peers if _rag.has_index(p["doc_id"])]
+        if topic and len(indexed) > 1:
+            labels = {p["doc_id"]: p["title"] for p in peers}
+            try:
+                retrieved, hits = _rag.context_for_docs(
+                    indexed, query, labels=labels, current_doc=doc_id,
+                    max_chars=_MAX_DOC_CTX,
+                )
+            except Exception:
+                logger.warning("topic retrieval failed for %s", topic, exc_info=True)
+                retrieved, hits = "", []
+            if retrieved:
+                others = {h["doc_id"] for h in hits if not h.get("current")}
+                open_title = str(meta.get("title") or "")
+                header = (
+                    f'Topic "{topic}" — passages from {len({h["doc_id"] for h in hits})} '
+                    f"document(s), ranked across the whole topic.\n"
+                    f'CURRENT DOCUMENT is "{open_title}" — the one the user has open.\n'
+                    f"OTHER DOCUMENT passages come from {len(others)} sibling "
+                    "document(s) in the same topic."
+                    if others else
+                    f'Topic "{topic}" — passages from {len({h["doc_id"] for h in hits})} '
+                    f'document(s). CURRENT DOCUMENT is "{open_title}".'
+                )
+                return header + "\n---\n" + retrieved
+
     # Whole document. If the doc fits the budget outright, send it whole —
     # retrieval can only lose context when nothing needs to be dropped.
     full_size = sum(len((t or "")) for t in page_text)
     if full_size <= _MAX_DOC_CTX:
         return _pack_pages(page_text, _MAX_DOC_CTX)
 
-    doc_id = str(meta.get("id") or "")
     if query.strip() and doc_id:
         try:
             retrieved, pages = _rag.context_for(doc_id, query, max_chars=_MAX_DOC_CTX)
@@ -459,7 +530,12 @@ def build_study_turn(
     if not meta:
         return system, user_message
 
-    context = _build_context(meta, scope, page, selection, query=user_message)
+    # Only a genuine question widens to the whole topic; page/selection/action
+    # scopes stay pinned to the document the reader has open.
+    topic_scope = scope == "doc" and action in ("", "ask")
+    context = _build_context(
+        meta, scope, page, selection, query=user_message, topic_scope=topic_scope
+    )
     blocks = [f'Document: "{meta.get("title", "")}"']
     if context:
         blocks.append("Document context:\n---\n" + context + "\n---")
@@ -467,6 +543,8 @@ def build_study_turn(
         blocks.append("Selected text:\n---\n" + selection[:_MAX_SELECTION_CHARS] + "\n---")
     if action and action in _ACTION_PROMPTS:
         blocks.append("Task: " + _ACTION_PROMPTS[action])
+    if "OTHER DOCUMENT" in context:
+        blocks.append(_PROVENANCE_HINT)
     blocks.append("User message:\n" + user_message)
     grounded = "\n\n".join(blocks)
     return system, grounded
@@ -570,6 +648,9 @@ async def _stream(
             "thinking_mode": thinking_mode or None,
             "inject_instructions": False,
             "system_instruction": system,
+            # layout_mode="study" tells the connector to suppress the
+            # chat_title native handler (it must never fire in study mode).
+            "layout_mode": "study",
         }
         if files:
             kwargs["files"] = files
@@ -580,8 +661,8 @@ async def _stream(
         try:
             agen = conn.stream_chat(prompt, **kwargs)
         except TypeError:
-            # Connector doesn't accept system_instruction — drop the registry
-            # override but still suppress the default instruction injection.
+            # Older connector build: drop unsupported kwargs one at a time.
+            kwargs.pop("layout_mode", None)
             kwargs.pop("system_instruction", None)
             agen = conn.stream_chat(prompt, **kwargs)
         async for ev in agen:
@@ -819,6 +900,8 @@ async def _stream_with_tools(
             "thinking_mode": thinking_mode or None,
             "inject_instructions": False,
             "system_instruction": system,
+            # Suppress the chat_title native handler in study mode.
+            "layout_mode": "study",
         }
         if files:
             kwargs["files"] = files
@@ -831,6 +914,7 @@ async def _stream_with_tools(
         try:
             agen = conn.stream_chat(prompt, **kwargs)
         except TypeError:
+            kwargs.pop("layout_mode", None)
             kwargs.pop("system_instruction", None)
             try:
                 agen = conn.stream_chat(prompt, **kwargs)
@@ -1092,7 +1176,10 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
         (str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"),
         "",
     )
-    context = _build_context(meta, scope, page, selection, query=last_user)
+    topic_scope = scope == "doc" and action in ("", "ask")
+    context = _build_context(
+        meta, scope, page, selection, query=last_user, topic_scope=topic_scope
+    )
 
     blocks = [f'Document: "{meta.get("title", "")}"']
     if context:
@@ -1109,6 +1196,8 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
             "Task: Answer the user's latest message, using the document context and "
             "the conversation so far. Keep continuity with your earlier answers."
         )
+    if "OTHER DOCUMENT" in context:
+        blocks.append(_PROVENANCE_HINT)
     prompt = "\n\n".join(blocks)
 
     atts = payload.get("attachments") or []

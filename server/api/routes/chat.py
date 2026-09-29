@@ -1028,7 +1028,11 @@ async def chat(request: ChatRequest):
     # and forcing a title tool call wastes a round on every sub-chat turn
     _is_sub_chat = "-critique-" in active_chat_id or "-agent-" in active_chat_id
     if _local_use_utilities and parent_id is None and _msg_count <= 1 and not _is_sub_chat:
-        _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
+        # ponytail: study mode has no chat_title tool (get_study_tool_schemas) and
+        # its directive replaces the chat harness — injecting the mandatory-title
+        # nudge just makes the model hallucinate a tool call it can't make.
+        if _layout_mode != "study":
+            _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
         # Inject platform info so the model uses correct paths and commands
         import platform as _plat
         _sys = _plat.system()  # 'Linux', 'Windows', 'Darwin'
@@ -1778,6 +1782,22 @@ async def chat(request: ChatRequest):
                     _api_model = _cfg.get("api_model_type", _cfg["id"])
                     # ponytail: DeepSeek unified — no separate vision model
                     _ephemeral = False
+                    # deepseek_scraper critique sub-chats: share the parent's LIVE
+                    # scraper browser on a new tab instead of a separate profile.
+                    # The connector sees a pinned dir equal to the scraper's own
+                    # active account and attaches an adopted sub-engine (new tab,
+                    # same context/session). Non-scraper backends keep the
+                    # critique handler's scoped profile.
+                    _round_bdd = bdd
+                    if _api_backend == "deepseek_scraper" and "-critique-" in str(active_chat_id or ""):
+                        try:
+                            from engine.config import _SYSTEM as _SYS, get_provider_active_account as _gpaa
+                            _sc_acct = _gpaa("deepseek_scraper")
+                            _sc_path = _SYS / _sc_acct
+                            if _sc_acct and _sc_path.is_dir():
+                                _round_bdd = str(_sc_path)
+                        except Exception:
+                            logger.warning("critique scraper-profile override failed", exc_info=True)
                     # Collect local file paths for direct-read backends
                     _inline_files = None
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
@@ -1860,6 +1880,13 @@ async def chat(request: ChatRequest):
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
+                    # Scoped browser profile (critique / agent sub-chats). Passed
+                    # straight through to the scraper connector, which keys its
+                    # engine map by it — without this the sub-chat silently
+                    # shares the parent's browser and the two fight over
+                    # active_chat_id, replaying new_chat() + hello forever.
+                    if _round_bdd:
+                        _stream_kwargs["browser_data_dir"] = _round_bdd
                     # Scraper transports: resume the stored upstream chat URL on
                     # the first round so a reopened chat continues its browser
                     # conversation instead of starting a fresh one.

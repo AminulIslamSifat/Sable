@@ -300,16 +300,185 @@ async def drive_remove_source(source_id: str) -> dict[str, Any]:
 
 @router.get("/api/drive/sources/{source_id}/files")
 async def drive_source_files(source_id: str) -> dict[str, Any]:
-    """Contents of a saved source: its file list, or the single file itself."""
+    """Contents of a saved source: its file list, or the single file itself.
+
+    Serves from cached index when available for instant browse. Falls back
+    to live API call if no index exists yet (first load before scan completes).
+    """
+    from engine.drive.indexer import read_index, is_indexing
+
     src = drive_store.get_source(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="source not found")
     did = str(src.get("drive_id"))
     if src.get("kind") == "folder":
+        # Try cached index first.
+        idx = read_index(source_id)
+        scanning = is_indexing(source_id)
+        if idx and idx.get("entries"):
+            # Root entries are tagged parent==drive_id; tolerate older indexes
+            # that used "" so an existing cache keeps working without a rescan.
+            root_entries = [
+                e for e in idx["entries"] if e.get("parent") in (did, "")
+            ]
+            if root_entries:
+                items = [
+                    {
+                        "id": e["id"],
+                        "name": e["name"],
+                        "mimeType": e.get("mime", ""),
+                        "is_folder": e.get("kind") == "folder",
+                        "size": e.get("size", 0),
+                        "modified": e.get("modified", ""),
+                    }
+                    for e in root_entries
+                ]
+                return {
+                    "source": src,
+                    "kind": "folder",
+                    "folder": {"id": did, "name": src.get("name", ""), "is_folder": True},
+                    "items": items,
+                    "from_cache": True,
+                    "index_status": idx.get("status", "ready"),
+                    "scanning": scanning,
+                }
+        # No usable cache yet — live fetch so the folder still opens.
         data = await _browse_any(did)
-        return {"source": src, "kind": "folder", **data}
+        return {"source": src, "kind": "folder", "scanning": scanning, **data}
     meta = await _resolve_any(f"https://drive.google.com/file/d/{did}/view")
     return {"source": src, "kind": "file", "items": [meta]}
+
+
+@router.get("/api/drive/search")
+async def drive_search(q: str = "", limit: int = 100) -> dict[str, Any]:
+    """Search across every indexed Drive source by file/folder name.
+
+    Walks each source's cached index and does a case-insensitive substring
+    match. No API calls, no network — pure local index scan.
+    """
+    from engine.drive.indexer import read_index
+
+    term = (q or "").strip().lower()
+    sources = drive_store.list_sources()
+    if not term:
+        return {"query": q, "results": [], "scanned_sources": 0, "total_entries": 0}
+
+    results: list[dict[str, Any]] = []
+    scanned = 0
+    total = 0
+    for src in sources:
+        if src.get("kind") != "folder":
+            continue
+        idx = read_index(src["id"])
+        if not idx:
+            continue
+        scanned += 1
+        for e in idx.get("entries", []):
+            total += 1
+            name = e.get("name", "")
+            if term not in name.lower():
+                continue
+            results.append({
+                "id": e.get("id", ""),
+                "name": name,
+                "kind": e.get("kind", "file"),
+                "mime": e.get("mime", ""),
+                "size": e.get("size", 0),
+                "modified": e.get("modified", ""),
+                "parent": e.get("parent", ""),
+                "source_id": src["id"],
+                "source_name": src.get("name", ""),
+                "source_drive_id": src.get("drive_id", ""),
+            })
+            if len(results) >= limit:
+                break
+        if len(results) >= limit:
+            break
+
+    return {
+        "query": q,
+        "results": results,
+        "scanned_sources": scanned,
+        "total_entries": total,
+        "truncated": len(results) >= limit,
+    }
+
+
+@router.get("/api/drive/sources/{source_id}/index")
+async def drive_source_index(source_id: str) -> dict[str, Any]:
+    """Cached index metadata for a source (no entries — just status/count)."""
+    from engine.drive.indexer import read_index, is_indexing
+
+    src = drive_store.get_source(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="source not found")
+    idx = read_index(source_id)
+    scanning = is_indexing(source_id)
+    if not idx:
+        return {"indexed": False, "scanning": scanning}
+    return {
+        "indexed": True,
+        "scanning": scanning,
+        "status": idx.get("status", "unknown"),
+        "entry_count": idx.get("entry_count", 0),
+        "indexed_at": idx.get("indexed_at", 0),
+    }
+
+
+@router.post("/api/drive/sources/{source_id}/reindex")
+async def drive_source_reindex(source_id: str) -> dict[str, Any]:
+    """Trigger a background re-index of a source."""
+    from engine.drive.indexer import trigger_background, is_indexing
+
+    src = drive_store.get_source(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="source not found")
+    if src.get("kind") != "folder":
+        raise HTTPException(status_code=400, detail="only folder sources can be indexed")
+    if is_indexing(source_id):
+        return {"ok": True, "message": "already indexing"}
+    trigger_background(source_id, str(src["drive_id"]), force=True)
+    return {"ok": True, "message": "reindex started"}
+
+
+@router.get("/api/drive/sources/{source_id}/folder/{folder_id}")
+async def drive_source_subfolder(source_id: str, folder_id: str) -> dict[str, Any]:
+    """List children of a subfolder within an indexed source.
+
+    Serves from cached index when available. Falls back to live browse for
+    folders not yet in the index (e.g. newly created after last scan).
+    """
+    from engine.drive.indexer import read_index, is_indexing
+
+    src = drive_store.get_source(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="source not found")
+
+    idx = read_index(source_id)
+    scanning = is_indexing(source_id)
+    if idx and idx.get("entries"):
+        children = [
+            e for e in idx["entries"] if e.get("parent") == folder_id
+        ]
+        items = [
+            {
+                "id": e["id"],
+                "name": e["name"],
+                "mimeType": e.get("mime", ""),
+                "is_folder": e.get("kind") == "folder",
+                "size": e.get("size", 0),
+                "modified": e.get("modified", ""),
+            }
+            for e in children
+        ]
+        return {
+            "folder": {"id": folder_id, "name": "", "is_folder": True},
+            "items": items,
+            "from_cache": True,
+            "scanning": scanning,
+        }
+    # No cache — live fetch.
+    return await _browse_any(folder_id)
 
 
 @router.get("/api/drive/file/{file_id}/pdf")

@@ -281,13 +281,34 @@ class DeepSeekScraperClient(BaseScraperConnector):
     backend_name = "deepseek_scraper"
     provider_name = "deepseek"
 
-    def _build_engine(self, account: str) -> DeepSeekScraperEngine:
+    def _build_engine(
+        self, account: str, browser_data_dir: str | None = None,
+        *, adopt_from: "DeepSeekScraperEngine | None" = None,
+    ) -> DeepSeekScraperEngine:
         # Honor the account this connector was resolved for (NOT the globally
         # active one). The profile dir and the browser binary both key off the
         # account name, so a pinned-account client opens the right profile +
         # the right browser (Helium/Chrome/Edge per accounts.json).
+        #
+        # When browser_data_dir is pinned (critique/agent sub-chats) use that
+        # profile dir verbatim so the sub-chat gets a real isolated session
+        # instead of silently sharing the parent chat's browser.
+        from pathlib import Path
         from engine.config import _SYSTEM
-        user_data_dir = _SYSTEM / account
+        user_data_dir = Path(browser_data_dir) if browser_data_dir else _SYSTEM / account
+        if adopt_from is not None:
+            # Share the parent's live browser on a new tab. user_data_dir is
+            # inherited via the parent's context — no second launch, no
+            # kill_existing (which would murder the parent browser).
+            return DeepSeekScraperEngine(
+                SPEC,
+                viewer=True,
+                show_thoughts=True,
+                user_data_dir=user_data_dir,
+                profile_name=account,
+                kill_existing=False,
+                adopt_from=adopt_from,
+            )
         return DeepSeekScraperEngine(
             SPEC,
             viewer=True,               # scraper must be headed

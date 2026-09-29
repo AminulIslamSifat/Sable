@@ -740,3 +740,21 @@ body.dashboard-open #dashboardView { display: flex !important; }
   .dashboard-view { padding: var(--sp-5); }
   .dash-provider-list { grid-template-columns: 1fr; }
 }
+
+/* ── Study-mode dashboard (study time + token burn only) ─────────────────────
+   The default grid is auto-fill minmax(340px,1fr), which would squeeze the
+   study chart and the token chart side by side. Stack them instead. */
+body[data-mode="study"] .dash-grid {
+  grid-template-columns: 1fr;
+}
+
+.dst-span { grid-column: 1 / -1; }
+
+.dst-ranges { margin-left: auto; }
+.dst-ranges .st-range { font-size: 11px; padding: 3px 9px; }
+
+.dst-top-label { margin-top: 20px; }
+
+/* The .st-panel-label rules were written for the study tab's spacing; inside a
+   dashboard card the top margin needs to come from the header instead. */
+body[data-mode="study"] .dash-card .st-panel-label:first-of-type { margin-top: 2px; }

@@ -590,6 +590,123 @@ body.rdr-open { overflow: hidden; }
 }
 .rdr-hl-note:hover { color: var(--accent); background: var(--accent-dim); }
 .rdr-hl-cancel:hover { color: #ff6b6b; }
+
+/* Dictionary button — tinted so it reads as distinct from the AI actions. */
+.rdr-hl-dict { color: var(--accent); }
+.rdr-hl-dict:hover { background: var(--accent-dim); }
+
+/* --- Dictionary card (pure lookup, no AI) --- */
+.rdr-dict-card {
+  /* Absolute (not fixed) to match the reader's own coordinate space, and
+     lifted clear of the Study AI + quick-note launchers at bottom:22px. */
+  position: absolute;
+  right: 22px;
+  bottom: 70px;
+  z-index: 1001;
+  width: min(400px, calc(100vw - 48px));
+  max-height: min(65vh, 560px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.rdr-dict-card.hidden { display: none !important; }
+.rdr-dict-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+.rdr-dict-head .icon-lucide { width: 16px; height: 16px; color: var(--accent); flex-shrink: 0; }
+.rdr-dict-word {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rdr-dict-src {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+.rdr-dict-body {
+  padding: 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+.rdr-dict-state {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 2px;
+}
+.rdr-dict-state.err { color: #ff6b6b; }
+.rdr-dict-phon {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.rdr-dict-bn-block {
+  padding: 9px 11px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--border-soft);
+}
+.rdr-dict-bn-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.rdr-dict-bn {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.rdr-dict-bn-missing {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.7;
+  margin-bottom: 10px;
+}
+.rdr-dict-entry { margin-bottom: 14px; }
+.rdr-dict-entry:last-child { margin-bottom: 0; }
+.rdr-dict-pos {
+  font-size: 11px;
+  font-weight: 700;
+  font-style: italic;
+  color: var(--accent);
+  margin-bottom: 5px;
+}
+.rdr-dict-defs {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.rdr-dict-defs li { font-size: 13px; line-height: 1.5; color: var(--text); }
+.rdr-dict-def { display: block; }
+.rdr-dict-eg {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+}
 .rdr-hl-note .icon-lucide, .rdr-hl-cancel .icon-lucide { width: 14px; height: 14px; }
 
 /* --- Card icon in library grid --- */

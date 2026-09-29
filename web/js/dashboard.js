@@ -402,6 +402,12 @@
       + '<div class="dash-skeleton-body"></div></div>';
   }
 
+  /* In study mode the dashboard is deliberately narrow: study time + token
+     burn. Agent feeds and provider health are irrelevant while reading. */
+  function isStudyMode() {
+    return document.body.getAttribute('data-mode') === 'study';
+  }
+
   /* ── Progressive render ── */
   function setSlot(id, html) {
     var el = document.getElementById(id);
@@ -421,18 +427,25 @@
 
     if (refreshBtn) refreshBtn.classList.add('spinning');
 
+    var study = isStudyMode();
+
     // Only render skeletons on initial load
     if (!isRefresh) {
-      grid.innerHTML = [
-        '<div id="slot-overview">' + skeleton('Overview') + '</div>',
-        '<div id="slot-status">' + skeleton('Status') + '</div>',
-        '<div id="slot-tokens">' + skeleton('Token Burn') + '</div>',
-        '<div id="slot-models">' + skeleton('Models') + '</div>',
-        '<div id="slot-agents">' + skeleton('Agents') + '</div>',
-        '<div id="slot-ops">' + skeleton('Ops') + '</div>',
-        '<div id="slot-chats">' + skeleton('Chats') + '</div>',
-        '<div id="slot-providers">' + skeleton('Providers') + '</div>',
-      ].join('');
+      grid.innerHTML = study
+        ? [
+            '<div id="slot-study">' + skeleton('Study Time') + '</div>',
+            '<div id="slot-tokens">' + skeleton('Token Burn') + '</div>',
+          ].join('')
+        : [
+            '<div id="slot-overview">' + skeleton('Overview') + '</div>',
+            '<div id="slot-status">' + skeleton('Status') + '</div>',
+            '<div id="slot-tokens">' + skeleton('Token Burn') + '</div>',
+            '<div id="slot-models">' + skeleton('Models') + '</div>',
+            '<div id="slot-agents">' + skeleton('Agents') + '</div>',
+            '<div id="slot-ops">' + skeleton('Ops') + '</div>',
+            '<div id="slot-chats">' + skeleton('Chats') + '</div>',
+            '<div id="slot-providers">' + skeleton('Providers') + '</div>',
+          ].join('');
       _refreshIcons();
     }
 
@@ -455,7 +468,22 @@
       _refreshIcons();
     }).catch(function(e) {
       setSlot('slot-overview', '<div class="dash-card" style="color:var(--danger)">Stats failed: ' + escHtml(e.message) + '</div>');
+      setSlot('slot-tokens', '<div class="dash-card" style="color:var(--danger)">Stats failed: ' + escHtml(e.message) + '</div>');
     });
+
+    // Study mode stops here — study time + the token chart above are the whole
+    // dashboard, and firing the other five endpoints would be wasted work.
+    if (study) {
+      var sp = (window.studyStats && window.studyStats.reload) ? window.studyStats.reload() : Promise.resolve();
+      sp.then(function() {
+        if (window.studyStats) setSlot('slot-study', window.studyStats.renderCard());
+        _refreshIcons();
+      }).catch(function() { /* card falls back to its loading state */ })
+        .finally(function() {
+          if (refreshBtn) refreshBtn.classList.remove('spinning');
+        });
+      return;
+    }
 
     fetchJSON('/api/dashboard/status').then(function(statusData) {
       setSlot('slot-status', renderStatusCards(statusData));
@@ -517,7 +545,9 @@
     const inputEl = $('inputArea');
     if (chatEl) chatEl.classList.add('hidden');
     if (inputEl) inputEl.classList.add('hidden');
-    ['searchView', 'researchView', 'imageView', 'promptgenView', 'knowledgeView', 'calendarView', 'ocrView'].forEach(id => {
+    // #studyView is position:absolute inset:0 z-index:20 — it must be hidden
+    // explicitly or the dashboard renders behind it in study mode.
+    ['searchView', 'researchView', 'imageView', 'promptgenView', 'knowledgeView', 'calendarView', 'ocrView', 'studyView'].forEach(id => {
       const el = $(id);
       if (el) { el.classList.add('hidden'); el.style.display = ''; }
     });
@@ -544,6 +574,12 @@
     const inputEl = $('inputArea');
     if (chatEl) chatEl.classList.remove('hidden');
     if (inputEl) inputEl.classList.remove('hidden');
+
+    // Bring the study dashboard back — we hid it on open and nothing else will.
+    if (isStudyMode()) {
+      const sv = $('studyView');
+      if (sv) sv.classList.remove('hidden');
+    }
 
     if (refreshTimer) {
       clearInterval(refreshTimer);
@@ -620,6 +656,61 @@
 
     // Chat click delegation — close dashboard and switch to that chat
     $('dashGrid')?.addEventListener('click', (e) => {
+      // Study-stats card controls (range buttons, doc rows, clear).
+      const rangeEl = e.target.closest('[data-st-days]');
+      if (rangeEl && window.studyStats) {
+        window.studyStats.setDays(rangeEl.dataset.stDays);
+        window.studyStats.reload().then(() => {
+          setSlot('slot-study', window.studyStats.renderCard());
+          _refreshIcons();
+        });
+        return;
+      }
+
+      const stDoc = e.target.closest('[data-st-doc]');
+      if (stDoc) {
+        const docId = stDoc.dataset.stDoc;
+        if (docId && window.studyMode && window.studyMode.openDoc) {
+          closeDashboard();
+          const railBtn = document.querySelector('.rail-btn[data-rail="dashboard"]');
+          if (railBtn) railBtn.classList.remove('active');
+          window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+          window.studyMode.openDoc(docId, 1);
+        }
+        return;
+      }
+
+      const clearEl = e.target.closest('[data-st-clear]');
+      if (clearEl) {
+        // handleClick stays synchronous, so confirm async and swap the card
+        // out when the delete resolves.
+        (async () => {
+          const ok = await sableDialog.confirm({
+            title: 'Clear all study time?',
+            message: 'Every recorded session is deleted. This cannot be undone.',
+            okText: 'Clear everything', danger: true,
+          });
+          if (!ok) return;
+          try {
+            await fetch('/api/study/stats', {
+              method: 'DELETE',
+              headers: (function () {
+                let t = '';
+                try { t = localStorage.getItem('sable_token') || ''; } catch { /* ignore */ }
+                return t ? { Authorization: 'Bearer ' + t } : {};
+              })(),
+            });
+            window.studyStats.setDays(30);
+            await window.studyStats.reload();
+            setSlot('slot-study', window.studyStats.renderCard());
+            _refreshIcons();
+          } catch (err) {
+            console.error('[dashboard] clear study stats failed', err);
+          }
+        })();
+        return;
+      }
+
       // Daily bar click → open breakdown modal
       const barCol = e.target.closest('.dash-bar-clickable');
       if (barCol && barCol.dataset.day) {

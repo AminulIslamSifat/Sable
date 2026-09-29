@@ -29,6 +29,7 @@ from server.utils import logger
 # Import routers
 from .routes.auth import router as auth_router
 from .routes.chats import router as chats_router
+from .routes.chat_export import router as chat_export_router
 from .routes.memory import router as memory_router
 from .routes.settings import router as settings_router
 from .routes.scraper import router as scraper_router
@@ -42,6 +43,8 @@ from .routes.study import router as study_router
 from .routes.study_ai import router as study_ai_router
 from .routes.study_notes import router as study_notes_router
 from .routes.study_srs import router as study_srs_router
+from .routes.study_dict import router as study_dict_router
+from .routes.study_humanize import router as study_humanize_router
 from .routes.rooms import router as rooms_router
 from .routes.drive import router as drive_router
 from .routes.email import router as email_router
@@ -390,6 +393,7 @@ async def auth_middleware(request: Request, call_next):
 # Include routers
 app.include_router(auth_router)
 app.include_router(chats_router)
+app.include_router(chat_export_router)
 app.include_router(memory_router)
 app.include_router(settings_router)
 app.include_router(scraper_router)
@@ -403,6 +407,8 @@ app.include_router(study_router)
 app.include_router(study_ai_router)
 app.include_router(study_notes_router)
 app.include_router(study_srs_router)
+app.include_router(study_dict_router)
+app.include_router(study_humanize_router)
 app.include_router(rooms_router)
 app.include_router(drive_router)
 app.include_router(email_router)

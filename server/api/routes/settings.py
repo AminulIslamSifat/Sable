@@ -53,6 +53,27 @@ def _active_account_names() -> set[str]:
         return set()
 
 
+# A managed profile dir is any `browser-data-*` folder that is not a backup.
+# Registered profiles use the `browser-data-accN` form; unregistered ones are
+# dedicated dirs (e.g. `browser-data-kimi`) surfaced in the account tab.
+_PROFILE_RE = re.compile(r"^browser-data-[A-Za-z0-9._-]+$")
+
+
+def _validate_profile_name(name: str) -> str:
+    """Validate a browser-data profile directory name.
+
+    Rejects path traversal, backups, and anything outside `browser-data-*`.
+    Returns the name unchanged on success, raises HTTPException otherwise.
+    """
+    if not name or not _PROFILE_RE.match(name) or name.endswith(".bak"):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    # Guard against any residual traversal (regex already forbids `/` and `..`
+    # as a component, but be explicit).
+    if "/" in name or chr(92) in name or name in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    return name
+
+
 # --- Browser profile stripping (shared by switch + manual strip endpoint) ---
 _STRIP_KEEP = [
     "Local State", "Last Version",
@@ -1499,6 +1520,7 @@ async def list_accounts() -> dict[str, Any]:
                     "name": entry.name,
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
+                    "label": acc_cfg.get(entry.name, {}).get("label", ""),
                     "size_mb": _dir_size_mb(entry),
                     "has_waf": _has_waf,
                     "has_ds": _has_ds,
@@ -1794,6 +1816,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "name": entry.name,
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
+                    "label": acc_cfg.get(entry.name, {}).get("label", ""),
                     "size_mb": _dir_size_mb(entry),
                     "has_waf": _has_waf,
                     "has_ds": _has_ds,
@@ -1850,6 +1873,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 "name": entry.name,
                 "num": -1,
                 "email": entry.name.replace("-", " ").replace("_", " ").title(),
+                "label": acc_cfg.get(entry.name, {}).get("label", ""),
                 "size_mb": _dir_size_mb(entry),
                 "has_waf": False,
                 "has_ds": False,
@@ -2403,10 +2427,8 @@ async def create_account(payload: dict[str, Any] | None = None) -> dict[str, Any
 
 @router.delete("/api/settings/accounts/delete")
 async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
-    """Delete a browser-data-accN profile directory (and its .bak if present)."""
-    target_name = payload.get("profile", "")
-    if not re.match(r"^browser-data-acc\d+$", target_name):
-        raise HTTPException(status_code=400, detail="Invalid profile name")
+    """Delete a browser-data profile directory (and its .bak if present)."""
+    target_name = _validate_profile_name(payload.get("profile", ""))
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
@@ -2426,10 +2448,8 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/backup")
 async def backup_account(payload: dict[str, str]) -> dict[str, Any]:
-    """Backup browser-data-accN to browser-data-accN.bak (replaces existing .bak)."""
-    target_name = payload.get("profile", "")
-    if not re.match(r"^browser-data-acc\d+$", target_name):
-        raise HTTPException(status_code=400, detail="Invalid profile name")
+    """Backup browser-data-X to browser-data-X.bak (replaces existing .bak)."""
+    target_name = _validate_profile_name(payload.get("profile", ""))
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
@@ -2446,10 +2466,8 @@ async def backup_account(payload: dict[str, str]) -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/restore")
 async def restore_account(payload: dict[str, str]) -> dict[str, Any]:
-    """Restore browser-data-accN from browser-data-accN.bak (replaces current accN)."""
-    target_name = payload.get("profile", "")
-    if not re.match(r"^browser-data-acc\d+$", target_name):
-        raise HTTPException(status_code=400, detail="Invalid profile name")
+    """Restore browser-data-X from browser-data-X.bak (replaces current data)."""
+    target_name = _validate_profile_name(payload.get("profile", ""))
     bak_path = _SYSTEM_DIR / f"{target_name}.bak"
     if not bak_path.is_dir():
         raise HTTPException(status_code=404, detail=f"No backup found for '{target_name}'")
@@ -2466,6 +2484,33 @@ async def restore_account(payload: dict[str, str]) -> dict[str, Any]:
 
     await asyncio.to_thread(_restore)
     return {"status": "ok", "profile": target_name}
+
+
+@router.post("/api/settings/accounts/rename")
+async def rename_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Set (or clear) the display label for a browser profile.
+
+    The label is stored in accounts.json under the profile key. An empty label
+    clears the custom name so the UI falls back to the detected email/name.
+    """
+    target_name = _validate_profile_name(payload.get("profile", ""))
+    label = (payload.get("label") or "").strip()
+    target_path = _SYSTEM_DIR / target_name
+    if not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
+
+    def _apply() -> None:
+        cfg = _read_accounts_config()
+        if target_name not in cfg:
+            cfg[target_name] = {}
+        if label:
+            cfg[target_name]["label"] = label
+        else:
+            cfg[target_name].pop("label", None)
+        _write_accounts_config(cfg)
+
+    await asyncio.to_thread(_apply)
+    return {"status": "ok", "profile": target_name, "label": label}
 
 
 @router.post("/api/settings/accounts/backup-all")
@@ -2581,9 +2626,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     profile, kills leftover OS processes, removes stale lock files, and then
     opens a fresh headful window — regardless of current state.
     """
-    target_name = payload.get("profile", "")
-    if not re.match(r"^browser-data-acc\d+$", target_name):
-        raise HTTPException(status_code=400, detail="Invalid profile name")
+    target_name = _validate_profile_name(payload.get("profile", ""))
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")

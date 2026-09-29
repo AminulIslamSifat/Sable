@@ -66,6 +66,7 @@ LIBRARY_NOTES_DIR = LIBRARY_DIR / "notes"
 LIBRARY_THUMB_DIR = LIBRARY_DIR / "thumbs"
 # Spaced-repetition decks/cards + review scheduling (SRS).
 LIBRARY_SRS_DIR = LIBRARY_DIR / "srs"
+LIBRARY_DICT_DIR = LIBRARY_DIR / "dictionary"
 # SQLite FTS5 index over library/text/.json for full-text search.
 LIBRARY_SEARCH_DB = LIBRARY_DIR / "search.db"
 # Study session log (time-on-doc analytics).
@@ -74,6 +75,12 @@ LIBRARY_SESSIONS_PATH = LIBRARY_DIR / "sessions.json"
 LIBRARY_EMBED_DIR = LIBRARY_DIR / "embeddings"
 # Per-doc indexing job state (OCR + AI pass cursors) — resumable across restarts.
 LIBRARY_JOBS_DIR = LIBRARY_DIR / "jobs"
+# Uploaded bytes land here first. The HTTP request only streams the file to
+# staging and returns; conversion/extraction happen in a background pipeline
+# that reads from this directory.
+LIBRARY_STAGING_DIR = LIBRARY_DIR / "staging"
+# Per-upload ingest job state (staging -> convert -> extract -> index).
+LIBRARY_UPLOAD_JOBS_DIR = LIBRARY_DIR / "upload_jobs"
 # Rendered page images produced by the OCR pass (cached so a resume is cheap).
 LIBRARY_OCR_DIR = LIBRARY_DIR / "ocr_pages"
 

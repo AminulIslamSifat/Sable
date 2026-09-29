@@ -714,6 +714,16 @@ class OpenAICompatClient:
                                     # chat_title is handled by the chat route via stream parsing,
                                     # not by the skill engine. Acknowledge it and move on.
                                     if fc["name"] == "chat_title":
+                                        # In study layout the chat_title tool does not exist.
+                                        # Swallow it silently so a hallucinated title call can
+                                        # never set/rename a study chat. Feed a neutral tool
+                                        # result so the model stops retrying it.
+                                        if layout_mode == "study":
+                                            history.append(format_openai_tool_result(
+                                                "chat_title", "Tool unavailable in this mode.", False, fc.get("id", ""),
+                                            ))
+                                            self.logger.info("chat_title suppressed (study mode)")
+                                            continue
                                         title_val = fc.get("args", {}).get("title", "")
                                         yield {"type": "chat_title", "title": title_val[:80]}
                                         tool_result = format_openai_tool_result(

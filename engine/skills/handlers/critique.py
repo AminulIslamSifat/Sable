@@ -72,6 +72,11 @@ def handle_critique(
     # Resolve a separate browser profile for critique so it doesn't share
     # the main chat's browser data (prevents recursive tool access, WAF
     # contention, and auto-switch collisions).
+    #
+    # NOTE: the deepseek_scraper transport overrides this server-side (see
+    # chat.py) so the critic shares the parent chat's live scraper browser on
+    # a new tab instead of a separate profile. Every other transport keeps
+    # this distinct scoped account.
     browser_data_dir: str | None = None
     try:
         from engine.agents.registry import get_next_account

@@ -26,6 +26,11 @@
   let browseMode = 'public';  // 'public' (keyless) | 'authed' (private)
   let SOURCES = [];           // saved Drive links (the cards)
   let sourcesLoaded = false;
+  let INDEX_STATUS = {};      // { source_id: { indexed, scanning, status } }
+  let indexPoller = null;     // interval id while any source is scanning
+  let searchQuery = '';       // drive-wide search term
+  let searchResults = null;   // null = not searched
+  let searchBusy = false;
   let addOpen = false;        // "add link" panel visibility
   let activeSource = null;    // currently opened source card
   let sourceItems = [];       // files inside the active source
@@ -112,6 +117,7 @@
     }
     // A source is open → show its contents; otherwise show the card grid.
     if (activeSource) return renderSourceView();
+    if (searchResults !== null || searchBusy || searchQuery) return renderSearch();
     return renderSources();
   }
 
@@ -133,9 +139,14 @@
             <h3>Drive</h3>
             <p>${SOURCES.length} saved link${SOURCES.length === 1 ? '' : 's'}</p>
           </div>
-          <button class="drive-btn primary" data-drive-action="toggle-add">
-            <i data-lucide="plus" class="icon-lucide"></i> ${addOpen ? 'Cancel' : 'Add link'}
-          </button>
+          <div class="drive-sources-actions">
+            <button class="drive-btn ghost" data-drive-action="toggle-search" title="Search all drives">
+              <i data-lucide="search" class="icon-lucide"></i> Search
+            </button>
+            <button class="drive-btn primary" data-drive-action="toggle-add">
+              <i data-lucide="plus" class="icon-lucide"></i> ${addOpen ? 'Cancel' : 'Add link'}
+            </button>
+          </div>
         </div>
 
         ${addOpen ? renderAddPanel() : ''}
@@ -166,6 +177,10 @@
 
   function sourceCard(s) {
     const isFolder = s.kind === 'folder';
+    const idx = INDEX_STATUS[s.id];
+    const scanning = idx && (idx.scanning || idx.status === 'scanning' || idx.status === 'refreshing');
+    const indexed = idx && idx.indexed;
+    const entryCount = idx ? idx.entry_count : s.count;
     return `
       <div class="drive-card" data-drive-action="open-source" data-id="${s.id}" role="button" tabindex="0">
         <div class="drive-card-thumb">
@@ -177,7 +192,9 @@
           <div class="drive-card-name" title="${esc(s.name)}">${esc(s.name)}</div>
           <div class="drive-card-meta">
             <span class="drive-card-kind">${isFolder ? 'Folder' : 'File'}</span>
-            ${isFolder && s.count ? `<span>${s.count} item${s.count === 1 ? '' : 's'}</span>` : ''}
+            ${scanning
+              ? '<span class="drive-card-indexing"><i data-lucide="loader" class="icon-lucide"></i> Indexing…</span>'
+              : isFolder && entryCount ? `<span>${entryCount} item${entryCount === 1 ? '' : 's'}</span>` : ''}
           </div>
         </div>
       </div>`;
@@ -211,6 +228,11 @@
           <button class="drive-btn ghost" data-drive-action="reload-source" title="Refresh">
             <i data-lucide="refresh-cw" class="icon-lucide"></i>
           </button>
+          ${indexStatus === 'scanning' || indexStatus === 'refreshing'
+            ? '<span class="drive-index-badge scanning"><i data-lucide="loader" class="icon-lucide"></i> Indexing…</span>'
+            : fromCache && indexStatus === 'stale'
+              ? '<span class="drive-index-badge stale" title="Index may be outdated">⚠ Stale index</span>'
+              : ''}
         </div>
 
         ${busyMsg ? `<div class="drive-busy"><div class="drive-spinner sm"></div>${esc(busyMsg)}</div>` : ''}
@@ -346,6 +368,94 @@
 
   // ── Sidebar ───────────────────────────────────────────────────────────────
 
+  // -- Drive-wide search ---------------------------------------------------
+
+  function renderSearch() {
+    const q = searchQuery;
+    let body;
+    if (searchBusy) {
+      body = '<div class="drive-loading"><div class="drive-spinner"></div><p>Searching all drives...</p></div>';
+    } else if (searchResults && searchResults.length) {
+      const rows = searchResults.map((r) => {
+        const icon = r.kind === 'folder' ? 'folder' : 'file-text';
+        const meta = esc(r.source_name) + (r.kind === 'file' && r.size ? ' / ' + fmtBytes(r.size) : '');
+        return [
+          '<div class="drive-row" data-drive-action="open-result"',
+          ' data-source="' + esc(r.source_id) + '" data-parent="' + esc(r.parent) + '"',
+          ' data-id="' + esc(r.id) + '" data-name="' + esc(r.name) + '" data-kind="' + esc(r.kind) + '">',
+          '<i data-lucide="' + icon + '" class="icon-lucide drive-row-icon"></i>',
+          '<div class="drive-row-main">',
+          '<div class="drive-row-name">' + esc(r.name) + '</div>',
+          '<div class="drive-row-meta">' + meta + '</div>',
+          '</div>',
+          '</div>',
+        ].join('');
+      }).join('');
+      body = '<div class="drive-list">' + rows + '</div>';
+    } else if (searchResults) {
+      body = '<div class="study-empty"><div class="study-empty-icon"><i data-lucide="search-x" class="icon-lucide"></i></div><h3>No matches</h3><p>Nothing matching that in any indexed drive.</p></div>';
+    } else {
+      body = '<div class="study-empty"><div class="study-empty-icon"><i data-lucide="search" class="icon-lucide"></i></div><h3>Search all drives</h3><p>Type a file or folder name. It searches every indexed Drive source at once.</p></div>';
+    }
+    const stats = searchResults ? (searchResults.length + ' result' + (searchResults.length === 1 ? '' : 's')) : '';
+    return [
+      '<div class="drive-search">',
+      '<div class="drive-source-head">',
+      '<button class="drive-btn ghost" data-drive-action="close-search"><i data-lucide="arrow-left" class="icon-lucide"></i> Drive</button>',
+      '<div class="drive-searchbox"><i data-lucide="search" class="icon-lucide"></i>',
+      '<input id="driveSearchInput" type="search" placeholder="Search all indexed drives..." value="' + esc(q) + '" autocomplete="off" spellcheck="false"></div>',
+      '</div>',
+      '<div class="drive-search-stats">' + stats + '</div>',
+      body,
+      '</div>',
+    ].join('');
+  }
+
+  let searchDebounce = null;
+  async function runDriveSearch() {
+    const v = searchQuery.trim();
+    if (!v) { searchResults = null; searchBusy = false; rerender(); return; }
+    searchBusy = true;
+    rerender();
+    try {
+      const data = await api('/api/drive/search?q=' + encodeURIComponent(v) + '&limit=200');
+      searchResults = data.results || [];
+    } catch (e) {
+      searchResults = [];
+    } finally {
+      searchBusy = false;
+      rerender();
+      focusSearchInput();
+    }
+  }
+
+  function focusSearchInput() {
+    const el = document.getElementById('driveSearchInput');
+    if (el && document.activeElement !== el) {
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }
+
+  function openSearchResult(el) {
+    const sid = el.dataset.source;
+    const src = SOURCES.find((s) => s.id === sid);
+    if (!src) return notify('Source not found');
+    if (el.dataset.kind === 'folder') {
+      activeSource = src;
+      sourcePath = [{ id: src.drive_id, name: src.name }];
+      selected = new Set();
+      searchResults = null; searchQuery = '';
+      const parent = el.dataset.parent;
+      if (parent && parent !== src.drive_id) {
+        sourcePath.push({ id: parent, name: el.dataset.name });
+      }
+      loadPath();
+    } else {
+      viewFile({ id: el.dataset.id, name: el.dataset.name, mimeType: '' });
+    }
+  }
+
   function renderSidebar() {
     if (!STATUS) {
       return `<div class="study-sidebar-section"><div class="study-sidebar-label">Drive</div><div class="drive-side-note">Checking…</div></div>`;
@@ -380,11 +490,50 @@
       SOURCES = [];
     }
     sourcesLoaded = true;
+    // Fetch index status for folder sources (non-blocking, best-effort).
+    fetchIndexStatuses();
     // Await so the sidebar leaves its "Checking…" state as soon as the first
     // load completes instead of depending on render order.
     await loadStatus();
     return SOURCES;
   }
+
+  /** Re-check index status for every folder source, then re-render + poll. */
+  async function fetchIndexStatuses() {
+    const folders = SOURCES.filter((s) => s.kind === 'folder');
+    if (!folders.length) return;
+    await Promise.allSettled(
+      folders.map(async (s) => {
+        try {
+          INDEX_STATUS[s.id] = await api(`/api/drive/sources/${s.id}/index`);
+        } catch {}
+      })
+    );
+    if (!activeSource && window.studyMode && window.studyMode.getTab() === 'drive') {
+      rerender();
+    }
+    // Keep polling while anything is still scanning, so the spinner clears
+    // itself the moment the background scan finishes.
+    const anyScanning = folders.some((s) => {
+      const i = INDEX_STATUS[s.id];
+      return i && (i.scanning || i.status === 'scanning' || i.status === 'refreshing');
+    });
+    if (anyScanning) ensureIndexPoller();
+    else stopIndexPoller();
+  }
+
+  function ensureIndexPoller() {
+    if (indexPoller) return;
+    indexPoller = setInterval(() => {
+      if (!sourcesLoaded) return;
+      fetchIndexStatuses();
+    }, 3000);
+  }
+
+  function stopIndexPoller() {
+    if (indexPoller) { clearInterval(indexPoller); indexPoller = null; }
+  }
+
 
   /** Add the pasted link as a saved source card. */
   async function addLink() {
@@ -439,6 +588,9 @@
     await loadPath();
   }
 
+  let indexStatus = '';   // '' | 'scanning' | 'ready' | 'stale' | 'refreshing'
+  let fromCache = false;
+
   /** Load the folder at the end of sourcePath. */
   async function loadPath() {
     const here = sourcePath[sourcePath.length - 1];
@@ -446,17 +598,23 @@
     loading = true; busyMsg = '';
     rerender();
     try {
-      const data = await api(`/api/drive/sources/${activeSource.id}/files`);
-      // The endpoint lists the source root; descend when we're deeper.
       if (sourcePath.length > 1) {
-        const sub = await api(`/api/drive/browse?folder_id=${encodeURIComponent(here.id)}`);
+        // Subfolder — use source-aware endpoint that serves from cache.
+        const sub = await api(
+          `/api/drive/sources/${activeSource.id}/folder/${encodeURIComponent(here.id)}`
+        );
         sourceItems = sub.items || [];
         truncatedFlag = !!sub.truncated;
         browseMode = sub.mode || 'public';
+        fromCache = !!sub.from_cache;
       } else {
+        // Source root.
+        const data = await api(`/api/drive/sources/${activeSource.id}/files`);
         sourceItems = data.items || [];
         truncatedFlag = !!data.truncated;
         browseMode = data.mode || 'public';
+        fromCache = !!data.from_cache;
+        indexStatus = data.index_status || (data.scanning ? 'scanning' : '');
       }
     } catch (e) {
       sourceItems = [];
@@ -473,9 +631,17 @@
     loadPath();
   }
 
-  function reloadSource() {
+  async function reloadSource() {
     if (!activeSource) return;
-    loadPath();
+    // Trigger a background reindex, then reload the view.
+    try {
+      await api(`/api/drive/sources/${activeSource.id}/reindex`, { method: 'POST' });
+      indexStatus = 'refreshing';
+      rerender();
+    } catch {}
+    // Small delay to let the indexer start before we fetch.
+    await new Promise((r) => setTimeout(r, 300));
+    await loadPath();
   }
 
   function closeSource() {
@@ -680,6 +846,13 @@
         busyMsg = '';
         return rerender();
       case 'add-link': return addLink();
+      case 'toggle-search':
+        searchQuery = ''; searchResults = null;
+        return (function(){ rerender(); setTimeout(focusSearchInput, 0); })();
+      case 'close-search':
+        searchQuery = ''; searchResults = null; searchBusy = false;
+        return rerender();
+      case 'open-result': return openSearchResult(el);
       case 'open-source': return openSource(el.dataset.id);
       case 'remove-source': {
         if (el && el.stopPropagation) el.stopPropagation();
@@ -719,6 +892,20 @@
   // ── Init ──────────────────────────────────────────────────────────────────
 
   function init() {
+    // Drive-wide search input + Enter key. Delegated so it survives rerenders.
+    document.addEventListener('input', (e) => {
+      const el = e.target;
+      if (!el || el.id !== 'driveSearchInput') return;
+      searchQuery = el.value;
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(runDriveSearch, 220);
+    });
+    document.addEventListener('keydown', (e) => {
+      const el = e.target;
+      if (!el || el.id !== 'driveSearchInput') return;
+      if (e.key === 'Enter') { clearTimeout(searchDebounce); runDriveSearch(); }
+      if (e.key === 'Escape') { searchQuery = ''; searchResults = null; rerender(); }
+    });
     // Study tab click is wired by study.js; here we just prepare state and
     // react to a completed OAuth round-trip signalled via ?drive=ok|err.
     const params = new URLSearchParams(location.search);

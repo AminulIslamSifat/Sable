@@ -32,6 +32,11 @@
   let LIBRARY_DOCS = [];
   let libView = 'recent';         // unified library view (see VIEWS below)
   let libraryQuery = '';
+  // Full-text override: when set, it holds the last /api/study/search payload
+  // for the sidebar query, rendered above the normal library content.
+  let libSearchOverride = null;
+  let libSearchBusy = false;
+  let libSearchSeq = 0;
   let COLLECTIONS = [];        // Drive folders that have imported docs
   let DRIVE_FOLDERS = [];      // Drive links saved in the Drive tab (shown as cards)
   let ACADEMICS = { topics: [], semesters: [] };
@@ -43,7 +48,10 @@
 
 
   // ─── Tab meta ───
-  const TABS = ['library', 'rooms', 'drive', 'academics', 'notes', 'decks', 'search', 'stats'];
+  // 'search' and 'stats' moved out: search is the rail search panel
+  // (study-aware), stats is a dashboard card. 'academics' was removed too —
+  // topics are created and managed from the library's "All documents" view.
+  const TABS = ['library', 'indexing', 'rooms', 'drive', 'notes', 'decks', 'humanizer'];
 
   // ─── Rendering ───
 
@@ -68,6 +76,7 @@
   //   topic      → documents grouped by topic (the one parent axis)
   const VIEWS = [
     { id: 'recent',     label: 'Recent',        icon: 'history' },
+    { id: 'indexing',   label: 'Indexing',      icon: 'loader' },
     { id: 'all',        label: 'All documents', icon: 'layers' },
     { id: 'progress',   label: 'In progress',   icon: 'clock' },
     { id: 'bookmarked', label: 'Bookmarked',    icon: 'bookmark' },
@@ -81,6 +90,11 @@
   const OTHERS_TOPIC = 'Others';
 
   function renderLibrary() {
+    // The sidebar search drives a full-text override. When it's active it wins
+    // over every view (including Recent) and renders above the title-filtered
+    // grid, with a close button to drop back to the normal library.
+    const override = renderLibSearchOverride();
+
     if (!LIBRARY_DOCS.length && !DRIVE_FOLDERS.length) {
       return `
         <div class="study-empty">
@@ -92,30 +106,72 @@
     }
 
     // Recent — the composite dashboard (recent docs + jump-back cards).
-    if (libView === 'recent') return renderRecent();
+    // Indexing — background job progress for every document.
+    if (libView === 'indexing') {
+      if (!window.libraryIndex || !window.libraryIndex.panelHtml) {
+        return override + '<div class="study-empty"><h3>Indexing UI unavailable</h3></div>';
+      }
+      const titles = {};
+      LIBRARY_DOCS.forEach((d) => { titles[d.id] = d.title; });
+      return override + window.libraryIndex.panelHtml(titles);
+    }
+
+    if (libView === 'recent') return override + renderRecent();
 
     const docs = docsMatchingFilter();
 
     // Search applies across every non-recent view: if a query is active and
     // nothing matches, say so rather than falling back to empty grids.
     if (libraryQuery.trim() && !docs.length) {
+      if (override) return override;
       return `<div class="study-empty"><div class="study-empty-icon">🔍</div><h3>Nothing matches</h3><p>No documents fit this search.</p></div>`;
     }
 
     // "All documents" — a grid of TOPIC FOLDERS first; clicking one drills
     // into that topic and shows its documents. A breadcrumb walks back out.
     if (libView === 'all') {
-      if (allDrillTopic) return renderAllDrill(docs);
-      return renderAllFolders(docs);
+      if (allDrillTopic) return override + renderAllDrill(docs);
+      return override + renderAllFolders(docs);
     }
 
     // Topic-grouped view — documents filed under their parent topic.
-    if (GROUP_VIEWS[libView]) return renderGrouped(docs);
+    if (GROUP_VIEWS[libView]) return override + renderGrouped(docs);
 
     // Flat grid views (progress / bookmarked).
-    return docs.length
+    return override + (docs.length
       ? `<div class="study-library">${docs.map(docCard).join('')}</div>`
-      : `<div class="study-empty"><div class="study-empty-icon">📄</div><h3>Nothing here yet</h3><p>No documents in “${escapeHtml(VIEW_LABEL[libView] || libView)}”.</p></div>`;
+      : `<div class="study-empty"><div class="study-empty-icon">📄</div><h3>Nothing here yet</h3><p>No documents in “${escapeHtml(VIEW_LABEL[libView] || libView)}”.</p></div>`);
+  }
+
+  /** The full-text override panel for the sidebar search, or ''. */
+  function renderLibSearchOverride() {
+    const q = libraryQuery.trim();
+    if (!q) { libSearchOverride = null; libSearchBusy = false; return ''; }
+
+    if (libSearchBusy && !libSearchOverride) {
+      return `<div class="study-search-override" id="studySearchOverride">
+        <div class="sso-head">
+          <span class="sso-title"><i data-lucide="loader-circle" class="icon-lucide spin"></i> Searching full text…</span>
+          <button class="sso-close" data-lib-search="close" title="Clear search"><i data-lucide="x" class="icon-lucide"></i></button>
+        </div></div>`;
+    }
+    if (!libSearchOverride) return '';
+
+    const total = libSearchOverride.total || 0;
+    const block = (window.searchPanel && window.searchPanel.renderDocsBlock)
+      ? window.searchPanel.renderDocsBlock(libSearchOverride, q)
+      : '';
+    const body = total
+      ? block
+      : `<div class="sso-empty">No indexed matches for <strong>${escapeHtml(q)}</strong>.</div>`;
+
+    return `<div class="study-search-override" id="studySearchOverride">
+      <div class="sso-head">
+        <span class="sso-title"><i data-lucide="book-open" class="icon-lucide"></i> Full-text results <span class="sso-count">${total}</span></span>
+        <button class="sso-close" data-lib-search="close" title="Clear search"><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="sso-body">${body}</div>
+    </div>`;
   }
 
   /** Distinct topic names across the given docs, "Others" always last. */
@@ -141,17 +197,31 @@
   function renderAllFolders(docs) {
     const names = topicNamesFromDocs(docs);
     const docsFor = (topic) => docs.filter((d) => ((((d.group || {}).topic) || '').trim() || OTHERS_TOPIC) === topic);
+
+    // Topic creation lives here now that the Academics tab is gone. This is
+    // the only surface that shows topics, so it owns the create action.
+    const head = `<div class="study-recent-head" style="justify-content:space-between;">
+                  <span class="study-recent-title"><i data-lucide="layers" class="icon-lucide"></i> Topics — tap to open</span>
+                  <button class="study-room-action primary" data-acad="add-topic" style="padding:5px 12px;font-size:12px;">
+                    <i data-lucide="plus" class="icon-lucide"></i> Add topic
+                  </button>
+                </div>`;
+
     if (!names.length) {
-      return `<div class="study-empty"><div class="study-empty-icon">📄</div><h3>Nothing here yet</h3><p>Upload a document to get started.</p></div>`;
+      return `${head}<div class="study-empty"><div class="study-empty-icon">📄</div><h3>Nothing here yet</h3><p>Upload a document to get started.</p></div>`;
     }
     const cards = names.map((topic) => {
       const items = docsFor(topic);
       const isOthers = topic === OTHERS_TOPIC;
+      // "Others" is the catch-all — it can't be deleted (the server recreates
+      // it anyway), so it gets no ⋯ menu.
+      const menu = isOthers ? '' : `<button class="study-doc-menu" data-topic-menu="${escapeHtml(topic)}" title="More">⋯</button>`;
       return `
         <div class="study-doc-card study-folder-card" data-topic-open="${escapeHtml(topic)}" role="button" tabindex="0">
           <div class="study-doc-thumb">
             <i data-lucide="${isOthers ? 'archive' : 'tag'}" class="icon-lucide study-doc-icon"></i>
           </div>
+          ${menu}
           <div class="study-doc-info">
             <div class="study-doc-title">${escapeHtml(topic)}</div>
             <div class="study-doc-meta">
@@ -161,9 +231,7 @@
         </div>`;
     }).join('');
 
-    let html = `<div class="study-recent-head">
-                  <span class="study-recent-title"><i data-lucide="layers" class="icon-lucide"></i> Topics — tap to open</span>
-                </div>`;
+    let html = head;
     html += `<div class="study-library">${cards}</div>`;
 
     // Drive folder cards stay a source list at the root level of "All".
@@ -180,10 +248,15 @@
   function renderAllDrill(docs) {
     const topic = allDrillTopic;
     const items = docs.filter((d) => ((((d.group || {}).topic) || '').trim() || OTHERS_TOPIC) === topic);
+    // Same ⋯ affordance as the folder card, right-aligned on the breadcrumb.
+    const menu = topic === OTHERS_TOPIC
+      ? ''
+      : `<button class="study-crumb-menu" data-topic-menu="${escapeHtml(topic)}" title="More">⋯</button>`;
     const crumb = `<div class="study-breadcrumb">
         <button class="study-crumb-link" data-topic-back type="button"><i data-lucide="layers" class="icon-lucide"></i> All documents</button>
         <i data-lucide="chevron-right" class="icon-lucide study-crumb-sep"></i>
         <span class="study-crumb-current">${escapeHtml(topic)}</span>
+        ${menu}
       </div>`;
     const body = items.length
       ? `<div class="study-library">${items.map(docCard).join('')}</div>`
@@ -349,6 +422,60 @@
     rtf: 'file-text', txt: 'file-text', md: 'file-code', epub: 'book-open',
   };
 
+  // ─── Topic ⋯ menu ───
+
+  // One menu at a time, positioned against the button that opened it.
+  let topicMenuEl = null;
+
+  function closeTopicMenu() {
+    if (topicMenuEl) { topicMenuEl.remove(); topicMenuEl = null; }
+  }
+
+  /**
+   * Small popup anchored to a topic's ⋯ button. Carries the topic NAME — the
+   * delete endpoint wants an id, so handleAcadAction resolves it on click.
+   */
+  function openTopicMenu(anchor, topicName) {
+    closeTopicMenu();
+    const rect = anchor.getBoundingClientRect();
+    const el = document.createElement('div');
+    el.className = 'study-topic-menu';
+    el.innerHTML = `<button class="study-topic-menu-item danger" data-topic-del="${escapeHtml(topicName)}">
+        <i data-lucide="trash-2" class="icon-lucide"></i> Delete topic
+      </button>`;
+    document.body.appendChild(el);
+
+    // The popup lives on <body>, so content's delegated click handler never
+    // sees it — bind directly. Without this the delete button does nothing.
+    el.addEventListener('click', (ev) => {
+      const del = ev.target.closest('[data-topic-del]');
+      if (!del) return;
+      ev.stopPropagation();
+      const name = del.dataset.topicDel;
+      closeTopicMenu();
+      handleAcadAction('del-topic', name);
+    });
+
+    // Keep it on screen: flip up if there's no room below, clamp horizontally.
+    const mh = el.offsetHeight, mw = el.offsetWidth;
+    const below = rect.bottom + 6;
+    el.style.top = (below + mh > window.innerHeight - 8 ? rect.top - mh - 6 : below) + 'px';
+    el.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - mw - 8)) + 'px';
+
+    topicMenuEl = el;
+    if (window.lucide) window.lucide.createIcons({ nodes: [el] });
+
+    // Defer so the click that opened this doesn't immediately close it.
+    setTimeout(() => {
+      const onDown = (ev) => {
+        if (el.contains(ev.target)) return;
+        closeTopicMenu();
+        document.removeEventListener('mousedown', onDown, true);
+      };
+      document.addEventListener('mousedown', onDown, true);
+    }, 0);
+  }
+
   function docCard(d) {
     const pct = (d.progress && d.progress.percent) || 0;
     const g = d.group || {};
@@ -473,6 +600,275 @@
   // then rejects with a 413.
   const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
+  // ─── Upload progress panel (pinned to the sidebar floor) ───
+  //
+  // Uploads are background work. The modal closes the instant the user hits
+  // Upload, and this panel becomes the only place progress is reported. It is
+  // a SEPARATE element from the contextual sidebar panel on purpose: it
+  // repaints on its own poll tick without going through renderSidebar(), so a
+  // repaint can never steal focus from the library search box or reset the
+  // scroll position.
+  const UPLOADS = new Map();   // key -> row
+  let uploadsPanel = null;
+  let uploadsPoll = null;
+
+  const UPLOAD_PHASE_LABEL = {
+    converting: 'Converting',
+    extracting: 'Reading pages',
+    persisting: 'Saving',
+    indexing: 'Indexing',
+  };
+
+  // Everything between "bytes are moving" and "settled". 'staged' matters:
+  // the server creates the job file before the pipeline task takes its first
+  // step, so a poll landing in that window must not be read as "finished" and
+  // stop the poll before a single phase is reported.
+  const UPLOAD_ACTIVE = new Set(['transferring', 'staged', 'running']);
+
+  function isActiveUpload(row) {
+    return !!row && UPLOAD_ACTIVE.has(row.status);
+  }
+
+  /** Auth headers for the upload endpoints (XHR/fetch bypass core.js's wrapper). */
+  function uploadHeaders(extra) {
+    const token = localStorage.getItem('sable_token') || '';
+    return Object.assign(token ? { Authorization: 'Bearer ' + token } : {}, extra || {});
+  }
+
+  function ensureUploadsPanel() {
+    if (uploadsPanel) return uploadsPanel;
+    uploadsPanel = document.createElement('div');
+    uploadsPanel.className = 'study-uploads';
+    uploadsPanel.id = 'studyUploadsPanel';
+    uploadsPanel.hidden = true;
+    // Appended last + margin-top:auto in CSS pins it to the sidebar floor,
+    // below the contextual panel whatever height that ends up taking.
+    sidebar.appendChild(uploadsPanel);
+    // Cancel is the only interaction, so bind it once via delegation rather
+    // than re-binding on every repaint.
+    uploadsPanel.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-upload-cancel]');
+      if (btn) cancelUpload(btn.dataset.uploadCancel);
+    });
+    return uploadsPanel;
+  }
+
+  function uploadRowHtml(row) {
+    const terminal = row.status === 'done' || row.status === 'error' || row.status === 'cancelled';
+    const pct = row.status === 'done' ? 100 : Math.max(0, Math.min(100, row.percent || 0));
+
+    let label;
+    if (row.status === 'transferring') label = `Uploading ${row.transfer || 0}%`;
+    else if (row.status === 'done') label = 'Indexed ✓';
+    else if (row.status === 'error') label = row.error || 'Failed';
+    else if (row.status === 'cancelled') label = 'Cancelled';
+    else if (row.cancelling) label = 'Cancelling…';
+    else label = UPLOAD_PHASE_LABEL[row.phase] || 'Queued';
+
+    return `<div class="study-upload-row${terminal ? ' ' + row.status : ''}">
+      <div class="study-upload-row-head">
+        <span class="study-upload-row-name" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>
+        <button class="study-upload-row-x" data-upload-cancel="${escapeHtml(row.key)}" title="Cancel upload">&times;</button>
+      </div>
+      <div class="li-bar"><div class="li-bar-fill${row.cancelling ? ' stopping' : ''}" style="width:${pct}%"></div></div>
+      <div class="study-upload-row-foot">
+        <span class="study-upload-row-phase">${escapeHtml(label)}</span>
+        <span class="study-upload-row-pct">${pct}%</span>
+      </div>
+    </div>`;
+  }
+
+  let uploadsReapTimer = null;
+
+  /**
+   * Drop finished rows, repaint, and make sure the timer that does it keeps
+   * running until the panel is empty.
+   *
+   * This deliberately does NOT rely on the status poll. The poll only runs
+   * while something is active, so the LAST upload to finish always stopped the
+   * poll — and the reaper lived inside it, so that final row was stranded at
+   * the bottom of the sidebar forever.
+   */
+  function reapUploads() {
+    uploadsReapTimer = null;
+    const now = Date.now();
+    let removed = false;
+    for (const [key, row] of UPLOADS) {
+      if (row.dropAt && now >= row.dropAt) { UPLOADS.delete(key); removed = true; }
+    }
+    if (removed) renderUploadsPanel();
+    else scheduleReap();
+  }
+
+  /** Arm a single reap timer for the soonest pending drop, if any. */
+  function scheduleReap() {
+    if (uploadsReapTimer) return;
+    const times = [...UPLOADS.values()].map((r) => r.dropAt).filter(Boolean);
+    if (!times.length) return;
+    const wait = Math.max(120, Math.min(...times) - Date.now());
+    uploadsReapTimer = setTimeout(reapUploads, wait);
+  }
+
+  function renderUploadsPanel() {
+    const panel = ensureUploadsPanel();
+    const rows = [...UPLOADS.values()];
+    if (!rows.length) {
+      panel.hidden = true;
+      panel.innerHTML = '';
+      if (uploadsReapTimer) { clearTimeout(uploadsReapTimer); uploadsReapTimer = null; }
+      return;
+    }
+    // Any row with a drop time needs a timer, whether or not polling is live.
+    scheduleReap();
+    const active = rows.filter(isActiveUpload).length;
+    panel.hidden = false;
+    panel.innerHTML = `
+      <div class="study-uploads-head">
+        <span>Uploads</span>
+        ${active ? `<span class="sidebar-count">${active}</span>` : ''}
+      </div>
+      <div class="study-uploads-list">${rows.map(uploadRowHtml).join('')}</div>`;
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  /** Run the poll only while something is genuinely moving. */
+  function syncUploadPolling() {
+    const active = [...UPLOADS.values()].some(isActiveUpload);
+    if (active && !uploadsPoll) {
+      uploadsPoll = setInterval(pollUploads, 1200);
+    } else if (!active && uploadsPoll) {
+      clearInterval(uploadsPoll);
+      uploadsPoll = null;
+    }
+  }
+
+  async function pollUploads() {
+    // Nothing tracked: stop the interval, but still let the reaper clean up.
+    if (!UPLOADS.size) { syncUploadPolling(); return; }
+
+    let data = null;
+    try {
+      const res = await fetch('/api/study/upload/status', { headers: uploadHeaders() });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch {
+      return;   // a dropped poll is not an error worth surfacing
+    }
+
+    const byId = new Map(((data && data.uploads) || []).map((u) => [u.upload_id, u]));
+    let changed = false;
+    let docsChanged = false;
+
+    for (const row of UPLOADS.values()) {
+      // Still transferring — no upload_id on the server yet, so nothing to merge.
+      if (!row.uploadId) continue;
+      const u = byId.get(row.uploadId);
+      if (!u) continue;
+
+      const before = `${row.status}|${row.phase}|${row.percent}|${row.cancelling}`;
+      row.status = u.status;
+      row.phase = u.phase || '';
+      row.percent = u.percent || 0;
+      row.error = u.error || '';
+      row.cancelling = !!u.cancel_requested;
+      if (`${row.status}|${row.phase}|${row.percent}|${row.cancelling}` !== before) changed = true;
+
+      if ((u.status === 'done' || u.status === 'error' || u.status === 'cancelled') && !row.settled) {
+        row.settled = true;
+        row.dropAt = Date.now() + 4000;   // linger briefly so the outcome is visible
+        if (u.status === 'done') docsChanged = true;
+        changed = true;
+      }
+    }
+
+    // Repaint (which also arms the reap timer) and refresh the library once a
+    // document actually landed.
+    if (changed) { renderUploadsPanel(); syncUploadPolling(); }
+    if (docsChanged) {
+      loadDocs();
+      // The new doc's index state is what the Indexing tab and the card badges
+      // read, so pull it rather than waiting for the next tick.
+      if (window.libraryIndex && window.libraryIndex.reloadStatuses) {
+        window.libraryIndex.reloadStatuses();
+      }
+    }
+  }
+
+  /**
+   * Cancel one upload.
+   *
+   * Two very different cases:
+   *  - still transferring → abort the XHR. The server never saw the file, so
+   *    there is nothing to clean up.
+   *  - already staged      → ask the server to cancel. It stops at its next
+   *    phase boundary and deletes whatever the upload produced, so a cancelled
+   *    upload leaves no orphan document behind.
+   */
+  async function cancelUpload(key) {
+    const row = UPLOADS.get(key);
+    if (!row) return;
+
+    if (row.xhr) {
+      row.status = 'cancelled';
+      row.dropAt = Date.now() + 2500;
+      try { row.xhr.abort(); } catch { /* already done */ }
+      renderUploadsPanel();
+      syncUploadPolling();
+      return;
+    }
+
+    if (!row.uploadId) return;
+    row.cancelling = true;
+    renderUploadsPanel();
+    try {
+      await fetch('/api/study/upload/cancel', {
+        method: 'POST',
+        headers: uploadHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ upload_id: row.uploadId }),
+      });
+    } catch (err) {
+      notify('Could not cancel: ' + (err.message || 'network error'));
+    }
+    pollUploads();
+  }
+
+  /** Register a row and kick off its transfer. */
+  function startUploadRow(file, tags) {
+    const key = 'u' + Math.random().toString(36).slice(2, 10);
+    const row = {
+      key, uploadId: null, name: file.name, size: file.size,
+      transfer: 0, percent: 0, status: 'transferring', phase: '',
+      error: '', cancelling: false, settled: false, xhr: null,
+    };
+    UPLOADS.set(key, row);
+    renderUploadsPanel();
+    syncUploadPolling();
+
+    uploadOne(file, tags, row)
+      .then((res) => {
+        if (!res || !res.upload_id) throw new Error('server did not return an upload id');
+        row.uploadId = res.upload_id;
+        row.status = 'running';
+        row.percent = 0;
+        renderUploadsPanel();
+        syncUploadPolling();
+        pollUploads();
+      })
+      .catch((err) => {
+        row.xhr = null;
+        if (err && err.cancelled) {
+          row.status = 'cancelled';
+        } else {
+          row.status = 'error';
+          row.error = (err && err.message) || 'upload failed';
+          notify(`${file.name}: ${row.error}`);
+        }
+        row.dropAt = Date.now() + 4000;
+        renderUploadsPanel();
+        syncUploadPolling();
+      });
+  }
+
   /** Validate a file against the backend's accepted formats. Returns error or null. */
   function fileRejection(file) {
     const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
@@ -487,12 +883,18 @@
   // Upload one file, reporting progress via callback. Plain fetch() can't
   // report upload progress, so XHR is the right tool here. Resolves with the
   // doc summary; rejects with an Error carrying the server's detail message.
-  function uploadOne(file, tags, onProgress) {
+  // `row` is the sidebar row this transfer reports into. Progress lands there
+  // instead of in a modal, because the modal is gone by the time the bytes
+  // start moving. The XHR handle is stashed on the row so Cancel can abort a
+  // transfer that hasn't reached the server yet.
+  function uploadOne(file, tags, row) {
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('file', file);
       if (tags) {
         for (const k of TAG_FIELDS) if (tags[k]) fd.append(k, tags[k]);
+        if (tags.index_mode) fd.append('index_mode', tags.index_mode);
+        if (tags.ocr) fd.append('ocr', tags.ocr);
       }
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/study/upload');
@@ -500,21 +902,34 @@
       // token must be set by hand. Read the same localStorage key directly.
       const token = localStorage.getItem('sable_token') || '';
       if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+      if (row) row.xhr = xhr;
+
+      let aborted = false;
       xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+        if (!e.lengthComputable || !row) return;
+        row.transfer = Math.round((e.loaded / e.total) * 100);
+        renderUploadsPanel();
       };
       xhr.onload = () => {
+        if (row) row.xhr = null;
         if (xhr.status >= 200 && xhr.status < 300) {
-          let doc = null;
-          try { doc = JSON.parse(xhr.responseText); } catch {}
-          resolve(doc);
+          let res = null;
+          try { res = JSON.parse(xhr.responseText); } catch {}
+          resolve(res);
         } else {
           let msg = `Upload failed (${xhr.status})`;
           try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
           reject(new Error(msg));
         }
       };
-      xhr.onerror = () => reject(new Error('network error'));
+      xhr.onerror = () => { if (row) row.xhr = null; reject(new Error('network error')); };
+      xhr.onabort = () => {
+        aborted = true;
+        const err = new Error('cancelled');
+        err.cancelled = true;
+        reject(err);
+      };
+      xhr.onloadend = () => { if (row && aborted) row.xhr = null; };
       xhr.send(fd);
     });
   }
@@ -552,6 +967,22 @@
             <select data-field="topic">${topicOptions('')}</select>
           </label>
           <input class="study-field-newtopic" data-newtopic-input type="text" placeholder="New topic name…" style="display:none;" maxlength="80">
+          <label class="study-field">
+            <span>Indexing</span>
+            <select data-field="index_mode">
+              <option value="rag">Full — search + AI retrieval (slowest)</option>
+              <option value="search">Search only — no embeddings</option>
+              <option value="none">None — read only, index later</option>
+            </select>
+          </label>
+          <label class="study-field">
+            <span>Scanned pages (OCR)</span>
+            <select data-field="ocr">
+              <option value="auto">Auto — only blank pages</option>
+              <option value="force">Force — re-OCR every page</option>
+              <option value="never">Skip OCR</option>
+            </select>
+          </label>
         </div>
         <div class="study-modal-actions">
           <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
@@ -638,34 +1069,35 @@
         if (!topic) { newTopicInput.focus(); notify('Enter a topic name'); return; }
       }
       if (!topic) topic = OTHERS_TOPIC;
-      // Register a newly-typed topic in the academics list so it persists even
-      // if the upload later fails.
-      if (topic !== OTHERS_TOPIC && !(ACADEMICS.topics || []).some((t) => t.name === topic)) {
-        try { await apiSend('/api/study/academics/topics', 'POST', { name: topic }); }
-        catch { /* already exists / offline — upload still proceeds */ }
-      }
-      const tags = { topic };
 
-      goBtn.disabled = true;
+      const tags = {
+        topic,
+        index_mode: $('[data-field="index_mode"]').value || 'rag',
+        ocr: $('[data-field="ocr"]').value || 'auto',
+      };
       const queue = files.filter((f) => !fileRejection(f));
-      let ok = 0;
-      for (let i = 0; i < queue.length; i++) {
-        const file = queue[i];
-        const row = listEl.querySelector(`[data-idx="${files.indexOf(file)}"] .study-upload-status`);
-        if (row) row.textContent = 'uploading…';
-        try {
-          await uploadOne(file, tags, (pct) => { if (row) row.textContent = pct + '%'; });
-          if (row) row.textContent = 'indexed ✓';
-          ok++;
-        } catch (err) {
-          if (row) row.textContent = err.message;
-        }
-      }
-      await loadDocs();
+      if (!queue.length) return;
+
+      // Close FIRST. Uploads are background work now — the sidebar panel owns
+      // them from here, so there is nothing left for this modal to wait on.
       close();
-      notify(ok === queue.length
-        ? `${ok} file${ok === 1 ? '' : 's'} indexed ✓`
-        : `${ok}/${queue.length} uploaded — check the rest`);
+
+      // Register a newly-typed topic in the academics list so it persists even
+      // if the upload later fails. Fire-and-forget: it must not delay the files.
+      if (topic !== OTHERS_TOPIC && !(ACADEMICS.topics || []).some((t) => t.name === topic)) {
+        apiSend('/api/study/academics/topics', 'POST', { name: topic })
+          .catch(() => { /* already exists / offline — upload still proceeds */ });
+      }
+
+      // Fired concurrently, NOT in a for-await loop. Awaiting each file meant
+      // file 2 didn't begin transferring until file 1 had been converted AND
+      // extracted on the server — with a big batch that multiplied the wait by
+      // the number of files. Each file now has its own row and its own request.
+      for (const file of queue) startUploadRow(file, tags);
+
+      notify(queue.length === 1
+        ? `Uploading ${queue[0].name}…`
+        : `Uploading ${queue.length} files…`);
     };
 
     renderList();
@@ -708,11 +1140,9 @@
     library: renderLibrary,
     rooms: renderRooms,
     drive: () => (window.driveMode ? window.driveMode.render() : ''),
-    academics: renderAcademics,
     notes: () => (window.studyNotes ? window.studyNotes.renderTab() : ''),
     decks: () => (window.studySRS ? window.studySRS.renderTab() : ''),
-    search: () => (window.studySearch ? window.studySearch.renderTab() : ''),
-    stats: () => (window.studyStats ? window.studyStats.render() : ''),
+    humanizer: () => (window.studyHumanizer ? window.studyHumanizer.renderTab() : ''),
   };
 
   function setTab(tab) {
@@ -748,6 +1178,37 @@
         if (activeTab === 'decks') refreshTab();
       }).catch(() => {});
     }
+
+    // Humanizer pulls its model/persona/config list once, then repaints.
+    if (tab === 'humanizer' && window.studyHumanizer && !window.studyHumanizer.isLoaded()) {
+      window.studyHumanizer.reload().then(() => {
+        if (activeTab === 'humanizer') refreshTab();
+      }).catch(() => {});
+    }
+  }
+
+  /**
+   * Replace an element's innerHTML without stealing focus from the user.
+   * A bare `innerHTML =` destroys and recreates every child node, which blurs
+   * whatever input was focused — the classic "I type one letter and the box
+   * disconnects" bug. Capture the focused node + caret, repaint, restore.
+   */
+  function paintPreservingFocus(el, html) {
+    const act = document.activeElement;
+    const keep = act && el.contains(act) ? act : null;
+    const key = keep && keep.id ? keep.id : null;
+    const s0 = keep && 'selectionStart' in keep ? keep.selectionStart : null;
+    const s1 = keep && 'selectionEnd' in keep ? keep.selectionEnd : null;
+
+    el.innerHTML = html;
+
+    if (!key) return;
+    const next = el.querySelector('#' + CSS.escape(key)) || document.getElementById(key);
+    if (!next) return;
+    next.focus();
+    if (s0 != null && 'setSelectionRange' in next) {
+      try { next.setSelectionRange(s0, s1); } catch { /* input type has no range */ }
+    }
   }
 
   /** Repaint the active tab + its sidebar without changing tabs. */
@@ -755,7 +1216,8 @@
     // An editor mounted in the content pane owns it right now — repainting
     // would destroy it (and the sidebar search would lose focus mid-typing).
     if (content.querySelector('#snEditorOverlay')) return;
-    content.innerHTML = (RENDERERS[activeTab] || (() => ''))();
+
+    paintPreservingFocus(content, (RENDERERS[activeTab] || (() => ''))());
     if (window.lucide) window.lucide.createIcons();
     renderSidebar(activeTab);
   }
@@ -798,12 +1260,21 @@
         if (id === 'progress') return nProg;
         if (id === 'bookmarked') return nMark;
         if (id === 'topic') return nTag('topic');
+        // Indexing — how many jobs are actually running right now.
+        if (id === 'indexing') {
+          if (!window.libraryIndex || !window.libraryIndex.statusFor) return null;
+          return LIBRARY_DOCS.filter((d) => {
+            const s = window.libraryIndex.statusFor(d.id);
+            return s && s.status === 'running';
+          }).length || null;
+        }
         return null; // recent — no count
       };
       html = `
         <div class="study-sidebar-search-wrap">
           <i data-lucide="search" class="icon-lucide"></i>
-          <input class="study-sidebar-search" placeholder="Search library..." id="studyLibSearch" value="${escapeHtml(libraryQuery)}">
+          <input class="study-sidebar-search" placeholder="Search library + full text…" id="studyLibSearch" value="${escapeHtml(libraryQuery)}" autocomplete="off" spellcheck="false">
+          ${libraryQuery.trim() ? `<button class="study-sidebar-search-clear" data-lib-search="close" title="Clear search"><i data-lucide="x" class="icon-lucide"></i></button>` : ''}
         </div>
         <div class="study-sidebar-section">
           <div class="study-sidebar-label">Library</div>
@@ -828,29 +1299,13 @@
       html = window.studyNotes ? window.studyNotes.renderSidebar() : '';
     } else if (tab === 'decks') {
       html = window.studySRS ? window.studySRS.renderSidebar() : '';
-    } else if (tab === 'search') {
-      html = window.studySearch ? window.studySearch.renderSidebar() : '';
-    } else if (tab === 'stats') {
-      html = `
-        <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Analytics</div>
-          <button class="study-sidebar-item active"><i data-lucide="bar-chart-3" class="icon-lucide"></i> Study time</button>
-        </div>`;
-    } else {
-      const nTopic = (ACADEMICS.topics || []).length;
-      html = `
-        <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Overview</div>
-          <button class="study-sidebar-item active"><i data-lucide="tag" class="icon-lucide"></i> Topics <span class="sidebar-count">${nTopic}</span></button>
-        </div>
-        <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Actions</div>
-          <button class="study-sidebar-item" data-acad="add-topic"><i data-lucide="plus-circle" class="icon-lucide"></i> Add topic</button>
-          <button class="study-sidebar-item" data-study-action="refresh-library"><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh</button>
-        </div>`;
+    } else if (tab === 'humanizer') {
+      html = window.studyHumanizer ? window.studyHumanizer.renderSidebar() : '';
     }
 
-    panel.innerHTML = html;
+    // Focus-preserving: a library/index refresh firing mid-typing must not
+    // yank focus out of #studyLibSearch.
+    paintPreservingFocus(panel, html);
     if (window.lucide) window.lucide.createIcons();
 
     if (tab === 'notes' && window.studyNotes) {
@@ -862,10 +1317,91 @@
     if (searchInput) {
       searchInput.addEventListener('input', debounce(() => {
         libraryQuery = searchInput.value;
-        content.innerHTML = renderLibrary();
-        if (window.lucide) window.lucide.createIcons();
+        // Title filter repaints instantly; the FTS override follows on its own
+        // debounce so a fast typist doesn't fire a request per keystroke.
+        repaintLibraryContent();
+        scheduleLibFullTextSearch();
+        repaintSidebarSearchChrome();
       }, 150));
     }
+  }
+
+  /** Repaint just the library content pane. */
+  function repaintLibraryContent() {
+    if (activeTab !== 'library') return;
+    content.innerHTML = renderLibrary();
+    if (window.lucide) window.lucide.createIcons();
+    // The override cards are .study-doc-hit — hand them to the search panel's
+    // click binder so they open the reader exactly like the rail search does.
+    const ov = document.getElementById('studySearchOverride');
+    if (ov && window.searchPanel && window.searchPanel.bindDocHits) {
+      window.searchPanel.bindDocHits(ov);
+    }
+  }
+
+  /** Refresh just the sidebar search box (clear button visibility) without
+      yanking focus out of the input. */
+  function repaintSidebarSearchChrome() {
+    const wrap = sidebar && sidebar.querySelector('.study-sidebar-search-wrap');
+    if (!wrap) return;
+    const existing = wrap.querySelector('.study-sidebar-search-clear');
+    if (libraryQuery.trim() && !existing) {
+      const btn = document.createElement('button');
+      btn.className = 'study-sidebar-search-clear';
+      btn.dataset.libSearch = 'close';
+      btn.title = 'Clear search';
+      btn.innerHTML = '<i data-lucide="x" class="icon-lucide"></i>';
+      wrap.appendChild(btn);
+      if (window.lucide) window.lucide.createIcons({ nodes: [wrap] });
+    } else if (!libraryQuery.trim() && existing) {
+      existing.remove();
+    }
+  }
+
+  // ─── Sidebar full-text search (mirrors the rail search) ───
+  let libSearchTimer = null;
+
+  function scheduleLibFullTextSearch() {
+    clearTimeout(libSearchTimer);
+    const q = libraryQuery.trim();
+    if (!q) {
+      libSearchOverride = null;
+      libSearchBusy = false;
+      libSearchSeq++;
+      repaintLibraryContent();
+      return;
+    }
+    libSearchBusy = true;
+    repaintLibraryContent();
+    libSearchTimer = setTimeout(runLibFullTextSearch, 220);
+  }
+
+  async function runLibFullTextSearch() {
+    const q = libraryQuery.trim();
+    if (!q) return;
+    const seq = ++libSearchSeq;
+    const payload = (window.searchPanel && window.searchPanel.runDocSearch)
+      ? await window.searchPanel.runDocSearch(q)
+      : null;
+    // A newer keystroke landed while this was in flight — drop the stale reply.
+    if (seq !== libSearchSeq) return;
+    libSearchOverride = payload;
+    libSearchBusy = false;
+    repaintLibraryContent();
+  }
+
+  /** Clear both the title filter and the full-text override. */
+  function clearLibrarySearch(focusInput) {
+    libraryQuery = '';
+    libSearchOverride = null;
+    libSearchBusy = false;
+    libSearchSeq++;
+    clearTimeout(libSearchTimer);
+    const input = sidebar && sidebar.querySelector('#studyLibSearch');
+    if (input) input.value = '';
+    repaintSidebarSearchChrome();
+    repaintLibraryContent();
+    if (focusInput && input) input.focus();
   }
 
   function refreshSidebarCounts() {
@@ -887,6 +1423,10 @@
     });
     const panel = ensureSidebarPanel();
     panel.hidden = false;
+    // Show the uploads panel only if there is something in it. The rows keep
+    // polling while it is hidden, so switching to chat never abandons an
+    // in-flight upload — it just stops being drawn.
+    if (uploadsPanel) uploadsPanel.hidden = UPLOADS.size === 0;
   }
 
   function exitStudySidebar() {
@@ -898,6 +1438,7 @@
       }
     });
     if (sidebarPanel) sidebarPanel.hidden = true;
+    if (uploadsPanel) uploadsPanel.hidden = true;
   }
 
   // ─── Mode sync ───
@@ -966,6 +1507,11 @@
       if (target == null) return; // deselect of some active button — leave stage as-is
       if (target === 'study') {
         openStudyStage();
+      } else if (target === 'humanizer') {
+        // Rail button doubles as a shortcut into the Humanizer tab. The stage
+        // stays mounted; only the active tab changes.
+        openStudyStage();
+        setTab('humanizer');
       } else {
         view.classList.add('hidden');
         exitStudySidebar();
@@ -1002,8 +1548,6 @@
     // consumed the click, so delegation order matters but stays declarative.
     if (window.studyRooms && window.studyRooms.handleClick(e)) return;
     if (window.studySRS && window.studySRS.handleClick(e)) return;
-    if (window.studySearch && window.studySearch.handleClick(e)) return;
-    if (window.studyStats && window.studyStats.handleClick(e)) return;
 
     // A Drive folder card in the library opens that source in the Drive tab.
     const folderEl = e.target.closest('[data-drive-folder]');
@@ -1032,6 +1576,19 @@
       return;
     }
 
+    // Topic ⋯ menu — must come BEFORE [data-topic-open], since the button
+    // lives inside the card and would otherwise be swallowed by the drill-in.
+    const topicMenuBtn = e.target.closest('[data-topic-menu]');
+    if (topicMenuBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      openTopicMenu(topicMenuBtn, topicMenuBtn.dataset.topicMenu);
+      return;
+    }
+
+    // (The menu's delete item is bound inside openTopicMenu — the popup is on
+    // <body>, so it never reaches this delegated handler.)
+
     // Drill into a topic folder in "All documents".
     const topicOpenEl = e.target.closest('[data-topic-open]');
     if (topicOpenEl) {
@@ -1058,6 +1615,15 @@
       renderSidebar('library');
       content.innerHTML = renderLibrary();
       if (window.lucide) window.lucide.createIcons();
+      // The panel renders from the cached status map, so pull fresh numbers
+      // first — otherwise opening the tab shows whatever was last polled.
+      if (libView === 'indexing' && window.libraryIndex) {
+        window.libraryIndex.reloadStatuses().then(() => {
+          if (libView !== 'indexing') return;
+          content.innerHTML = renderLibrary();
+          if (window.lucide) window.lucide.createIcons();
+        });
+      }
       return;
     }
 
@@ -1123,6 +1689,39 @@
       return;
     }
 
+    // Indexing panel actions — stop, resume one doc, or sweep the library.
+    const liStop = e.target.closest('[data-li-stop]');
+    if (liStop && window.libraryIndex) {
+      window.libraryIndex.stop(liStop.dataset.liStop);
+      return;
+    }
+    const liRetry = e.target.closest('[data-li-retry]');
+    if (liRetry && window.libraryIndex) {
+      window.libraryIndex.resume(liRetry.dataset.liRetry);
+      return;
+    }
+    const liSweep = e.target.closest('[data-li-reindex-missing]');
+    if (liSweep && window.libraryIndex) {
+      window.libraryIndex.indexMissing();
+      return;
+    }
+    // Index / Re-index a single doc from the Indexing panel. Routes into the
+    // same modal the doc menu opens, so there is one indexing UI, not two.
+    const liIndex = e.target.closest('[data-li-index]');
+    if (liIndex && window.libraryIndex) {
+      const id = liIndex.dataset.liIndex;
+      const d = LIBRARY_DOCS.find((x) => x.id === id);
+      window.libraryIndex.indexDoc(id, (d && d.title) || id);
+      return;
+    }
+
+    // Sidebar/library search: clear the query + the full-text override.
+    const libSearchEl = e.target.closest('[data-lib-search]');
+    if (libSearchEl) {
+      if (libSearchEl.dataset.libSearch === 'close') clearLibrarySearch(true);
+      return;
+    }
+
     const actionEl = e.target.closest('[data-study-action]');
     if (actionEl) {
       const action = actionEl.dataset.studyAction;
@@ -1158,15 +1757,27 @@
     return res.status === 204 ? null : res.json().catch(() => null);
   }
 
+  /**
+   * Repaint the view that shows topics after a create/delete. The library's
+   * "All documents" grid is now the only place topics surface, so it is the
+   * only thing that needs a repaint.
+   */
   async function refreshAcademicsView() {
     await loadAcademics();
-    if (activeTab === 'academics') {
-      content.innerHTML = renderAcademics();
+    if (activeTab === 'library') {
+      content.innerHTML = renderLibrary();
+      renderSidebar('library');
       if (window.lucide) window.lucide.createIcons();
     }
   }
 
-  async function handleAcadAction(action, id) {
+  /**
+   * @param action  'add-topic' | 'del-topic'
+   * @param arg     For 'del-topic' this is the topic NAME (that's what the UI
+   *                carries); the topic id is resolved here, because the delete
+   *                endpoint keys off ids and _find_topic only matches on id.
+   */
+  async function handleAcadAction(action, arg) {
     try {
       if (action === 'add-topic') {
         const name = ((await sableDialog.prompt({
@@ -1177,12 +1788,31 @@
         await apiSend('/api/study/academics/topics', 'POST', { name });
 
       } else if (action === 'del-topic') {
+        const topicName = arg;
+        if (!topicName) return;
+        if (topicName === OTHERS_TOPIC) {
+          notify('“Others” is the catch-all and can’t be deleted');
+          return;
+        }
+
+        // A topic only exists in ACADEMICS once it's been created explicitly.
+        // A name that appears solely on documents has no id to delete.
+        const entry = (ACADEMICS.topics || []).find((t) => t.name === topicName);
+        if (!entry || !entry.id) {
+          notify(`“${topicName}” isn’t a managed topic — nothing to delete`);
+          return;
+        }
+
         if (!(await sableDialog.confirm({
-          title: 'Delete this topic?',
-          message: 'Documents in it move to “Others”.',
-          okText: 'Delete', danger: true,
+          title: `Delete “${topicName}”?`,
+          message: 'Its documents move to “Others”. The documents themselves are not deleted.',
+          okText: 'Delete topic', danger: true,
         }))) return;
-        await apiSend(`/api/study/academics/topics/${id}`, 'DELETE');
+
+        await apiSend(`/api/study/academics/topics/${entry.id}`, 'DELETE');
+
+        // If we were drilled into it, walk back out — the folder is gone.
+        if (allDrillTopic === topicName) allDrillTopic = null;
 
       } else {
         return;
@@ -1280,6 +1910,17 @@
         if (window.lucide) window.lucide.createIcons();
       }
       refreshSidebarCounts();
+      // The deleted doc is still in the index-status cache, so the Indexing tab
+      // and the card badges would keep rendering it. Drop the cache and pull a
+      // fresh overview — the server reconciles it against the library.
+      if (window.libraryIndex && window.libraryIndex.reloadStatuses) {
+        window.libraryIndex.reloadStatuses().then(() => {
+          if (activeTab === 'library' && libView === 'indexing') {
+            content.innerHTML = renderLibrary();
+            if (window.lucide) window.lucide.createIcons();
+          }
+        });
+      }
       notify('Document removed');
     } catch (err) {
       notify(err.message || 'Could not remove document');
@@ -1317,53 +1958,6 @@
     }
   }
 
-  // ─── Academics manager ───
-
-  function renderAcademics() {
-    const topics = ACADEMICS.topics || [];
-    const countDocs = (name) => LIBRARY_DOCS.filter((d) => ((d.group || {}).topic || '') === name).length;
-
-    const header = `
-      <div class="study-acad-head">
-        <div>
-          <h3>Topics</h3>
-          <p>Every document belongs to a topic. Create topics here, or assign one while uploading.</p>
-        </div>
-        <button class="study-room-action primary" data-acad="add-topic">
-          <i data-lucide="plus" class="icon-lucide"></i> Add topic
-        </button>
-      </div>`;
-
-    if (!topics.length) {
-      return `<div class="study-academics-manager">${header}
-        <div class="study-empty">
-          <div class="study-empty-icon">🏷️</div>
-          <h3>No topics yet</h3>
-          <p>Create your first topic — every upload gets filed under one.</p>
-        </div>
-      </div>`;
-    }
-
-    // "Others" is the catch-all — keep it visually last and non-deletable.
-    const sorted = topics.slice().sort((a, b) => {
-      if (a.name === OTHERS_TOPIC) return 1;
-      if (b.name === OTHERS_TOPIC) return -1;
-      return a.name.localeCompare(b.name);
-    });
-    const rows = sorted.map((t) => {
-      const n = countDocs(t.name);
-      const isOthers = t.name === OTHERS_TOPIC;
-      return `
-        <div class="study-acad-topic">
-          <span class="study-acad-name"><i data-lucide="tag" class="icon-lucide"></i> ${escapeHtml(t.name)}${isOthers ? ' <em class="study-acad-hint">catch-all</em>' : ''}</span>
-          <span class="study-acad-count">${n} doc${n === 1 ? '' : 's'}</span>
-          ${isOthers ? '' : `<button class="study-acad-del" data-acad="del-topic" data-id="${t.id}" title="Delete topic">&times;</button>`}
-        </div>`;
-    }).join('');
-
-    return `<div class="study-academics-manager">${header}<div class="study-acad-tree">${rows}</div></div>`;
-  }
-
   function notify(msg) {
     if (window.showToast) return window.showToast(msg);
     // minimal fallback toast
@@ -1394,6 +1988,13 @@
     content.addEventListener('click', handleContentClick);
     content.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ') return;
+      // Topic ⋯ button → open the menu (keyboard parity with the mouse path).
+      const topicMenuKb = e.target.closest('[data-topic-menu]');
+      if (topicMenuKb) {
+        e.preventDefault();
+        openTopicMenu(topicMenuKb, topicMenuKb.dataset.topicMenu);
+        return;
+      }
       // Topic folder card → drill in ("All documents" root).
       const topicEl = e.target.closest('[data-topic-open]');
       if (topicEl) {
@@ -1469,8 +2070,15 @@
     // Drive imports add docs — reload the library when one lands.
     window.addEventListener('study-library-changed', () => { loadDocs(); });
 
-    // Indexing finished (badges + page text changed) — repaint the grid.
-    window.addEventListener('study-index-changed', () => { loadDocs(); });
+    // Indexing progress tick. Statuses are already cached by library-index.js
+    // (it owns the poll), so this only repaints — a full loadDocs() here would
+    // fire four fetches every two seconds for data that did not change.
+    window.addEventListener('study-index-changed', () => {
+      if (activeTab !== 'library') return;
+      if (libView !== 'indexing' && libView !== 'recent') return;
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+    });
 
     // A Drive link added/removed changes the folder cards in the library.
     window.addEventListener('drive-sources-changed', () => { loadDriveFolders().then(() => loadDocs()); });
@@ -1497,6 +2105,14 @@
       openDoc,
       toast: notify,
       reloadDocs: loadDocs,
+      // Drill straight into a topic folder from outside study.js (the study
+      // knowledge graph uses this when a topic node is clicked).
+      openTopic(name) {
+        if (!name) return;
+        libView = 'all';
+        allDrillTopic = name;
+        setTab('library');
+      },
     };
   }
 

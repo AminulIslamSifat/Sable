@@ -139,13 +139,22 @@ def remove_document(doc_id: str) -> None:
 
 def indexed_doc_count() -> int:
     """How many distinct documents currently have rows in the index."""
+    return len(indexed_doc_ids())
+
+
+def indexed_doc_ids() -> list[str]:
+    """Every doc_id that currently has at least one row in the index.
+
+    The UI needs the actual set -- not just a count -- to tell which library
+    documents still need indexing, so it can offer them individually.
+    """
     ensure_index()
     conn = _connect()
     try:
-        row = conn.execute("SELECT COUNT(DISTINCT doc_id) FROM pages").fetchone()
-        return int(row[0] or 0)
+        rows = conn.execute("SELECT DISTINCT doc_id FROM pages").fetchall()
+        return [str(r[0]) for r in rows if r[0]]
     except sqlite3.DatabaseError:
-        return 0
+        return []
     finally:
         conn.close()
 

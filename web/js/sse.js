@@ -2145,9 +2145,14 @@
     // Uses a separate chat_id so the critique session doesn't pollute the main conversation history.
     // Renders identically to a normal chat (thinking, skills, live answer streaming) using
     // the standard addBotStreaming + consumeChatStream pipeline inside the critique log container.
-    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId, browserDataDir) {
-      if (!message || !activeChatId) return;
-      const critiqueChatId = activeChatId + "-critique-" + (critiqueId || Date.now().toString(36));
+    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId, browserDataDir, parentChatId) {
+      // The parent chat MUST be captured at trigger time and passed in — reading
+      // activeChatId here is unsafe because the critique sub-chat can already
+      // have been focused (sidebar refresh), which would make the critic write
+      // its report back into its own history instead of the main chat.
+      const _parent = parentChatId || activeChatId;
+      if (!message || !_parent) return;
+      const critiqueChatId = _parent + "-critique-" + (critiqueId || Date.now().toString(36));
       const controller = startStream(critiqueChatId);
       if (box) box._critiqueController = controller;
 
@@ -2222,7 +2227,7 @@
 
           // Fresh turn per attempt so retries are visually distinct and each
           // attempt accumulates only its own answer text.
-          const ui = addBotStreaming(logEl, activeChatId);
+          const ui = addBotStreaming(logEl, critiqueChatId);
           lastUi = ui;
           let fullAnswer = "";
 
@@ -2307,8 +2312,13 @@
             if (sb) sb.style.display = 'none';
           }
           // Valid report → hand it to the main chat so the model can act on it.
+          // targetChatId is pinned to the parent: without it the report lands in
+          // whatever chat happens to be active — which is the critique sub-chat.
           if (typeof sendAutoTurnMessage === "function") {
-            setTimeout(() => sendAutoTurnMessage(`[Critique Report]\n${finalReport}`), 300);
+            setTimeout(() => sendAutoTurnMessage(
+              `[Critique Report]\n${finalReport}`,
+              { targetChatId: _parent }
+            ), 300);
           } else {
             console.warn("[critique] sendAutoTurnMessage unavailable — report not delivered");
           }
@@ -2834,7 +2844,7 @@
                 const log = box.querySelector('.critique-log');
                 const statusEl = box.querySelector('.critique-status');
                 if (statusEl) statusEl.innerHTML = '<span class="critique-spinner"></span> Running...';
-                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id, evt.browser_data_dir);
+                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id, evt.browser_data_dir, streamChatId);
               }
             }
             // Refresh sidebar so the critique sub-chat appears live

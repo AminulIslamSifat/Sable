@@ -391,9 +391,14 @@
 
     function endStream(chatId) {
       activeResponseIds.delete(chatId);
+      // Sub-chats (critique / agent) stream into their own id while the parent
+      // chat stays active. The migration fallback below must NOT run for them,
+      // or finishing a critique would tear down the MAIN chat's controller and
+      // leave the sidebar pointing at a dead stream.
+      const _isSubChat = chatId.includes("-critique-") || chatId.includes("-agent-");
       if (activeStreams.has(chatId)) {
         activeStreams.delete(chatId);
-      } else if (activeChatId !== chatId && activeStreams.has(activeChatId)) {
+      } else if (!_isSubChat && activeChatId !== chatId && activeStreams.has(activeChatId)) {
         // Session recovery migrated the stream to a new ID mid-flight.
         // The stale chatId is already gone; clean up the migrated entry.
         activeStreams.delete(activeChatId);
@@ -402,8 +407,10 @@
       // event updated it during streaming.
       updateSendBtn();
       _toggleStreamIndicator(chatId, false);
-      // Also clear indicator on migrated ID if different
-      if (activeChatId !== chatId) _toggleStreamIndicator(activeChatId, false);
+      // Also clear indicator on migrated ID if different — but never touch the
+      // parent's indicator on behalf of a sub-chat.
+      if (!_isSubChat && activeChatId !== chatId) _toggleStreamIndicator(activeChatId, false);
+      if (_isSubChat) return;  // no sidebar bump / context ring for ephemeral streams
       // Bump updated_at so the chat jumps to top of sidebar — only re-render if it moved
       const _bumpId = (activeChatId !== chatId) ? activeChatId : chatId;
       const _meta = chatList.find(c => c.id === _bumpId);

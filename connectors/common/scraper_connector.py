@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -49,7 +50,10 @@ class BaseScraperConnector:
         # re-verify the session (chat_url is only passed on round 0).
         self._chat_urls: dict[str, str] = {}
 
-    def _build_engine(self, account: str) -> BaseBrowserEngine:
+    def _build_engine(
+        self, account: str, browser_data_dir: str | None = None,
+        *, adopt_from: "BaseBrowserEngine | None" = None,
+    ) -> BaseBrowserEngine:
         raise NotImplementedError
 
     @property
@@ -57,30 +61,98 @@ class BaseScraperConnector:
         # Each scraper connector tracks its own provider's active browser slot.
         return self._account or get_active_account(self.backend_name)
 
-    def _lock_for(self, account: str) -> asyncio.Lock:
-        lock = self._locks.get(account)
+    def _engine_key(
+        self, account: str, browser_data_dir: str | None
+    ) -> tuple[str, str | None]:
+        """Resolve (scope, effective_browser_data_dir) for an engine lookup.
+
+        A stream that pins its own ``browser_data_dir`` (critique and agent
+        sub-chats) gets a wholly separate engine: separate browser profile,
+        separate page, and — critically — its own ``active_chat_id``. Without
+        this the sub-chat and the parent chat take turns tripping the
+        ``chat_id != active_chat_id`` check, each call firing ``new_chat()``
+        which resets ``system_injected`` and replays the hello warmup forever.
+
+        Safety: if the pinned dir resolves to the SAME profile the account
+        already owns, isolation is impossible — engines launch with
+        ``kill_existing=True``, so a second browser would kill the first. In
+        that case we deliberately fall back to the shared engine; the
+        ``_shared_parent`` guard in stream_chat() keeps it loop-free.
+        """
+        if not browser_data_dir:
+            return account, None
+        scope = os.path.basename(os.path.normpath(browser_data_dir)) or "scoped"
+        if scope == account:
+            # The pinned dir IS this account's own profile (e.g. critique wants
+            # the deepseek_scraper account's live profile). We can't launch a
+            # second browser on it (kill_existing + SingletonLock would kill the
+            # parent), and we can't blindly share the parent's page either (the
+            # two chats would fight over active_chat_id). So: attach a scoped
+            # sub-engine to the parent's live browser and give it its OWN tab.
+            # The sub-scope key keeps its page + active_chat_id isolated.
+            logger.info(
+                "[%s] pinned browser_data_dir %s matches account %s — "
+                "sub-engine will share the parent browser on a new tab",
+                self.backend_name, browser_data_dir, account,
+            )
+            return f"{account}::shared", browser_data_dir
+        return f"{account}::{scope}", browser_data_dir
+
+    def _lock_for(self, scope: str) -> asyncio.Lock:
+        lock = self._locks.get(scope)
         if lock is None:
             lock = asyncio.Lock()
-            self._locks[account] = lock
+            self._locks[scope] = lock
         return lock
 
-    def _url_key(self, account: str, chat_id: str | None) -> str:
-        return account + ":" + (chat_id or "")
+    def _url_key(self, scope: str, chat_id: str | None) -> str:
+        return scope + ":" + (chat_id or "")
 
-    async def _get_engine(self, account: str) -> BaseBrowserEngine:
-        engine = self._engines.get(account)
+    async def _get_engine(
+        self, scope: str, account: str, browser_data_dir: str | None = None
+    ) -> BaseBrowserEngine:
+        engine = self._engines.get(scope)
         if engine is not None and await self._engine_alive(engine):
             return engine
         if engine is not None:
             await self._safe_cleanup(engine)
-        engine = self._build_engine(account)
+        # A `::shared` scope means: adopt the parent (base-account) engine's
+        # live browser and open a new tab, instead of launching a second
+        # browser on the same profile.
+        if scope.endswith("::shared"):
+            parent_scope = account
+            parent = self._engines.get(parent_scope)
+            if parent is None or not await self._engine_alive(parent):
+                # Parent not up yet (sub-chat raced ahead). Bring it up first.
+                if parent is not None:
+                    await self._safe_cleanup(parent)
+                parent = self._build_engine(account, None)
+                await parent.launch()
+                self._engines[parent_scope] = parent
+                logger.info("[%s] parent engine up for scope %s (account %s, port %s)",
+                            self.backend_name, parent_scope, account, parent.port)
+            engine = self._build_engine(account, None, adopt_from=parent)
+            await engine.launch()
+            self._engines[scope] = engine
+            logger.info("[%s] shared sub-engine up for scope %s on parent port %s",
+                        self.backend_name, scope, engine.port)
+            return engine
+        engine = self._build_engine(account, browser_data_dir)
         await engine.launch()
-        self._engines[account] = engine
-        logger.info("[%s] engine up for account %s (port %s)",
-                    self.backend_name, account, engine.port)
+        self._engines[scope] = engine
+        logger.info("[%s] engine up for scope %s (account %s, port %s)",
+                    self.backend_name, scope, account, engine.port)
         return engine
 
     async def _engine_alive(self, engine: BaseBrowserEngine) -> bool:
+        # Adopted (shared) sub-engines ride the parent's port, so a live port
+        # does NOT mean our tab is alive. Check the tab too.
+        if getattr(engine, "_adopt_from", None) is not None:
+            try:
+                page = getattr(engine, "page", None)
+                return page is not None and not page.is_closed()
+            except Exception:
+                return False
         try:
             return bool(await engine.is_port_open())
         except Exception:
@@ -111,9 +183,15 @@ class BaseScraperConnector:
         system_instruction: str | None = None,
         files: list[str] | None = None,
         chat_url: str | None = None,
+        browser_data_dir: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         account = self.account
+        # A pinned browser_data_dir means this stream owns a private browser
+        # profile (critique / agent sub-chats). Keying the engine by it gives
+        # the sub-chat its own page + active_chat_id, so it can never
+        # hard-reset the parent chat's upstream session.
+        scope, browser_data_dir = self._engine_key(account, browser_data_dir)
         if system_instruction and "-agent-" in str(chat_id or ""):
             message = (
                 "[SYSTEM INSTRUCTION]\n" + system_instruction
@@ -121,29 +199,46 @@ class BaseScraperConnector:
             )
 
         try:
-            async with self._lock_for(account):
-                engine = await self._get_engine(account)
+            async with self._lock_for(scope):
+                engine = await self._get_engine(scope, account, browser_data_dir)
 
-                if chat_id and chat_id != getattr(engine, "active_chat_id", None):
-                    # Resume the stored upstream chat when we have its URL;
-                    # otherwise start a fresh one. Resume keeps the upstream
-                    # conversation (and its system prompt) intact.
-                    resumed = False
-                    if chat_url:
-                        resume = getattr(engine, "resume_chat", None)
-                        if resume is not None:
-                            try:
-                                resumed = await resume(chat_url)
-                            except Exception as exc:
-                                logger.warning("[%s] resume_chat failed: %s", self.backend_name, exc)
-                    if not resumed:
-                        new_chat = getattr(engine, "new_chat", None)
-                        if new_chat is not None:
-                            try:
-                                await new_chat()
-                            except Exception as exc:
-                                logger.warning("[%s] new_chat failed: %s", self.backend_name, exc)
-                    setattr(engine, "active_chat_id", chat_id)
+                _active = getattr(engine, "active_chat_id", None)
+                _cid = str(chat_id or "")
+                _is_sub = "-critique-" in _cid or "-agent-" in _cid
+                _active_is_sub = "-critique-" in str(_active or "") or "-agent-" in str(_active or "")
+                # Safety net: a sub-chat riding a shared parent engine must NEVER
+                # call new_chat() — that is precisely what produced the
+                # hello -> instruction -> hard reset loop. Leave the parent's
+                # active_chat_id untouched and just send.
+                _shared_parent = _is_sub and not browser_data_dir and bool(_active) and not _active_is_sub
+
+                if chat_id and chat_id != _active:
+                    if _shared_parent:
+                        logger.warning(
+                            "[%s] sub-chat %s on unscoped parent engine (active=%s) — "
+                            "skipping session reset to avoid the new_chat loop",
+                            self.backend_name, chat_id, _active,
+                        )
+                    else:
+                        # Resume the stored upstream chat when we have its URL;
+                        # otherwise start a fresh one. Resume keeps the upstream
+                        # conversation (and its system prompt) intact.
+                        resumed = False
+                        if chat_url:
+                            resume = getattr(engine, "resume_chat", None)
+                            if resume is not None:
+                                try:
+                                    resumed = await resume(chat_url)
+                                except Exception as exc:
+                                    logger.warning("[%s] resume_chat failed: %s", self.backend_name, exc)
+                        if not resumed:
+                            new_chat = getattr(engine, "new_chat", None)
+                            if new_chat is not None:
+                                try:
+                                    await new_chat()
+                                except Exception as exc:
+                                    logger.warning("[%s] new_chat failed: %s", self.backend_name, exc)
+                        setattr(engine, "active_chat_id", chat_id)
 
                 # Per-message session guard — runs on EVERY message (user turns
                 # AND tool-loop rounds). chat_url is only passed on round 0, so
@@ -151,7 +246,7 @@ class BaseScraperConnector:
                 # round's done event. On any session mismatch the engine
                 # navigates back to the expected chat BEFORE the send.
                 if chat_id:
-                    expected_url = chat_url or self._chat_urls.get(self._url_key(account, chat_id))
+                    expected_url = chat_url or self._chat_urls.get(self._url_key(scope, chat_id))
                     if expected_url:
                         ensure = getattr(engine, "ensure_chat_url", None)
                         if ensure is not None:
@@ -200,7 +295,7 @@ class BaseScraperConnector:
 
             _done_url = _chat_url_of(engine)
             if _done_url and chat_id:
-                self._chat_urls[self._url_key(account, chat_id)] = _done_url
+                self._chat_urls[self._url_key(scope, chat_id)] = _done_url
             yield {
                 "type": "done",
                 "chat_id": chat_id,
@@ -208,7 +303,7 @@ class BaseScraperConnector:
                 "chat_url": _done_url,
             }
         except asyncio.CancelledError:
-            eng = self._engines.get(account)
+            eng = self._engines.get(scope)
             if eng is not None:
                 try:
                     await eng.stop_generation()
@@ -313,13 +408,23 @@ class BaseScraperConnector:
         }
 
     async def cancel(self) -> bool:
-        engine = self._engines.get(self.account)
-        if engine is None:
+        # Cancels every engine scoped to this account — the parent chat's engine
+        # AND any isolated sub-chat engines (critique/agent) sharing the prefix.
+        account = self.account
+        engines = [
+            e for k, e in self._engines.items()
+            if k == account or k.startswith(account + "::")
+        ]
+        if not engines:
             return False
-        try:
-            return await engine.stop_generation()
-        except Exception:
-            return False
+        cancelled = False
+        for engine in engines:
+            try:
+                if await engine.stop_generation():
+                    cancelled = True
+            except Exception:
+                pass
+        return cancelled
 
     async def shutdown(self) -> None:
         for engine in list(self._engines.values()):

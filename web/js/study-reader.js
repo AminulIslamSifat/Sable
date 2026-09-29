@@ -346,6 +346,18 @@ function build() {
         </label>
       </div>
     </div>
+
+    <!-- Dictionary card — pure lookup (English defs + Bangla), never touches AI -->
+    <div class="rdr-dict-card hidden" id="rdrDictCard">
+      <div class="rdr-dict-head">
+        <i data-lucide="book-a" class="icon-lucide"></i>
+        <span class="rdr-dict-word" id="rdrDictWord"></span>
+        <span class="rdr-dict-src" id="rdrDictSrc"></span>
+        <div class="rdr-ai-card-spacer"></div>
+        <button class="rdr-ai-card-btn" id="rdrDictClose" title="Close"><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="rdr-dict-body" id="rdrDictBody"></div>
+    </div>
   `;
   document.body.appendChild(overlay);
 
@@ -362,6 +374,8 @@ function build() {
     '<button class="rdr-hl-ai" data-rdr-ai="summarize"><i data-lucide="list" class="icon-lucide"></i>Summarize</button>' +
     '<button class="rdr-hl-ai" data-rdr-ai="define"><i data-lucide="type" class="icon-lucide"></i>Define</button>' +
     '<button class="rdr-hl-ai" data-rdr-ai="ask"><i data-lucide="message-circle-question" class="icon-lucide"></i>Ask…</button>' +
+    '<span class="rdr-hl-sep"></span>' +
+    '<button class="rdr-hl-ai rdr-hl-dict" data-rdr-dict="1"><i data-lucide="book-a" class="icon-lucide"></i>Dictionary</button>' +
     '<button class="rdr-hl-cancel" id="rdrHlCancel"><i data-lucide="x" class="icon-lucide"></i></button>';
 
   wire();
@@ -391,6 +405,9 @@ function wire() {
     a.click();
     a.remove();
   });
+
+  const dictClose = $("#rdrDictClose");
+  if (dictClose) dictClose.addEventListener('click', closeDictCard);
 
   const pageInput = $("#rdrPageInput");
   pageInput.addEventListener('keydown', (e) => {
@@ -499,9 +516,14 @@ function wire() {
   // doc scope so results stay anchored to the open file.
   const findBtn = $("#rdrFind");
   if (findBtn) findBtn.addEventListener('click', () => {
-    if (!meta || !window.studySearch) return;
+    if (!meta) return;
     window.studyReader.close();
-    window.studySearch.searchIn(meta.id, meta.title);
+    // The in-study Search tab is gone — search now lives in the rail panel.
+    // Open it scoped to this document so "search inside this doc" keeps
+    // meaning what it always did.
+    if (window.searchPanel && window.searchPanel.searchIn) {
+      window.searchPanel.searchIn(meta.id, meta.title);
+    }
   });
 
   // Read the current page aloud (sentence-chunked streaming TTS).
@@ -605,6 +627,10 @@ function onKeydown(e) {
     if (notePopup) { closeNotePopup(); return; }
     if (!overlay.querySelector('#rdrAiConfig').classList.contains('hidden')) {
       overlay.querySelector('#rdrAiConfig').classList.add('hidden');
+      return;
+    }
+    if (!overlay.querySelector('#rdrDictCard').classList.contains('hidden')) {
+      closeDictCard();
       return;
     }
     if (!overlay.querySelector('#rdrAiCard').classList.contains('hidden')) {
@@ -1732,6 +1758,18 @@ async function onHighlightBarClick(e) {
     return;
   }
 
+  // Dictionary — a pure, model-free lookup. Deliberately checked BEFORE the
+  // AI branch so it can never fall through into runAi().
+  const dictBtn = e.target.closest('[data-rdr-dict]');
+  if (dictBtn) {
+    if (!pendingSelection) return;
+    const sel = pendingSelection;
+    hideHlBar();
+    window.getSelection()?.removeAllRanges();
+    openDictCard(sel.text);
+    return;
+  }
+
   // AI action buttons (Explain / Meaning / Summarize / Define / Ask…)
   const aiBtn = e.target.closest('[data-rdr-ai]');
   if (aiBtn) {
@@ -2047,6 +2085,82 @@ function closeAiCard() {
   if (aiBusyUnsub) { try { aiBusyUnsub(); } catch { /* noop */ } aiBusyUnsub = null; }
   overlay.querySelector('#rdrAiCard').classList.add('hidden');
   aiCurrent = null;
+}
+
+// ── Dictionary (pure lookup — no model, no tokens) ───────────────────────────
+// Independent of the Study AI thread store: it renders exactly what
+// /api/study/dictionary returns, with no model in the loop.
+
+let dictReq = 0;   // monotonic token so a slow reply can't overwrite a newer one
+
+function openDictCard(rawText) {
+  const card = overlay.querySelector('#rdrDictCard');
+  const body = overlay.querySelector('#rdrDictBody');
+  if (!card || !body) return;
+  // Multi-word selections: look up the first token, not the whole phrase.
+  const word = (String(rawText || '').match(/[A-Za-z][A-Za-z'-]*/) || [''])[0];
+  overlay.querySelector('#rdrDictWord').textContent = word || '(no word)';
+  overlay.querySelector('#rdrDictSrc').textContent = '';
+  card.classList.remove('hidden');
+  if (window.lucide) window.lucide.createIcons();
+
+  if (!word) {
+    body.innerHTML = '<div class="rdr-dict-state">Select a word to look up.</div>';
+    return;
+  }
+  body.innerHTML = '<div class="rdr-dict-state">Looking up…</div>';
+  const req = ++dictReq;
+  api(`/api/study/dictionary?word=${encodeURIComponent(word)}`)
+    .then((data) => { if (req === dictReq) renderDictCard(body, data); })
+    .catch((err) => {
+      if (req !== dictReq) return;
+      body.innerHTML = `<div class="rdr-dict-state err">Lookup failed: ${esc(err.message)}</div>`;
+    });
+}
+
+function renderDictCard(body, data) {
+  const parts = [];
+
+  if (data.phonetic) parts.push(`<div class="rdr-dict-phon">${esc(data.phonetic)}</div>`);
+
+  if (data.bangla && data.bangla.length) {
+    parts.push(`
+      <div class="rdr-dict-bn-block">
+        <div class="rdr-dict-bn-label">বাংলা অর্থ</div>
+        <div class="rdr-dict-bn">${data.bangla.map(esc).join(' · ')}</div>
+      </div>`);
+  } else if ((data.entries || []).length) {
+    // English resolved but Wiktionary had no Bangla table for this word.
+    parts.push('<div class="rdr-dict-bn-missing">No Bangla entry in Wiktionary for this word.</div>');
+  }
+
+  (data.entries || []).forEach((entry) => {
+    const defs = (entry.definitions || []).map((d) => `
+      <li>
+        <span class="rdr-dict-def">${esc(d.text)}</span>
+        ${d.example ? `<span class="rdr-dict-eg">“${esc(d.example)}”</span>` : ''}
+      </li>`).join('');
+    parts.push(`
+      <div class="rdr-dict-entry">
+        ${entry.pos ? `<div class="rdr-dict-pos">${esc(entry.pos)}</div>` : ''}
+        <ol class="rdr-dict-defs">${defs}</ol>
+      </div>`);
+  });
+
+  if (!data.found) {
+    parts.push('<div class="rdr-dict-state">No dictionary entry found for this word.</div>');
+  }
+
+  body.innerHTML = parts.join('');
+  const src = overlay.querySelector('#rdrDictSrc');
+  if (src) src.textContent = data.source || ((data.bangla && data.bangla.length) ? 'en.wiktionary.org' : '');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function closeDictCard() {
+  dictReq += 1;   // invalidate any in-flight lookup
+  const card = overlay.querySelector('#rdrDictCard');
+  if (card) card.classList.add('hidden');
 }
 
 /** Start a fresh thread in the card, keeping the current document anchors. */

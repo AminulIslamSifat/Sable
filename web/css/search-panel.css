@@ -332,3 +332,166 @@ body.search-open #searchView { display: flex !important; }
   animation: search-highlight-flash 2s ease-out forwards;
   border-radius: var(--radius-md, 8px);
 }
+
+/* ── Study index strip (study mode only) ─────────────────────────────────── */
+
+.search-index-strip {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.search-index-strip.hidden { display: none; }
+
+.sis-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sis-chip:hover { border-color: var(--accent); }
+.sis-chip.static { cursor: default; }
+.sis-chip.static:hover { border-color: var(--border); }
+.sis-chip i { width: 13px; height: 13px; }
+
+.sis-chip .sis-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.sis-chip.ok .sis-num { color: #10b981; }
+.sis-chip.warn .sis-num { color: #f59e0b; }
+.sis-chip.warn { border-color: color-mix(in srgb, #f59e0b 40%, var(--border)); }
+.sis-chip.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+.sis-chip.sis-run {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent);
+}
+.sis-chip.sis-run:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.sis-chip[disabled] { opacity: 0.5; cursor: default; }
+
+/* Expandable list of not-yet-indexed documents */
+.sis-doclist {
+  flex-basis: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.sis-doclist.hidden { display: none; }
+
+.sis-doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.sis-doc:first-child { border-top: none; }
+.sis-doc:hover { background: color-mix(in srgb, var(--panel) 50%, transparent); }
+.sis-doc-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sis-doc-pages {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.sis-doc-badge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+.sis-doc-badge.ok {
+  background: color-mix(in srgb, #10b981 18%, transparent);
+  color: #10b981;
+}
+
+.sis-doc-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.sis-doc-btn:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); border-color: var(--accent); }
+.sis-doc-btn i { width: 12px; height: 12px; }
+
+.sis-empty {
+  padding: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Study document hits (top group in results) ──────────────────────────── */
+
+.search-section.study-docs .search-section-header {
+  --section-color: #10b981;
+}
+.study-doc-hit {
+  display: flex;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.study-doc-hit:hover { background: color-mix(in srgb, var(--panel) 45%, transparent); }
+.study-doc-hit-page {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  padding-top: 1px;
+}
+.study-doc-hit-body { min-width: 0; }
+.study-doc-hit-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.study-doc-hit-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.study-doc-hit-text mark {
+  background: rgba(255, 214, 102, 0.28);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 0 2px;
+}

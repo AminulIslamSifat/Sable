@@ -1,18 +1,33 @@
-
 # Text Humanizer
 
 ## Architecture
 
-Two-phase pipeline. **You (the agent) ARE the LLM.** No external API.
+Two-phase pipeline. **The LLM writes; the rule script enforces structure.**
+No external API — the rewrite is done by whatever model the caller selects.
 
-1. **Phase 1 — You rewrite the text** using the persona prompt below (internal, in your response)
-2. **Phase 2 — Rule script** enforces burstiness, kills residual AI markers, breaks paragraph symmetry
+1. **Phase 1 — LLM rewrite** using a persona prompt (peer / grad / anti / custom).
+2. **Phase 2 — Rule script** (`scripts/humanize.py`) enforces burstiness, raises
+   perplexity, collapses n-gram repetition, kills AI tells.
+
+## Why these two phases
+
+Detectors (GPTZero, Turnitin, Originality.ai, Copyleaks) score two statistical
+signals above all:
+
+- **Perplexity** — how predictable each next word is. Model output picks the
+  most likely continuation; humans reach for odd words.
+- **Burstiness** — how much sentence length varies. Human prose swings between
+  three-word jabs and forty-word runs; model output clusters.
+
+Phase 1 fixes perplexity (word choice). Phase 2 fixes burstiness (rhythm).
+Skipping either leaves the other signal intact.
 
 ## Protocol
 
-### Step 1: Rewrite (YOU do this — no tool call)
+### Step 1 — Rewrite (LLM, persona-conditioned)
 
-Apply the appropriate persona prompt to the input text. Rewrite it fully in your response, preserving ALL factual content. Then pass the result to Step 2.
+Apply the persona prompt below. Preserve ALL factual content. Then feed the
+result to Step 2.
 
 **Persona: peer** (default — conversational)
 ```
@@ -29,7 +44,7 @@ without explanation. Occasional tangent, then self-correction.
 No bullet points. No "in summary."
 ```
 
-**Persona: anti** (aggressive detector evasion — use for Turnitin/GPTZero)
+**Persona: anti** (aggressive detector evasion)
 ```
 Never use: delve, leverage, tapestry, furthermore, moreover, notably,
 "it's important to note", "in conclusion", "additionally", "crucial",
@@ -39,36 +54,54 @@ One colloquial contraction per paragraph. No equal-length paragraphs.
 Start one sentence with "And" or "But". Remove all hedging. No conclusion.
 ```
 
-### Step 2: Rule Pass (script)
-
-Pipe your rewritten text through the structural post-processor:
+### Step 2 — Rule pass
 
 ```bash
-python3 SKILL_DIR/scripts/humanize.py --text "your rewritten text here"
+python3 SKILL_DIR/scripts/humanize.py --file /tmp/in.txt --output /tmp/out.txt
 ```
 
-Or for long text, write to a temp file first:
-```bash
-python3 SKILL_DIR/scripts/humanize.py --file /tmp/humanize_input.txt --output /tmp/humanize_output.txt
-```
+Flags:
 
-### Step 3: Deliver
+| Flag | Purpose |
+|:--|:--|
+| `--strength 0.0-1.0` | Aggressiveness of burstiness + tell removal. Default `0.6`. |
+| `--seed N` | Reproducible output. Omit for fresh randomness. |
+| `--stats` | Emit before/after signal metrics as JSON on stderr. |
 
-Return the script's output as the final humanized text. Do NOT add commentary, headers, or formatting around it unless the user asks.
+### Step 3 — Deliver
+
+Return the script's output as the final text. No preamble, no commentary.
+
+## What the rule script measures
+
+`--stats` reports the numbers a detector actually uses:
+
+- `burstiness` — coefficient of variation of sentence length. Humans > 0.5;
+  flat model output ~0.2-0.3.
+- `ai_markers` — count of discourse/perplexity stock phrases remaining.
+  Should land near 0.
+- `avg_sentence_len` / `sentence_len_stdev` — the raw ingredients of burstiness.
 
 ## Rules
-- SKILL_DIR resolves to the directory containing this instruction.md.
-- For texts >1000 words: rewrite in chunks (~500 words each), run script on each chunk, concatenate.
-- NEVER skip Phase 1. The rule script alone catches markers but can't fix statistical flatness.
-- NEVER skip Phase 2. Your rewrite may still have residual AI patterns the script catches.
-- Preserve ALL factual content, numbers, names, and technical terms exactly.
-- If user specifies a custom voice/persona, use that instead of the built-in ones.
-- Output is the humanized text ONLY — no "here's your rewritten text:" preamble.
+
+- `SKILL_DIR` resolves to the directory containing this `instruction.md`.
+- Texts > 1000 words: rewrite in ~500-word chunks, run the script per chunk,
+  concatenate.
+- NEVER skip Phase 1 — the rule script can't fix statistical flatness alone.
+- NEVER skip Phase 2 — the rewrite still carries residual AI patterns.
+- Preserve ALL facts, numbers, names, and technical terms exactly.
+- Output is the humanized text ONLY — no "here's your rewrite:" preamble.
 
 ## Quick Reference
+
 | User says | Persona | Notes |
 |:--|:--|:--|
 | "humanize this" / "make it sound human" | peer | Default |
 | "for my thesis" / "academic" | grad | Keep jargon |
 | "bypass GPTZero/Turnitin" / "undetectable" | anti | Most aggressive |
-| "write like [X]" | custom | Use their description as persona prompt |
+| "write like [X]" | custom | Use their description as the prompt |
+
+> [!WARNING]
+> No humanizer guarantees a detector pass. Detector scores are classifier
+> confidence, not proof of authorship — and formal, technical, or translated
+> human writing gets false-flagged routinely. Treat the score as triage.

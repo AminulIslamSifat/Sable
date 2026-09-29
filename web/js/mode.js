@@ -61,6 +61,9 @@
     // Re-render lucide icons for newly visible elements
     if (window.lucide) window.lucide.createIcons();
 
+    // Let mode-dependent chrome react (search panel's study index strip).
+    window.dispatchEvent(new CustomEvent('sable-mode-changed', { detail: { mode } }));
+
     // Sync context to Qwen with current layout_mode so tools are updated
     try {
       fetch('/api/sync-context', {

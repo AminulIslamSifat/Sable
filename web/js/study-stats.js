@@ -1,11 +1,15 @@
 /**
- * study-stats.js — study-time analytics for the dashboard.
+ * study-stats.js — study-time analytics.
  *
- * Renders the study-time panel that hangs off the library view: total time,
- * streak, a per-day bar chart, and the most-studied documents. Data comes from
- * /api/study/stats, which aggregates the sessions recorded by the reader.
+ * Was a standalone tab inside study mode; that tab is gone. It now renders as
+ * a dashboard section, because in study mode the dashboard shows study time +
+ * token usage and nothing else.
  *
- * Exposes window.studyStats = { render, reload, handleClick }.
+ * Reuses the `.st-*` rules already in study-features.css so the visual
+ * language matches what the tab looked like, and so there is only one place to
+ * restyle it.
+ *
+ * Exposes window.studyStats = { renderCard, reload, setDays, isLoaded }.
  */
 (function () {
   'use strict';
@@ -42,8 +46,7 @@
   }
 
   function toast(msg) {
-    if (window.studyMode && window.studyMode.toast) return window.studyMode.toast(msg);
-    if (typeof window.showToast === 'function') return window.showToast(msg);
+    if (window.showToast) return window.showToast(msg);
     console.log('[study-stats]', msg);
   }
 
@@ -57,12 +60,11 @@
     return rem ? `${h}h ${rem}m` : `${h}h`;
   }
 
-  async function reload(force) {
+  async function reload() {
     if (busy) return data;
     busy = true;
     try {
       data = await api(`/api/study/stats?days=${days}`);
-      if (force && window.studyMode) window.studyMode.refreshTab();
     } catch (err) {
       toast(err.message);
     } finally {
@@ -71,10 +73,15 @@
     return data;
   }
 
+  function setDays(n) {
+    days = parseInt(n, 10) || 30;
+    data = null;
+  }
+
   function chart(series) {
     if (!series || !series.length) return '';
     const peak = Math.max(...series.map((p) => p.seconds), 1);
-    // Show at most the last 30 bars so the strip stays readable on narrow panes.
+    // Cap the bar count so a 1y window doesn't turn into a solid block.
     const points = series.slice(-30);
     return `
       <div class="st-chart">
@@ -90,32 +97,37 @@
       </div>`;
   }
 
-  function render() {
+  function rangeButtons() {
+    return [7, 30, 90, 365].map((n) =>
+      `<button class="st-range${n === days ? ' active' : ''}" data-st-days="${n}">${n === 365 ? '1y' : n + 'd'}</button>`
+    ).join('');
+  }
+
+  /**
+   * The dashboard card. Returns a loading state when data hasn't arrived yet,
+   * so dashboard.js can drop it straight into a slot.
+   */
+  function renderCard() {
+    const header = `
+      <div class="dash-card-header">
+        <i data-lucide="graduation-cap" class="dash-card-icon-lucide"></i>
+        <span class="dash-card-title">Study Time</span>
+        <div class="st-ranges dst-ranges">${rangeButtons()}</div>
+      </div>`;
+
     if (!data) {
-      reload(true);
-      return '<div class="st-loading">Loading study stats…</div>';
+      return `<div class="dash-card dst-span" id="slot-study">${header}
+        <div class="dash-loading">Loading study stats…</div>
+      </div>`;
     }
 
     const empty = !data.sessions;
-    return `
-      <div class="st-head">
-        <div>
-          <h2>Study time</h2>
-          <p class="st-sub">Last ${data.days} days · ${data.active_days} active day${data.active_days === 1 ? '' : 's'}</p>
-        </div>
-        <div class="st-ranges">
-          ${[7, 30, 90, 365].map((n) =>
-            `<button class="st-range${n === days ? ' active' : ''}" data-st-days="${n}">${n === 365 ? '1y' : n + 'd'}</button>`
-          ).join('')}
-        </div>
-      </div>
-
-      ${empty ? `
-        <div class="study-empty">
-          <div class="study-empty-icon">⏱️</div>
-          <h3>No study time recorded yet</h3>
-          <p>Open a document and read for a bit — sessions are recorded automatically when you close it.</p>
-        </div>` : `
+    const body = empty ? `
+      <div class="study-empty">
+        <div class="study-empty-icon">⏱️</div>
+        <h3>No study time recorded yet</h3>
+        <p>Open a document and read for a bit — sessions are recorded automatically when you close it.</p>
+      </div>` : `
 
       <div class="st-cards">
         <div class="st-card">
@@ -136,77 +148,31 @@
         </div>
       </div>
 
-      <div class="st-panel">
-        <div class="st-panel-label">Daily activity</div>
-        ${chart(data.series)}
-      </div>
+      <div class="st-panel-label">Daily activity · last ${data.days} days · ${data.active_days} active</div>
+      ${chart(data.series)}
 
       ${(data.top_docs || []).length ? `
-      <div class="st-panel">
-        <div class="st-panel-label">Most studied</div>
-        <div class="st-docs">
-          ${data.top_docs.map((doc) => `
-            <div class="st-doc" data-st-doc="${doc.doc_id}">
-              <i data-lucide="file-text" class="icon-lucide"></i>
-              <span class="st-doc-title">${esc(doc.title || 'Deleted document')}</span>
-              <span class="st-doc-time">${fmtDuration(doc.seconds)}</span>
-            </div>`).join('')}
-        </div>
+      <div class="st-panel-label dst-top-label">Most studied</div>
+      <div class="st-docs">
+        ${data.top_docs.map((doc) => `
+          <div class="st-doc" data-st-doc="${esc(doc.doc_id)}">
+            <i data-lucide="file-text" class="icon-lucide"></i>
+            <span class="st-doc-title">${esc(doc.title || 'Deleted document')}</span>
+            <span class="st-doc-time">${fmtDuration(doc.seconds)}</span>
+          </div>`).join('')}
       </div>` : ''}
 
       <div class="st-foot">
         <button class="st-clear" data-st-clear="1">Clear all study stats</button>
-      </div>`}
-    `;
-  }
+      </div>`;
 
-  function handleClick(e) {
-    const rangeEl = e.target.closest('[data-st-days]');
-    if (rangeEl) {
-      days = parseInt(rangeEl.dataset.stDays, 10) || 30;
-      data = null;
-      reload(true);
-      return true;
-    }
-
-    const docEl = e.target.closest('[data-st-doc]');
-    if (docEl) {
-      if (window.studyMode && window.studyMode.openDoc) {
-        window.studyMode.openDoc(docEl.dataset.stDoc, 1);
-      }
-      return true;
-    }
-
-    const clearEl = e.target.closest('[data-st-clear]');
-    if (clearEl) {
-      // handleClick must stay synchronous — study.js uses its boolean return to
-      // decide whether the click was consumed. So confirm asynchronously and
-      // return true now; the dialog resolves on its own.
-      (async () => {
-        const ok = await sableDialog.confirm({
-          title: 'Clear all study time?',
-          message: 'Every recorded session is deleted. This cannot be undone.',
-          okText: 'Clear everything', danger: true,
-        });
-        if (!ok) return;
-        try {
-          await api('/api/study/stats', { method: 'DELETE' });
-          toast('Study stats cleared');
-          data = null;
-          reload(true);
-        } catch (err) {
-          toast(err.message);
-        }
-      })();
-      return true;
-    }
-    return false;
+    return `<div class="dash-card dst-span" id="slot-study">${header}${body}</div>`;
   }
 
   window.studyStats = {
-    render,
+    renderCard,
     reload,
-    handleClick,
+    setDays,
     isLoaded: () => !!data,
   };
 })();

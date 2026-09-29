@@ -65,16 +65,18 @@
   function renderTab() {
     if (!stats) loadStats();
     return `
-      <div class="ss-head">
-        <div class="ss-searchbox">
-          <i data-lucide="search" class="icon-lucide"></i>
-          <input id="ssInput" type="search" placeholder="Search every page of every document…"
-                 value="${esc(query)}" autocomplete="off" spellcheck="false">
-          ${scopeDoc ? `<button class="ss-scope" data-ss-action="clear-scope" title="Search whole library">in: ${esc(scopeTitle || 'document')} <i data-lucide="x" class="icon-lucide"></i></button>` : ''}
+      <div class="ss-pane">
+        <div class="ss-head">
+          <div class="ss-searchbox">
+            <i data-lucide="search" class="icon-lucide"></i>
+            <input id="ssInput" type="search" placeholder="Search every page of every document…"
+                   value="${esc(query)}" autocomplete="off" spellcheck="false">
+            ${scopeDoc ? `<button class="ss-scope" data-ss-action="clear-scope" title="Search whole library">in: ${esc(scopeTitle || 'document')} <i data-lucide="x" class="icon-lucide"></i></button>` : ''}
+          </div>
+          ${stats ? `<div class="ss-stats">${stats.search_indexed || 0} of ${stats.docs || 0} documents indexed${stats.search_indexed < stats.docs ? ` · <button class="ss-link" data-ss-action="reindex">build index</button>` : ''}</div>` : ''}
         </div>
-        ${stats ? `<div class="ss-stats">${stats.search_indexed || 0} of ${stats.docs || 0} documents indexed${stats.search_indexed < stats.docs ? ` · <button class="ss-link" data-ss-action="reindex">build index</button>` : ''}</div>` : ''}
-      </div>
-      ${body()}`;
+        <div class="ss-body" id="ssBody">${body()}</div>
+      </div>`;
   }
 
   function body() {
@@ -186,12 +188,22 @@
     }
   }
 
+  // Repaint ONLY the results region. A full studyMode.refreshTab() here would
+  // re-create #ssInput on every debounced search and steal focus mid-typing.
   function refresh() {
-    if (window.studyMode && window.studyMode.getTab() === 'search') {
-      window.studyMode.refreshTab();
-      const input = document.getElementById('ssInput');
-      if (input && input.value !== query) input.value = query;
-    }
+    if (!(window.studyMode && window.studyMode.getTab() === 'search')) return;
+
+    const bodyEl = document.getElementById('ssBody');
+    if (!bodyEl) return; // pane isn't mounted (reader/editor owns it) — skip
+
+    bodyEl.innerHTML = body();
+    if (window.lucide) window.lucide.createIcons();
+    // Sidebar's "in these documents" list is derived from results; refresh it
+    // on its own — it lives outside the content pane, so focus is untouched.
+    if (window.studyMode.refreshSidebar) window.studyMode.refreshSidebar();
+
+    const input = document.getElementById('ssInput');
+    if (input && input.value !== query) input.value = query;
   }
 
   function handleClick(e) {

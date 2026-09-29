@@ -222,8 +222,16 @@ class BaseBrowserEngine:
         user_data_dir: str | Path | None = None,
         profile_name: str | None = None,
         kill_existing: bool = True,
+        adopt_from: "BaseBrowserEngine | None" = None,
     ) -> None:
         self.spec = spec
+        # When set, this engine does NOT launch its own browser. Instead it
+        # attaches to `adopt_from`'s already-running CDP port and opens a NEW
+        # tab (page) in that same browser/context. Used for critique/agent
+        # sub-chats that must share the parent's logged-in profile without
+        # fighting over the parent's page or spawning a second browser on the
+        # same (lock-exclusive) user-data-dir.
+        self._adopt_from = adopt_from
         # When True, launch() kills any other browser holding this profile
         # before starting, so switching into scraper mode never hits a
         # SingletonLock war with a previously-open profile browser.
@@ -290,6 +298,13 @@ class BaseBrowserEngine:
     # -- launch / connect ------------------------------------------------
 
     async def launch(self) -> None:
+        # Adopted sub-engine: reuse the parent's live browser process + context,
+        # open a fresh tab for this stream. No new browser, no profile lock war,
+        # no governor slot.
+        if self._adopt_from is not None:
+            await self._connect_adopted()
+            return
+
         if await self._is_own_headed_session():
             logger.info("[%s] adopting existing headed session on port %d", self.spec.provider, self.port)
             await self.connect()
@@ -417,6 +432,42 @@ class BaseBrowserEngine:
                 last_err = exc
                 await asyncio.sleep(2)
         raise RuntimeError(f"CDP connect failed after 5 attempts: {last_err}")
+
+    async def _connect_adopted(self) -> None:
+        """Attach to the parent engine's live browser and open a NEW tab.
+
+        Shares the parent's Chromium process + context (same cookies, same
+        login, same user-data-dir), but binds ``self.page`` to a freshly
+        created tab so this stream never touches the parent's page. The
+        parent keeps owning the browser process; this engine never launches
+        or cleans up a browser (see :meth:`cleanup`).
+        """
+        parent = self._adopt_from
+        if parent is None:
+            raise RuntimeError("adopt_from engine is gone")
+        # Reuse the parent's Playwright driver + browser if it is already up;
+        # otherwise wait briefly for the parent to finish connecting.
+        for _ in range(20):
+            if getattr(parent, "browser", None) is not None and getattr(parent, "context", None) is not None:
+                break
+            await asyncio.sleep(0.5)
+        self.pw = getattr(parent, "pw", None)
+        self.browser = getattr(parent, "browser", None)
+        self.context = getattr(parent, "context", None)
+        if self.browser is None or self.context is None:
+            raise RuntimeError("parent browser not ready for adoption")
+        self.port = parent.port
+        # New tab in the SAME context — inherits login/cookies.
+        self.page = await self.context.new_page()
+        await self._setup_page(self.page)
+        if self.spec.stealth_mode:
+            try:
+                await self.page.expose_function("on_dom_mutation", lambda: self.mutation_event.set())
+            except Exception:
+                pass
+        if self.spec.url not in (self.page.url or ""):
+            await self.page.goto(self.spec.url, wait_until="domcontentloaded", timeout=60000)
+        logger.info("[%s] adopted parent browser on port %d, opened new tab", self.spec.provider, self.port)
 
     async def _poll_mutations(self) -> None:
         while True:
@@ -956,6 +1007,20 @@ class BaseBrowserEngine:
     # -- teardown --------------------------------------------------------
 
     async def cleanup(self) -> None:
+        # Adopted sub-engine: the browser + context belong to the parent, so we
+        # only close OUR tab and detach. Closing the shared browser here would
+        # tear down the parent chat's session.
+        if self._adopt_from is not None:
+            try:
+                if self.page is not None and not self.page.is_closed():
+                    await self.page.close()
+            except Exception:
+                pass
+            self.page = None
+            self.browser = None
+            self.context = None
+            self.pw = None
+            return
         try:
             if self.browser:
                 await self.browser.close()

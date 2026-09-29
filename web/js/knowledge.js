@@ -17,6 +17,10 @@
   let activeCategories = new Set(['semantic', 'episodic', 'procedural', 'ephemeral', 'protected']);
   let cy = null;              // Cytoscape instance
   let _kbZoomAbort = null;    // AbortController for the wheel-zoom listener
+  // The memory graph's own stylesheet, captured when it is first built. The
+  // study graph appends its rules on top of this so that switching between
+  // modes never leaves a graph styled by the other mode's sheet.
+  let _kbBaseStyles = null;
   let selectedNodeId = null;
   let toastTimer = null;
   let searchDebounce = null;
@@ -227,6 +231,369 @@
     // Search renders on input, not on mode switch
   }
 
+  /* ── Study-mode graph: topic -> document -> satellites ──────────────────
+   * A different model from the memory graph. In study mode the graph answers
+   * "what belongs to this topic, and what hangs off this document?", so the
+   * nodes are topics / docs / chats / notes / decks / highlights. Chat and
+   * agent mode keep the memory graph exactly as it was.
+   */
+
+  function isStudyMode() {
+    return document.body.getAttribute('data-mode') === 'study';
+  }
+
+  async function loadStudyGraph() {
+    const t = (() => { try { return localStorage.getItem('sable_token') || ''; } catch (e) { return ''; } })();
+    const res = await fetch('/api/study/graph', { headers: t ? { Authorization: 'Bearer ' + t } : {} });
+    if (!res.ok) throw new Error(res.statusText || ('HTTP ' + res.status));
+    return res.json();
+  }
+
+  // Appended to the base stylesheet. Every selector is keyed on [kind], which
+  // memory nodes never carry, so this cannot leak into the memory graph.
+  const KB_STUDY_STYLES = [
+    { selector: 'node[kind]', style: { 'width': 26, 'height': 26, 'shape': 'ellipse', 'background-opacity': 0.95, 'border-width': 2, 'border-color': '#0f0e17', 'label': 'data(label)', 'font-size': '7px', 'color': '#ffffff', 'text-valign': 'bottom', 'text-margin-y': 6, 'text-outline-width': 2, 'text-outline-color': '#0f0e17', 'font-family': "'Maple Mono', monospace", 'text-max-width': '140px', 'text-wrap': 'ellipsis' } },
+    { selector: 'node[kind = "topic"]', style: { 'shape': 'round-rectangle', 'width': 44, 'height': 28, 'background-color': '#9a7d4a', 'font-size': '9px', 'font-weight': 'bold' } },
+    { selector: 'node[kind = "doc"]', style: { 'shape': 'round-rectangle', 'width': 34, 'height': 34, 'background-color': '#4a90d9' } },
+    { selector: 'node[kind = "chat"]', style: { 'background-color': '#6b8e23' } },
+    { selector: 'node[kind = "note"]', style: { 'shape': 'diamond', 'background-color': '#c9a227' } },
+    { selector: 'node[kind = "deck"]', style: { 'shape': 'hexagon', 'background-color': '#a05fb0' } },
+    { selector: 'node[kind = "highlight"]', style: { 'shape': 'triangle', 'background-color': '#d97a4a', 'width': 20, 'height': 20 } },
+    { selector: 'edge[kind]', style: { 'width': 1.2, 'line-color': '#5a544a', 'opacity': 0.5, 'curve-style': 'bezier' } },
+    { selector: 'edge[kind = "contains"]', style: { 'width': 2, 'line-color': '#9a7d4a', 'opacity': 0.75 } },
+    // Interaction classes. The base stylesheet defines these for the memory
+    // graph, but a study-mode graph builds its own sheet — so without these
+    // hover/fade/selection would silently do nothing here.
+    { selector: 'node[kind].faded', style: { 'opacity': 0.15 } },
+    { selector: 'node[kind].hover', style: { 'width': 34, 'height': 34, 'background-opacity': 1, 'z-index': 999 } },
+    { selector: 'node[kind]:selected', style: { 'width': 34, 'height': 34, 'background-opacity': 1, 'border-width': 3, 'border-color': '#ffffff', 'z-index': 999 } },
+    { selector: 'edge[kind].faded', style: { 'opacity': 0.05 } },
+    { selector: 'edge[kind].highlighted', style: { 'width': 1.8, 'opacity': 0.85, 'line-color': '#c8b184' } },
+  ];
+
+  /**
+   * @param base  The caller's own rules (the memory graph passes its inline
+   *              sheet). Study styles are always appended last so they win on
+   *              specificity ties for study nodes.
+   */
+  function buildStyleSheet(borderColor, accentColor, base) {
+    return (base || []).concat(KB_STUDY_STYLES);
+  }
+
+  async function renderStudyGraph(container, loading, empty) {
+    let data;
+    try {
+      data = await loadStudyGraph();
+    } catch (e) {
+      loading.classList.add('hidden');
+      loading.innerHTML = '<span style="color:var(--danger)">Failed to load study graph</span>';
+      loading.classList.remove('hidden');
+      return;
+    }
+
+    const nodes = (data && data.nodes) || [];
+    const edges = (data && data.edges) || [];
+
+    if (!nodes.length) {
+      loading.classList.add('hidden');
+      empty.classList.remove('hidden');
+      if (cy) { cy.destroy(); cy = null; }
+      return;
+    }
+
+    empty.classList.add('hidden');
+    loading.classList.remove('hidden');
+
+    if (typeof cytoscape === 'undefined') {
+      try { await loadCytoscape(); }
+      catch (e) { loading.innerHTML = '<span style="color:var(--danger)">Failed to load graph library</span>'; return; }
+    }
+
+    const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      loading.classList.add('hidden');
+      setTimeout(() => renderGraph(), 200);
+      return;
+    }
+
+    loading.classList.add('hidden');
+
+    const style = getComputedStyle(document.documentElement);
+    const borderColor = style.getPropertyValue('--border').trim() || '#2a2720';
+    const accentColor = style.getPropertyValue('--accent').trim() || '#9a7d4a';
+    const elements = nodes.concat(edges);
+    const isFresh = !cy || cy.destroyed();
+
+    if (isFresh) {
+      cy = cytoscape({
+        container: container,
+        elements: elements,
+        style: buildStyleSheet(borderColor, accentColor, _kbBaseStyles),
+        layout: { name: 'preset' },
+        minZoom: 0.1,
+        maxZoom: 8,
+        boxSelectionEnabled: false,
+        userZoomingEnabled: false,
+      });
+      cy.on('tap', 'node', (evt) => selectStudyNode(evt.target));
+      cy.on('tap', (evt) => { if (evt.target === cy) deselectNode(); });
+      bindStudyInteractions(container);
+    } else {
+      // Reusing a live instance (possibly one built for the memory graph) —
+      // swap BOTH the elements and the stylesheet, or memory styles would
+      // apply to study nodes after a mode switch.
+      cy.batch(() => { cy.elements().remove(); cy.add(elements); });
+      cy.style().fromJson(buildStyleSheet(borderColor, accentColor, _kbBaseStyles)).update();
+    }
+
+    cy.layout({
+      name: 'cose-bilkent',
+      animate: 'end',
+      animationDuration: 500,
+      fit: true,
+      padding: 60,
+      numIter: 800,
+      randomize: true,
+      nodeRepulsion: 12000,
+      idealEdgeLength: 90,
+      edgeElasticity: 0.4,
+      gravity: 0.3,
+      nestingFactor: 0.1,
+      tile: true,
+      // Off deliberately: labels are hidden until zoom >= 1.4, so letting
+      // cose-bilkent size nodes by label makes it spread the graph far wider
+      // than the visible nodes need. Overlap is handled by relaxOverlaps().
+      nodeDimensionsIncludeLabels: false,
+      // Force-directed layouts MINIMISE overlap, they don't eliminate it.
+      // This runs on THIS layout's completion — a cy.one('layoutstop') would
+      // instead catch the constructor's preset layout and relax unplaced nodes.
+      stop: function () {
+        relaxOverlaps();
+        if (cy && !cy.destroyed()) cy.fit(cy.elements(), 60);
+      },
+    }).run();
+
+    cy.emit('zoom');
+  }
+
+  /**
+   * Push overlapping nodes apart until none intersect.
+   *
+   * Jacobi-style relaxation: measure every box, then resolve every overlapping
+   * pair against those measurements, then re-measure. Mutating during the pair
+   * scan would make later comparisons read stale coordinates, so each sweep
+   * works from a snapshot. Converges in a handful of sweeps on real graphs and
+   * bails out entirely if a sweep finds nothing to fix.
+   */
+  function relaxOverlaps(opts) {
+    if (!cy || cy.destroyed()) return;
+    const o = opts || {};
+    const pad = o.pad == null ? 12 : o.pad;
+    // Vertical room reserved for the label under each node. Labels only render
+    // at zoom >= 1.4, but relative positions are zoom-invariant — so a node
+    // pair that clears its label at layout time keeps clearing it when zoomed.
+    const labelSpace = o.labelSpace == null ? 20 : o.labelSpace;
+    const maxSweeps = o.maxSweeps == null ? 300 : o.maxSweeps;
+
+    const nodes = cy.nodes().filter((n) => !n.hasClass('faded') && !n.hasClass('hover'));
+    if (nodes.length < 2) return;
+
+    const arr = nodes.toArray();
+    const box = arr.map((n) => {
+      const bb = n.boundingBox({ includeLabels: false, includeOverlays: false });
+      return { n: n, w: bb.w, h: bb.h, x: n.position('x'), y: n.position('y') };
+    });
+
+    // Above this size the O(n^2) sweep costs more than it is worth — measured
+    // at 600 nodes it blocks the main thread for ~710ms — and the result still
+    // needs the grid pass. Skip straight to the guaranteed layout instead.
+    const SWEEP_LIMIT = 250;
+
+    // ── Pass 1: Gauss-Seidel separation ──
+    // Moves are applied immediately, so each later pair compares against
+    // already-corrected positions. Measured: 38 nodes in a tight cluster
+    // resolve to zero overlap in ~100 sweeps / 10ms. A Jacobi variant (batch
+    // the moves, apply at end of sweep) oscillates and never converges on the
+    // same input -- which is why this is written the slower-looking way.
+    // `tooBig` and `clean` are deliberately separate flags: overloading one to
+    // mean both "skip pass 1" and "pass 1 converged" also skips the grid
+    // fallback below, which left every large graph completely unrelaxed.
+    const tooBig = box.length > SWEEP_LIMIT;
+    let clean = false;
+    for (let s = 0; s < maxSweeps && !clean && !tooBig; s++) {
+      let moved = 0;
+      for (let i = 0; i < box.length; i++) {
+        const a = box[i];
+        for (let j = i + 1; j < box.length; j++) {
+          const b = box[j];
+          const ox = Math.min(a.x + a.w / 2 + pad, b.x + b.w / 2 + pad)
+                   - Math.max(a.x - a.w / 2 - pad, b.x - b.w / 2 - pad);
+          const oy = Math.min(a.y + a.h / 2 + pad + labelSpace, b.y + b.h / 2 + pad + labelSpace)
+                   - Math.max(a.y - a.h / 2 - pad, b.y - b.h / 2 - pad);
+          if (ox <= 0 || oy <= 0) continue;
+
+          // Separate along the axis with the least overlap -- the shortest
+          // push that clears the pair, so the layout drifts as little as it can.
+          moved++;
+          if (ox < oy) {
+            const half = ox / 2 + 0.5;
+            const sg = a.x <= b.x ? -1 : 1;
+            a.x += sg * half; b.x -= sg * half;
+          } else {
+            const half = oy / 2 + 0.5;
+            const sg = a.y <= b.y ? -1 : 1;
+            a.y += sg * half; b.y -= sg * half;
+          }
+        }
+      }
+      if (!moved) clean = true;
+    }
+
+    // ── Pass 2: guaranteed grid, only if relaxation stalled ──
+    // Dense graphs (measured: 200+ nodes) can leave residual overlap after the
+    // sweep budget. A square grid of max-size cells cannot overlap by
+    // construction, so this always terminates clean -- at the cost of
+    // discarding the organic layout.
+    if (!clean) {
+      let maxW = 0, maxH = 0;
+      for (const a of box) { if (a.w > maxW) maxW = a.w; if (a.h > maxH) maxH = a.h; }
+      const cellW = maxW + pad * 2;
+      const cellH = maxH + pad * 2 + labelSpace;
+      const cols = Math.ceil(Math.sqrt(box.length));
+      box.forEach((a, i) => {
+        a.x = (i % cols) * cellW;
+        a.y = Math.floor(i / cols) * cellH;
+      });
+    }
+
+    cy.batch(() => {
+      for (const a of box) a.n.position({ x: a.x, y: a.y });
+    });
+  }
+
+  function bindStudyInteractions(container) {
+    let hovered = null;
+    cy.on('mouseover', 'node', (evt) => {
+      if (hovered === evt.target) return;
+      hovered = evt.target;
+      const hood = hovered.closedNeighborhood();
+      const rest = cy.elements().not(hood);
+      cy.batch(() => {
+        rest.addClass('faded');
+        hood.addClass('hover');
+        hood.connectedEdges().addClass('highlighted');
+      });
+    });
+    cy.on('mouseout', 'node', () => {
+      if (!hovered) return;
+      hovered = null;
+      cy.batch(() => cy.elements().removeClass('faded highlighted hover'));
+    });
+
+    let zoomTarget = null, zoomRAF = null, zoomAnchor = null;
+    function stepZoom() {
+      if (!cy || cy.destroyed()) { zoomRAF = null; zoomTarget = null; return; }
+      const cur = cy.zoom();
+      const diff = zoomTarget - cur;
+      if (Math.abs(diff) < 0.004) {
+        cy.zoom({ level: zoomTarget, renderedPosition: zoomAnchor });
+        zoomRAF = null; zoomTarget = null;
+        return;
+      }
+      cy.zoom({ level: cur + diff * 0.22, renderedPosition: zoomAnchor });
+      zoomRAF = requestAnimationFrame(stepZoom);
+    }
+    if (_kbZoomAbort) _kbZoomAbort.abort();
+    _kbZoomAbort = new AbortController();
+    container.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const r = container.getBoundingClientRect();
+      zoomAnchor = { x: e.clientX - r.left, y: e.clientY - r.top };
+      const base = zoomTarget == null ? cy.zoom() : zoomTarget;
+      const intensity = e.ctrlKey ? 0.012 : 0.0025;
+      zoomTarget = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), base * Math.exp(-e.deltaY * intensity)));
+      if (!zoomRAF) zoomRAF = requestAnimationFrame(stepZoom);
+    }, { passive: false, signal: _kbZoomAbort.signal });
+
+    cy.on('zoom', () => {
+      const show = cy.zoom() >= 1.4;
+      cy.batch(() => cy.nodes().toggleClass('zoomed', show));
+    });
+  }
+
+  function selectStudyNode(node) {
+    cy.elements().removeClass('selected');
+    node.select();
+    const d = node.data();
+    const open = () => {
+      if (d.kind === 'topic') {
+        closeKnowledge();
+        const railBtn = document.querySelector('.rail-btn[data-rail="knowledge"]');
+        if (railBtn) railBtn.classList.remove('active');
+        window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        if (window.studyMode) {
+          window.studyMode.setTab('library');
+          if (window.studyMode.openTopic) window.studyMode.openTopic(d.label);
+        }
+        return;
+      }
+      if (d.kind === 'doc' || d.kind === 'highlight') {
+        closeKnowledge();
+        const rb = document.querySelector('.rail-btn[data-rail="knowledge"]');
+        if (rb) rb.classList.remove('active');
+        window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        if (window.studyMode && window.studyMode.openDoc) window.studyMode.openDoc(d.docId, 1);
+        return;
+      }
+      if (d.kind === 'chat' && d.chatId) {
+        closeKnowledge();
+        const rb = document.querySelector('.rail-btn[data-rail="knowledge"]');
+        if (rb) rb.classList.remove('active');
+        window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        if (typeof window._sableSelectChat === 'function') window._sableSelectChat(d.chatId);
+        return;
+      }
+      if (d.kind === 'note' && window.studyMode) {
+        closeKnowledge();
+        const rb = document.querySelector('.rail-btn[data-rail="knowledge"]');
+        if (rb) rb.classList.remove('active');
+        window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        window.studyMode.setTab('notes');
+        return;
+      }
+      if (d.kind === 'deck' && window.studyMode) {
+        closeKnowledge();
+        const rb = document.querySelector('.rail-btn[data-rail="knowledge"]');
+        if (rb) rb.classList.remove('active');
+        window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        window.studyMode.setTab('decks');
+        return;
+      }
+    };
+    showStudyDetail(d, open);
+  }
+
+  function showStudyDetail(d, onOpen) {
+    const panel = $('kbDetailPanel');
+    if (!panel) return;
+    const KIND_LABEL = { topic: 'Topic', doc: 'Document', chat: 'Study chat', note: 'Note', deck: 'Deck', highlight: 'Highlights' };
+    const rows = [];
+    rows.push('<div class="kb-detail-row"><span class="kb-detail-label">Type</span><span class="kb-detail-value">' + escHtml(KIND_LABEL[d.kind] || d.kind) + '</span></div>');
+    if (d.pages) rows.push('<div class="kb-detail-row"><span class="kb-detail-label">Pages</span><span class="kb-detail-value">' + d.pages + '</span></div>');
+    if (d.count) rows.push('<div class="kb-detail-row"><span class="kb-detail-label">Count</span><span class="kb-detail-value">' + d.count + '</span></div>');
+
+    panel.innerHTML = '<div class="kb-detail-head"><h3 class="kb-detail-title">' + escHtml(d.label || '') + '</h3>'
+      + '<button class="kb-detail-close" data-kb-detail-close>&times;</button></div>'
+      + '<div class="kb-detail-body">' + rows.join('') + '</div>'
+      + '<div class="kb-detail-actions"><button class="kb-detail-btn" data-kb-study-open>Open</button></div>';
+    panel.classList.remove('hidden');
+
+    const btn = panel.querySelector('[data-kb-study-open]');
+    if (btn) btn.addEventListener('click', onOpen);
+    const close = panel.querySelector('[data-kb-detail-close]');
+    if (close) close.addEventListener('click', () => { panel.classList.add('hidden'); });
+  }
+
   /* ── Graph rendering (Cytoscape.js) ── */
   async function renderGraph() {
     const container = $('kbGraphCanvas');
@@ -234,6 +601,9 @@
     const empty = $('kbGraphEmpty');
 
     if (!container) return;
+
+    // Study mode swaps in a different graph model entirely.
+    if (isStudyMode()) return renderStudyGraph(container, loading, empty);
 
     const filtered = getFilteredEntries();
 
@@ -356,7 +726,11 @@
       cy = cytoscape({
         container,
         elements,
-        style: [
+        // Study styles are appended unconditionally. Their selectors key on
+        // [kind], which memory nodes never carry, so they are inert unless the
+        // study graph is on screen -- and Cytoscape specificity means
+        // node[kind] wins over the bare node rule above either way.
+        style: buildStyleSheet(borderColor, accentColor, _kbBaseStyles = [
           {
             selector: 'node',
             style: {
@@ -454,7 +828,7 @@
             selector: 'edge.faded',
             style: { 'opacity': 0.04 }
           },
-        ],
+        ]),
         layout: { name: 'preset' },
         minZoom: 0.1,
         maxZoom: 8,
@@ -522,11 +896,15 @@
 
       cy.ready(() => cy.emit('zoom'));
     } else {
-      // Reuse instance — swap elements, keep viewport, no re-init
+      // Reuse instance — swap elements, keep viewport, no re-init.
+      // The stylesheet is swapped too: if this instance was last used for the
+      // study graph it would still be carrying study rules, and memory nodes
+      // (which have no [kind]) would fall back to Cytoscape defaults.
       cy.batch(() => {
         cy.elements().remove();
         cy.add(elements);
       });
+      cy.style().fromJson(buildStyleSheet(borderColor, accentColor, _kbBaseStyles)).update();
     }
 
     // Store entry data on nodes for detail panel
@@ -923,7 +1301,9 @@
     const inputEl = $('inputArea');
     if (chatEl) chatEl.classList.add('hidden');
     if (inputEl) inputEl.classList.add('hidden');
-    ['searchView', 'researchView', 'imageView', 'promptgenView', 'dashboardView', 'calendarView', 'ocrView'].forEach(id => {
+    // #studyView is position:absolute inset:0 z-index:20 — without it in this
+    // list the Knowledge Base renders behind the study dashboard in study mode.
+    ['searchView', 'researchView', 'imageView', 'promptgenView', 'dashboardView', 'calendarView', 'ocrView', 'studyView'].forEach(id => {
       const el = $(id);
       if (el) { el.classList.add('hidden'); el.style.display = ''; }
     });
@@ -1078,6 +1458,18 @@
       } finally {
         btn?.classList.remove('spinning');
       }
+    });
+
+    // Switching between chat/agent and study swaps which graph model is on
+    // screen. Nothing else repaints the canvas, so without this the previous
+    // mode's nodes would linger.
+    window.addEventListener('sable-mode-changed', () => {
+      if (!isOpen) return;
+      _cachedGraphData = null;
+      const el = $('kbGraphCanvas');
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) renderCurrentMode();
     });
 
     // Listen for rail-switch to toggle knowledge base

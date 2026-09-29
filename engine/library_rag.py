@@ -284,3 +284,69 @@ def context_for(
     if not parts:
         return "", []
     return "\n\n---\n\n".join(parts), sorted(set(pages))
+
+
+def context_for_docs(
+    doc_ids: list[str],
+    query: str,
+    *,
+    labels: dict[str, str] | None = None,
+    current_doc: str = "",
+    max_chars: int = _MAX_CONTEXT_CHARS,
+    k: int = _DEFAULT_K,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Topic-scoped retrieval: merge the top passages across several documents.
+
+    Single-doc ``context_for`` answers "what does this book say"; this answers
+    "what does this topic say" by scoring every indexed doc in the topic and
+    interleaving the survivors by score. Each hit keeps its ``doc_id`` so the
+    caller can cite which book a passage came from.
+
+    ``current_doc`` is the document the reader has open. Its passages are
+    tagged ``CURRENT DOCUMENT`` and every other document's ``OTHER DOCUMENT``,
+    so the model can tell whether a fact came from the book being read or a
+    sibling in the same topic.
+
+    Returns ``(context, hits)``, or ``("", [])`` when nothing is indexed.
+    """
+    ids = [d for d in dict.fromkeys(doc_ids or []) if d]
+    if not ids or not str(query or "").strip():
+        return "", []
+
+    # Scale the passage budget with the topic size, then cap it: a six-doc
+    # topic earns more room than the single-doc default, but never unbounded.
+    total_k = max(_DEFAULT_K, min(24, int(k) * len(ids)))
+    per_doc = max(2, total_k // len(ids) + 1)
+
+    merged: list[dict[str, Any]] = []
+    for doc_id in ids:
+        for hit in retrieve(doc_id, query, k=per_doc):
+            merged.append({**hit, "doc_id": doc_id})
+    if not merged:
+        return "", []
+
+    merged.sort(key=lambda h: -float(h.get("score") or 0.0))
+    budget = max(2_000, int(max_chars or _MAX_CONTEXT_CHARS))
+    parts: list[str] = []
+    hits: list[dict[str, Any]] = []
+    used = 0
+    for hit in merged:
+        label = (labels or {}).get(hit["doc_id"]) or hit["doc_id"]
+        origin = "CURRENT DOCUMENT" if hit["doc_id"] == current_doc else "OTHER DOCUMENT"
+        block = f"[{origin}: {label} | page {hit['page']}]\n{hit['text']}"
+        if used + len(block) > budget:
+            break
+        parts.append(block)
+        hits.append({
+            "doc_id": hit["doc_id"],
+            "page": int(hit["page"]),
+            "score": hit.get("score"),
+            "current": hit["doc_id"] == current_doc,
+        })
+        used += len(block)
+        if len(parts) >= total_k:
+            break
+    if not parts:
+        return "", []
+    return "\n\n---\n\n".join(parts), hits
+

@@ -163,6 +163,7 @@ window.safeCopy = async function(text) {
         `<button class="combined-provider-pill icon-btn" data-provider="${h.pid}" data-profile="${acc.name}" style="width:auto;padding:3px 9px;font-size:10px;white-space:nowrap;${h.active ? 'border-color:var(--accent);color:var(--accent-text);background:var(--accent-dim);font-weight:600;' : ''}" title="Switch ${h.label} to ${acc.name}">${h.label}${h.active ? ' ●' : ''}</button>`
       ).join("");
       const unregPill = entry.unregistered ? `<span style="font-size:10px;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:1px 5px;">unregistered</span>` : "";
+      const hasBackup = acc.has_backup;
       return `<div style="background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:14px 18px;display:flex;flex-direction:column;gap:10px;margin-bottom:8px;">
         <div style="min-width:0;">
           <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
@@ -175,6 +176,13 @@ window.safeCopy = async function(text) {
             ${acc.has_backup ? _badge('backup') : ''}
             ${unregPill}
           </div>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
+          <button class="icon-btn account-backup-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Backup</button>
+          ${hasBackup ? `<button class="icon-btn account-restore-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Restore</button>` : ''}
+          <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Rename</button>
+          <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Open</button>
+          ${entry.activeFor && entry.activeFor.length ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
         </div>
         <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
           <span style="font-size:10px;color:var(--text-dim);margin-right:2px;">Use for:</span>
@@ -1607,6 +1615,63 @@ window.safeCopy = async function(text) {
   window.addEventListener('resize', closeCtx);
   window.addEventListener('scroll', closeCtx, true);
 
+  // ── Chat transcript export (Copy Chat / Download Chat) ──────
+  // Both hit /api/chats/{id}/export/*, which rebuilds the full transcript
+  // server-side from messages + skill_events. The PDF render walks the whole
+  // chat, so it can take a few seconds on long conversations.
+  async function _exportChatFetch(path, chatId) {
+    const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/export/${path}`);
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch { /* non-JSON error */ }
+      throw new Error(detail);
+    }
+    return res;
+  }
+
+  async function copyChatTranscript() {
+    if (!activeChatId) { showToast('No active chat to copy', 'error'); return; }
+    showToast('Building transcript…', 'info');
+    try {
+      const res = await _exportChatFetch('transcript', activeChatId);
+      const text = await res.text();
+      const ok = await safeCopy(text);
+      showToast(
+        ok ? `Copied transcript (${text.length.toLocaleString()} chars)` : 'Clipboard write failed',
+        ok ? 'success' : 'error',
+      );
+    } catch (err) {
+      showToast('Copy Chat failed: ' + err.message, 'error');
+    }
+  }
+
+  async function downloadChatPdf() {
+    if (!activeChatId) { showToast('No active chat to download', 'error'); return; }
+    showToast('Rendering PDF — this can take a moment…', 'info');
+    try {
+      const res = await _exportChatFetch('pdf', activeChatId);
+      const blob = await res.blob();
+      // Honour the server's Content-Disposition filename when present.
+      const cd = res.headers.get('Content-Disposition') || '';
+      const match = cd.match(/filename="?([^";]+)"?/i);
+      const title = (chatList.find(c => c.id === activeChatId) || {}).title || 'chat';
+      const fallback = (title.replace(/[\/:*?"<>|]+/g, '_').trim() || 'chat') + '.pdf';
+      const filename = match ? match[1] : fallback;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      showToast(`Downloaded ${filename}`, 'success');
+    } catch (err) {
+      showToast('Download Chat failed: ' + err.message, 'error');
+    }
+  }
+
   ctxMenu.addEventListener('click', async (e) => {
     const item = e.target.closest('.ctx-item');
     if (!item) return;
@@ -1620,7 +1685,11 @@ window.safeCopy = async function(text) {
 
     closeCtx();
 
-    if (action === 'copy') {
+    if (action === 'copy-chat') {
+      await copyChatTranscript();
+    } else if (action === 'download-chat') {
+      await downloadChatPdf();
+    } else if (action === 'copy') {
       const sel = window.getSelection()?.toString() || '';
       if (sel) {
         await safeCopy(sel);
