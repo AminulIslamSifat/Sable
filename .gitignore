@@ -1,0 +1,12 @@
+# Release binaries are attached to GitHub Releases, not committed.
+releases/
+*.zip
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
