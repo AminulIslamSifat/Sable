@@ -72,6 +72,10 @@ LIBRARY_SEARCH_DB = LIBRARY_DIR / "search.db"
 LIBRARY_SESSIONS_PATH = LIBRARY_DIR / "sessions.json"
 # Cached per-doc chunk embeddings for retrieval-augmented doc Q&A.
 LIBRARY_EMBED_DIR = LIBRARY_DIR / "embeddings"
+# Per-doc indexing job state (OCR + AI pass cursors) — resumable across restarts.
+LIBRARY_JOBS_DIR = LIBRARY_DIR / "jobs"
+# Rendered page images produced by the OCR pass (cached so a resume is cheap).
+LIBRARY_OCR_DIR = LIBRARY_DIR / "ocr_pages"
 
 # Display name for the user (used in session personalization)
 USER_NAME = os.getenv("SABLE_USER_NAME", "User")
@@ -105,40 +109,171 @@ MEMORY_SEARCH_MAX_PROMPT_CHARS = 20000
 # Browser profile directories — single source of truth for all browser data paths.
 # All profiles live under system/ to keep the project root clean.
 _SYSTEM = _ROOT / "system"
+# Legacy global active-account file — kept ONLY for one-time migration into the
+# per-provider store below. No provider reads it at runtime anymore.
 _ACTIVE_ACCOUNT_FILE = _SYSTEM / ".active_account"
+# Per-provider active browser store. Every browser-backed provider owns its own
+# slot; there is no shared global browser. Shape: {provider: "browser-data-accN"}.
+_ACTIVE_ACCOUNTS_FILE = _SYSTEM / ".active_accounts.json"
+
+# Every provider that owns a browser profile slot, in display order. `qwen` is
+# the PRIMARY slot: internal callers that don't name a provider (default chat
+# browser, DeepSeek, scraper fallbacks) resolve to it.
+BROWSER_PROVIDERS: tuple[str, ...] = (
+    "qwen",
+    "deepseek",
+    "deepseek_scraper",
+    "zai",
+    "gemini_web",
+    "mimo",
+    "kimi",
+    "chatgpt",
+    "mistral_web",
+)
+PRIMARY_BROWSER_PROVIDER = "qwen"
+
+# Guard so the legacy → per-provider migration runs at most once per process.
+_ACTIVE_ACCOUNTS_MIGRATED = False
 
 
-def get_active_account() -> str:
-    """Get the active browser account name from the config file.
-
-    When the file is empty or missing, auto-selects the best available account
-    using priority: fresh (lowest number) > captcha-blocked (oldest) and persists
-    the selection so subsequent calls are stable.
-    """
+def _load_active_accounts() -> dict[str, str]:
+    """Read the per-provider active-account store (empty dict on any failure)."""
+    import json as _json
     try:
-        name = _ACTIVE_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
-        if name:
-            return name
+        if _ACTIVE_ACCOUNTS_FILE.is_file():
+            data = _json.loads(_ACTIVE_ACCOUNTS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {
+                    str(k): str(v)
+                    for k, v in data.items()
+                    if isinstance(v, str) and v.strip()
+                }
+    except Exception:
+        pass
+    return {}
+
+
+def _save_active_accounts(store: dict[str, str]) -> None:
+    """Persist the per-provider store atomically (write-to-tmp + rename)."""
+    import json as _json
+    import tempfile
+    import os as _os
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(_ACTIVE_ACCOUNTS_FILE.parent), suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(_json.dumps(store, indent=2))
+            _os.replace(tmp, str(_ACTIVE_ACCOUNTS_FILE))
+        except BaseException:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:
+        logger.warning("Failed to write active-accounts store: %s", exc)
+
+
+def _ensure_active_accounts_migrated() -> None:
+    """Seed the per-provider store from legacy state on first run (once).
+
+    Sources, in order of increasing precedence:
+      1. `system/.active_account` — seeds EVERY provider slot (old global).
+      2. `settings.json → provider_accounts` — explicit per-provider pins win.
+    If neither exists, slots are left empty and auto-assigned lazily on read.
+    """
+    global _ACTIVE_ACCOUNTS_MIGRATED
+    if _ACTIVE_ACCOUNTS_MIGRATED:
+        return
+    _ACTIVE_ACCOUNTS_MIGRATED = True
+    if _ACTIVE_ACCOUNTS_FILE.is_file():
+        return
+
+    store: dict[str, str] = {}
+    # 1) legacy global → seed all provider slots
+    try:
+        legacy = _ACTIVE_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
     except OSError:
+        legacy = ""
+    if legacy:
+        for _p in BROWSER_PROVIDERS:
+            store[_p] = legacy
+    # 2) explicit pins override
+    try:
+        import json as _json
+        sp = _SYSTEM / "settings.json"
+        if sp.is_file():
+            data = _json.loads(sp.read_text(encoding="utf-8"))
+            pins = data.get("provider_accounts")
+            if isinstance(pins, dict):
+                for prov, acct in pins.items():
+                    if isinstance(acct, str) and acct.strip():
+                        store[str(prov)] = acct.strip()
+    except Exception:
         pass
 
-    # Auto-select best available account instead of falling back to legacy name
+    if store:
+        _save_active_accounts(store)
+        logger.info("Migrated active-account store: %s", store)
+
+
+def get_provider_active_account(provider: str) -> str:
+    """Resolve the active browser account for ONE provider.
+
+    Each provider owns an independent slot — switching one never moves another.
+    Unset slots fall back to the primary provider's slot (fresh-install path);
+    if even that is unset, auto-select an available account and persist it.
+    """
+    _ensure_active_accounts_migrated()
+    store = _load_active_accounts()
+
+    # alias-aware lookup (e.g. "gemini" → "gemini_web")
+    for key in _PROVIDER_ALIASES.get(provider, (provider,)):
+        val = store.get(key)
+        if val:
+            return val
+
+    # Fall back to the primary provider's slot
+    primary = store.get(PRIMARY_BROWSER_PROVIDER)
+    if primary:
+        return primary
+
+    # Nothing configured at all — auto-select and persist for the primary.
     selected = get_next_available_account()
     if selected:
-        set_active_account(selected)
-        logger.info("Auto-selected active account: %s (was unset)", selected)
+        set_provider_active_account(PRIMARY_BROWSER_PROVIDER, selected)
+        logger.info("Auto-selected %s active account: %s (was unset)",
+                    PRIMARY_BROWSER_PROVIDER, selected)
         return selected
 
-    # No accounts exist at all — fall back to legacy name as last resort
     return "browser-data"
 
 
-def set_active_account(name: str) -> None:
-    """Persist the active browser account name to a config file."""
-    try:
-        _ACTIVE_ACCOUNT_FILE.write_text(name + "\n", encoding="utf-8")
-    except OSError as exc:
-        logger.warning("Failed to write active account file: %s", exc)
+def set_provider_active_account(provider: str, name: str) -> None:
+    """Persist ONE provider's active account (independent of every other)."""
+    _ensure_active_accounts_migrated()
+    store = _load_active_accounts()
+    if name:
+        store[provider] = name
+    else:
+        store.pop(provider, None)
+    _save_active_accounts(store)
+    if provider == PRIMARY_BROWSER_PROVIDER:
+        # Keep the legacy file in sync for any straggler that still reads it.
+        try:
+            _ACTIVE_ACCOUNT_FILE.write_text(name + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def get_active_account(provider: str | None = None) -> str:
+    """Active browser account for `provider` (defaults to the primary = qwen)."""
+    return get_provider_active_account(provider or PRIMARY_BROWSER_PROVIDER)
+
+
+def set_active_account(name: str, provider: str | None = None) -> None:
+    """Set the active account for `provider` (defaults to the primary = qwen)."""
+    set_provider_active_account(provider or PRIMARY_BROWSER_PROVIDER, name)
 
 
 # ── Sync-fallback tracking ──────────────────────────────────────────────────
@@ -189,9 +324,14 @@ def needs_instruction_fallback(account: str | None = None) -> bool:
         return False
 
 
-def get_browser_data_dir() -> Path:
-    """Return the browser data directory for the currently active account."""
-    return _SYSTEM / get_active_account()
+def get_browser_data_dir(provider: str | None = None) -> Path:
+    """Return the browser data directory for a provider's active account.
+
+    provider=None resolves to the PRIMARY provider (qwen) — the default chat
+    browser. Each provider owns an independent slot, so this NEVER returns
+    another provider's profile.
+    """
+    return _SYSTEM / get_active_account(provider)
 
 
 # Backward-compatible constant — resolves at import time.
@@ -721,9 +861,9 @@ _QWEN_MAX_TOKENS_PER_ACCOUNT = 10
 _QWEN_LEGACY_MIGRATED = False  # guard so migration only runs once
 
 
-def _resolve_active_account() -> str:
-    """Get the active account name. Delegates to get_active_account()."""
-    return get_active_account()
+def _resolve_active_account(provider: str | None = None) -> str:
+    """Resolve the active account name for a provider (default = primary/qwen)."""
+    return get_active_account(provider)
 
 
 def load_qwen_token_store() -> dict[str, list[dict[str, str]]]:
@@ -1194,55 +1334,30 @@ _PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def get_provider_account(provider: str) -> str | None:
-    """Return the pinned account name for a provider, or None to follow active."""
+    """Return the provider's own active account (no global fallback).
+
+    Retained as a thin, name-compatible alias over the per-provider store so
+    existing callers keep working — each provider now always has its own slot.
+    """
     if not provider:
         return None
-    try:
-        import json as _json
-        p = _SYSTEM / "settings.json"
-        if p.is_file():
-            data = _json.loads(p.read_text(encoding="utf-8"))
-            mapping = data.get("provider_accounts")
-            if isinstance(mapping, dict):
-                for key in _PROVIDER_ALIASES.get(provider, (provider,)):
-                    val = mapping.get(key)
-                    if isinstance(val, str) and val.strip():
-                        return val.strip()
-    except Exception:
-        pass
-    return None
+    return get_provider_active_account(provider)
 
 
 def set_provider_account(provider: str, account: str | None) -> None:
-    """Pin (or clear, with None) a provider to a specific account."""
-    import json as _json
-    p = _SYSTEM / "settings.json"
-    data: dict = {}
-    if p.is_file():
-        try:
-            data = _json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-    mapping = data.get("provider_accounts")
-    if not isinstance(mapping, dict):
-        mapping = {}
-    if account:
-        mapping[provider] = account
-    else:
-        mapping.pop(provider, None)
-    data["provider_accounts"] = mapping
-    p.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    """Set (or clear, with None) a provider's own active account."""
+    if not provider:
+        return
+    set_provider_active_account(provider, account or "")
 
 
 def get_provider_browser_dir(provider: str) -> Path:
-    """Resolve the browser data dir for a provider.
+    """Resolve the browser data dir for a provider — ALWAYS its own slot.
 
-    Pinned account wins; otherwise follows the global active account.
+    There is no global fallback anymore: every provider owns an independent
+    active account, so switching one never moves another.
     """
-    pinned = get_provider_account(provider)
-    if pinned:
-        return _SYSTEM / pinned
-    return get_browser_data_dir()
+    return _SYSTEM / get_provider_active_account(provider)
 
 
 

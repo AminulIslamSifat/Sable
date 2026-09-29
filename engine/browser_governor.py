@@ -1,17 +1,24 @@
-"""engine/browser_governor.py — hard, cross-process limits on Sable's browser fleet.
+"""engine/browser_governor.py — priority-aware, cross-process limits on Sable's browser fleet.
 
 Two guarantees, enforced for EVERY browser Sable spawns:
 
-  1. At most ``MAX_BROWSERS`` browser instances exist at once, across *all*
-     Sable server processes. The stable install and a dev tree can both be
-     running, so an in-process semaphore would let each hold its own quota —
-     the cap is kept in a shared slot directory instead.
+  1. At most ``MAX_BROWSERS`` browser instances exist at once, per Sable
+     process. The stable install and a dev tree can both be running, so an
+     in-process semaphore would let each hold its own quota — the cap is kept
+     in a shared slot directory instead.
 
-  2. Each browser is confined to its own cgroup v2 with a hard memory ceiling
-     (``MAX_BYTES``). Chromium's zygote/gpu/renderer children inherit the
-     cgroup, and ``memory.oom.group`` makes the kernel kill the whole tree as
-     a unit on breach — so a runaway renderer cannot leave orphaned helpers
-     re-parented to init.
+  2. Slots carry a PRIORITY. ``chat`` browsers (ghost tabs, scraper sessions)
+     are long-lived and outrank ``ephemeral`` ones (header / token refreshes).
+     When the cap is full a chat claim evicts the least-recently-used
+     ephemeral browser instead of waiting; an ephemeral claim never evicts
+     anything — it waits.
+
+There is deliberately NO memory-based or idle-based killing here. A browser
+dies when the code that owns it says so (job done -> close), or when it is an
+orphan (owner gone). Each browser is still tagged with a cgroup v2 label so
+orphan detection can tell "Sable spawned this" apart from an unrelated
+Chromium — but the cgroup carries no ``memory.max`` and no ``oom.group``, so
+the kernel never OOM-kills a browser tree behind our back.
 
 Everything degrades gracefully: if cgroups are unavailable the concurrency
 cap still holds and a warning is logged once.
@@ -38,16 +45,16 @@ logger = logging.getLogger("sable.browser_governor")
 # matched by owner_pid), so a second install / dev tree on the same host no
 # longer steals this server's slots and starves its relaunches.
 MAX_BROWSERS = int(os.environ.get("SABLE_MAX_BROWSERS", "2"))
-# Fleet-wide memory backstop for the SHARED cgroup only — not a concurrency
-# cap. With per-instance caps, total browsers scale with the number of running
-# Sable servers; this bounds what the shared cgroup tolerates before the kernel
-# OOM-kills the group as a unit.
+# Fleet-wide concurrency backstop across every Sable server on the host. Kept
+# only so the shared cgroup label tree can't grow without bound; it is NOT a
+# per-instance cap and it never kills a browser by itself.
 MAX_BROWSERS_GLOBAL = int(os.environ.get("SABLE_MAX_BROWSERS_GLOBAL", "8"))
-MAX_BYTES = int(os.environ.get("SABLE_BROWSER_MEM_MB", "1024")) * 1024 * 1024
 ACQUIRE_TIMEOUT = float(os.environ.get("SABLE_BROWSER_SLOT_TIMEOUT", "120"))
-# A browser untouched for longer than this is a candidate for eviction when
-# this Sable is at its per-instance cap and needs a slot.
-IDLE_EVICT_SEC = float(os.environ.get("SABLE_BROWSER_IDLE_EVICT", "300"))
+
+# Slot priorities. A chat browser is the user's live connection and is never
+# evicted to make room; an ephemeral browser exists to mint a token and dies.
+PRIORITY_CHAT = "chat"
+PRIORITY_EPHEMERAL = "ephemeral"
 
 _RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
 _SLOT_DIR = _RUNTIME / "sable-browser-slots"
@@ -200,15 +207,8 @@ def _ensure_cgroup_root() -> Path | None:
                     if not _cgroup_warned:
                         logger.warning("could not enable memory controller: %s", exc)
                         _cgroup_warned = True
-        # Aggregate ceiling for the whole fleet, on top of the per-browser cap.
-        # Uses the GLOBAL backstop, not the per-instance cap — many Sable
-        # servers may share this cgroup.
-        agg = root / "memory.max"
-        if agg.exists():
-            try:
-                agg.write_text(str(MAX_BROWSERS_GLOBAL * MAX_BYTES))
-            except Exception:
-                pass
+        # No memory.max / oom.group here on purpose: the cgroup is an ownership
+        # LABEL, not a kill switch. Sable decides when a browser dies.
         return root
     except Exception as exc:
         if not _cgroup_warned:
@@ -218,24 +218,69 @@ def _ensure_cgroup_root() -> Path | None:
 
 
 def _confine(pid: int) -> str | None:
-    """Move *pid* into a 1 GiB cgroup. Returns the cgroup path on success."""
+    """Tag *pid* into Sable's browser cgroup. Returns the cgroup path.
+
+    This is a LABEL, not a leash: no ``memory.max``, no ``memory.oom.group``.
+    Its only job is to make ``_is_sable_confined`` — and therefore orphan
+    detection — reliable, so ``reap_orphans`` can tell a browser Sable
+    launched from an unrelated Chromium on a similar profile path.
+    """
     root = _ensure_cgroup_root()
     if root is None:
         return None
     cg = root / f"browser-{pid}"
     try:
         cg.mkdir(exist_ok=True)
-        (cg / "memory.max").write_text(str(MAX_BYTES))
-        # No swap escape hatch — otherwise the cap just pushes pressure to disk.
-        (cg / "memory.swap.max").write_text("0")
-        # Kill the entire browser tree as one unit on breach, instead of one
-        # unlucky renderer — that is what leaves orphans behind.
-        (cg / "memory.oom.group").write_text("1")
         (cg / "cgroup.procs").write_text(str(pid))
         return str(cg)
     except Exception as exc:
-        logger.warning("cgroup confine failed for pid %d: %s", pid, exc)
+        logger.warning("cgroup tagging failed for pid %d: %s", pid, exc)
         return None
+
+
+def _profile_has_live_cgroup(user_data_dir: str) -> bool:
+    """True if any confined Sable browser is currently alive for this profile.
+
+    Reads the cgroup tree under ``sable-browsers/`` and matches by the
+    ``user_data_dir`` recorded in each browser's cmdline. Used as a guard
+    before pruning a never-attached slot: a slow attach (large session
+    restore) must not be mistaken for an abandoned launch.
+    """
+    if not user_data_dir:
+        return False
+    try:
+        want = os.path.realpath(user_data_dir)
+    except Exception:
+        return False
+    cg = _cgroup_base()
+    if cg is None:
+        return False
+    browsers = cg / "sable-browsers"
+    if not browsers.is_dir():
+        return False
+    for entry in browsers.iterdir():
+        procs = entry / "cgroup.procs"
+        if not procs.exists():
+            continue
+        try:
+            pids = [int(x) for x in procs.read_text().split() if x.isdigit()]
+        except Exception:
+            continue
+        for pid in pids:
+            try:
+                cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            except Exception:
+                continue
+            for part in cmd:
+                if not part.startswith(b"--user-data-dir="):
+                    continue
+                try:
+                    udd = os.path.realpath(part.split(b"=", 1)[1].decode())
+                except Exception:
+                    continue
+                if udd == want:
+                    return True
+    return False
 
 
 def _release_cgroup(cg_path: str | None) -> None:
@@ -257,7 +302,13 @@ def _prune_dead_locked() -> int:
     # launch (find_browser_pids returned empty, launch crashed before attach),
     # NOT a live browser. Without this, a never-attached slot pins MAX_BROWSERS
     # forever on the still-alive owner_pid — wedging every future relaunch.
-    attach_grace = float(os.environ.get("SABLE_SLOT_ATTACH_GRACE", "30"))
+    #
+    # NOTE: the grace must be generous. A cold profile with a large session
+    # restore can take >60s to reach attach(). If we prune mid-launch, the
+    # next _try_claim sees a free slot, launches a SECOND browser on the same
+    # profile, and we get a SingletonLock purge war (kill_existing=True) that
+    # manifests as an endless kill/relaunch storm.
+    attach_grace = float(os.environ.get("SABLE_SLOT_ATTACH_GRACE", "180"))
     for f in _SLOT_DIR.glob("slot-*.json"):
         try:
             data = json.loads(f.read_text())
@@ -268,9 +319,14 @@ def _prune_dead_locked() -> int:
         bpid = data.get("browser_pid")
         if bpid is None:
             age = now - float(data.get("ts", 0) or 0)
-            if age > attach_grace:
-                f.unlink(missing_ok=True)
-                removed += 1
+            if age <= attach_grace:
+                continue
+            # Before pruning, double-check no live Sable browser is already
+            # confined for this profile — an attach may just be slow.
+            if _profile_has_live_cgroup(str(data.get("user_data_dir") or "")):
+                continue
+            f.unlink(missing_ok=True)
+            removed += 1
             continue
         if not _pid_alive(int(bpid or 0)):
             f.unlink(missing_ok=True)
@@ -370,18 +426,27 @@ def _evict_slot_locked(path: Path, data: dict) -> bool:
     return True
 
 
-def _evict_idle_own_locked(owner_pid: int) -> bool:
-    """Evict the least-recently-used IDLE browser owned by this Sable.
+def _slot_priority(data: dict) -> str:
+    """Priority of a slot; anything unlabelled counts as ephemeral."""
+    p = str(data.get("priority") or "").strip().lower()
+    return PRIORITY_CHAT if p == PRIORITY_CHAT else PRIORITY_EPHEMERAL
 
-    'Idle' = its last_used is older than ``IDLE_EVICT_SEC``. Only touches this
-    process's own slots, so we never kill another Sable server's browser.
-    Caller holds the lock. Returns True if something was evicted.
+
+def _evict_ephemeral_own_locked(owner_pid: int) -> bool:
+    """Evict the least-recently-used EPHEMERAL browser owned by this Sable.
+
+    Called only when a ``chat`` claim needs room. Chat browsers are the user's
+    live sessions and are NEVER evicted; a token-mint browser is killed first,
+    oldest first. If every slot we own is a chat browser this returns False and
+    the caller waits instead of tearing a chat down.
+
+    Only touches this process's own slots, so we never kill another Sable
+    server's browser. Caller holds the lock.
     """
-    now = time.time()
     candidates = [
         (f, d) for (f, d) in _own_slots_locked(owner_pid)
         if d.get("browser_pid")
-        and (now - _slot_last_used(d)) > IDLE_EVICT_SEC
+        and _slot_priority(d) == PRIORITY_EPHEMERAL
     ]
     if not candidates:
         return False
@@ -423,13 +488,14 @@ def touch(browser_pid: int) -> None:
         pass
 
 
-def _try_claim(owner: str) -> "Slot | None":
+def _try_claim(owner: str, priority: str = PRIORITY_EPHEMERAL) -> "Slot | None":
+    priority = PRIORITY_CHAT if priority == PRIORITY_CHAT else PRIORITY_EPHEMERAL
     try:
         _SLOT_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         # Can't build the shared table — fall back to allowing the launch
         # rather than deadlocking the app. Better to run than to wedge.
-        return Slot(f"unmanaged-{uuid.uuid4().hex[:8]}", None, owner)
+        return Slot(f"unmanaged-{uuid.uuid4().hex[:8]}", None, owner, priority)
 
     me = os.getpid()
     lock_path = _SLOT_DIR / ".lock"
@@ -441,9 +507,13 @@ def _try_claim(owner: str) -> "Slot | None":
                 # Per-INSTANCE cap: only this process's slots count. A second
                 # Sable server on the host can no longer consume our quota.
                 if len(_own_slots_locked(me)) >= MAX_BROWSERS:
-                    # Full — reclaim capacity by killing our OWN least-recently
-                    # -used idle browser before refusing the claim.
-                    if not _evict_idle_own_locked(me):
+                    # Full. A CHAT claim outranks every ephemeral browser, so
+                    # it may kill one to make room. An EPHEMERAL claim never
+                    # evicts anything — it waits its turn rather than tear
+                    # down a live chat session just to mint a token.
+                    if priority != PRIORITY_CHAT:
+                        return None
+                    if not _evict_ephemeral_own_locked(me):
                         return None
                     if len(_own_slots_locked(me)) >= MAX_BROWSERS:
                         return None
@@ -454,24 +524,28 @@ def _try_claim(owner: str) -> "Slot | None":
                     "owner": owner,
                     "owner_pid": me,
                     "browser_pid": None,
+                    "priority": priority,
                     "ts": now,
                     "last_used": now,
                 }))
-                return Slot(slot_id, path, owner)
+                return Slot(slot_id, path, owner, priority)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
     except Exception as exc:
         logger.warning("slot claim failed (%s) — launching unmanaged", exc)
-        return Slot(f"unmanaged-{uuid.uuid4().hex[:8]}", None, owner)
+        return Slot(f"unmanaged-{uuid.uuid4().hex[:8]}", None, owner, priority)
 
 
 class Slot:
     """One reserved browser instance. Attach the pid, then release it."""
 
-    def __init__(self, slot_id: str, path: Path | None, owner: str) -> None:
+    def __init__(self, slot_id: str, path: Path | None, owner: str,
+                 priority: str = PRIORITY_EPHEMERAL) -> None:
         self.id = slot_id
         self.path = path
         self.owner = owner
+        self.priority = (PRIORITY_CHAT if priority == PRIORITY_CHAT
+                         else PRIORITY_EPHEMERAL)
         self.browser_pid: int | None = None
         self.cgroup: str | None = None
         self._released = False
@@ -491,6 +565,7 @@ class Slot:
                     "owner_pid": os.getpid(),
                     "browser_pid": pid,
                     "user_data_dir": user_data_dir,
+                    "priority": self.priority,
                     "ts": now,
                     "last_used": now,
                 }))
@@ -498,8 +573,8 @@ class Slot:
                 pass
         self.cgroup = _confine(pid)
         if self.cgroup:
-            logger.info("browser pid %d confined to %s (max %d MiB)",
-                        pid, self.cgroup, MAX_BYTES // (1024 * 1024))
+            logger.info("browser pid %d tagged %s (priority=%s)",
+                        pid, self.cgroup, self.priority)
 
     # -- teardown ----------------------------------------------------
 
@@ -541,28 +616,140 @@ class Slot:
 
 # ── public API ─────────────────────────────────────────────────────────────
 
-async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT) -> Slot:
-    """Reserve one browser slot, waiting for a peer to finish if needed."""
+async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT,
+                  priority: str = PRIORITY_EPHEMERAL) -> Slot:
+    """Reserve one browser slot, waiting for a peer to finish if needed.
+
+    ``priority=PRIORITY_CHAT`` marks a long-lived browser the user is actively
+    talking to (ghost tab, scraper session). At the cap, a chat claim evicts
+    the oldest ephemeral browser to get in — so a token refresh can never
+    starve a chat. ``priority=PRIORITY_EPHEMERAL`` (the default) is for
+    browsers that do a job and die; they never evict anything and simply wait.
+    """
+    priority = PRIORITY_CHAT if priority == PRIORITY_CHAT else PRIORITY_EPHEMERAL
     deadline = time.monotonic() + timeout
     warned = False
     while True:
-        slot = _try_claim(owner)
+        # Fast-fail: if every slot we hold is a chat browser there is nothing
+        # to evict, so this claim can only ever wait. Surface the choice NOW
+        # (kill one, or wait) instead of blocking the chat turn for the whole
+        # timeout first. Applies to chat claims too — a chat cannot evict
+        # another chat.
+        if _cap_held_by_chat():
+            raise NoSlotAvailable(
+                f"all {MAX_BROWSERS} browser slots are held by live chat sessions",
+                slots=own_slot_snapshot(),
+            )
+        slot = _try_claim(owner, priority)
         if slot is not None:
             if slot.path is not None:
                 mine = len(_own_slots_locked(os.getpid()))
-                logger.info("browser slot %s acquired for %s (%d/%d in use by this Sable)",
-                            slot.id, owner, mine, MAX_BROWSERS)
+                logger.info("browser slot %s acquired for %s [%s] (%d/%d in use by this Sable)",
+                            slot.id, owner, priority, mine, MAX_BROWSERS)
             return slot
         if not warned:
-            logger.info("browser limit reached (%d per Sable) — %s waiting for a free slot",
-                        MAX_BROWSERS, owner)
+            logger.info("browser limit reached (%d per Sable, all chat) — %s [%s] waiting for a free slot",
+                        MAX_BROWSERS, owner, priority)
             warned = True
         if time.monotonic() >= deadline:
-            raise TimeoutError(
+            raise NoSlotAvailable(
                 f"no browser slot free after {timeout:.0f}s "
-                f"(limit {MAX_BROWSERS} per Sable; check for stuck browsers)"
+                f"(limit {MAX_BROWSERS} per Sable; all held by chat)",
+                slots=own_slot_snapshot(),
             )
         await asyncio.sleep(0.5)
+
+
+def _cap_held_by_chat() -> bool:
+    """True iff we are at the cap and nothing we hold is evictable.
+
+    An ephemeral claim cannot make progress in that state, so it is better to
+    report it immediately than to sit in the acquire loop.
+    """
+    try:
+        own = _own_slots_locked(os.getpid())
+    except Exception:
+        return False
+    if len(own) < MAX_BROWSERS:
+        return False
+    return all(_slot_priority(d) == PRIORITY_CHAT for _f, d in own)
+
+
+class NoSlotAvailable(TimeoutError):
+    """Every slot is held by a live chat browser and none can be reclaimed.
+
+    Carries a snapshot of the holders so the UI can show the user exactly
+    which browsers are blocking, and offer to kill one.
+    """
+
+    def __init__(self, message: str, slots: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.slots = slots or []
+
+
+def own_slot_snapshot() -> list[dict]:
+    """Live, chat-safe view of the browsers this Sable process is holding.
+
+    Used to render the "no slot available" card: each entry carries the pid
+    to kill, what it is, and how long it has been alive.
+    """
+    try:
+        _prune_dead_locked()
+    except Exception:
+        pass
+    now = time.time()
+    out: list[dict] = []
+    for _f, d in _own_slots_locked(os.getpid()):
+        bpid = d.get("browser_pid")
+        if not bpid:
+            continue
+        out.append({
+            "pid": int(bpid),
+            "owner": d.get("owner") or "browser",
+            "priority": _slot_priority(d),
+            "profile": Path(str(d.get("user_data_dir") or "")).name,
+            "age_sec": int(max(0.0, now - float(d.get("ts") or now))),
+            "idle_sec": int(max(0.0, now - _slot_last_used(d))),
+        })
+    out.sort(key=lambda s: s["idle_sec"], reverse=True)
+    return out
+
+
+def kill_slot(pid: int) -> bool:
+    """Kill one browser by pid and release its slot.
+
+    Backs the "kill this browser" button on the no-slot card. Deliberately
+    blunt: kills the whole process group and drops the slot so the next chat
+    message can claim the freed capacity immediately.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    removed = False
+    lock_path = _SLOT_DIR / ".lock"
+    try:
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                for f in _SLOT_DIR.glob("slot-*.json"):
+                    try:
+                        data = json.loads(f.read_text())
+                    except Exception:
+                        continue
+                    if int(data.get("browser_pid") or 0) != pid:
+                        continue
+                    _evict_slot_locked(f, data)
+                    removed = True
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except Exception as exc:
+        logger.warning("kill_slot(%d) failed: %s", pid, exc)
+    if _pid_alive(pid):
+        _kill_tree(pid, sig=signal.SIGKILL)
+    return removed or not _pid_alive(pid)
 
 
 def reap_orphans() -> int:
@@ -658,9 +845,12 @@ def stats() -> dict:
     return {
         "max_browsers": MAX_BROWSERS,          # per Sable instance
         "max_browsers_global": MAX_BROWSERS_GLOBAL,
-        "max_bytes_each": MAX_BYTES,
         "active": len(slots),                  # host-wide
         "active_own": len(own),                # this instance
+        "chat_own": sum(1 for s in own
+                        if _slot_priority(s) == PRIORITY_CHAT),
+        "ephemeral_own": sum(1 for s in own
+                             if _slot_priority(s) == PRIORITY_EPHEMERAL),
         "slots": slots,
         "cgroup_root": str(_ensure_cgroup_root() or ""),
     }

@@ -88,8 +88,9 @@ def _load_instructions(project_id: str | None = None, layout_mode: str | None = 
 # ---------------------------------------------------------------------------
 
 def _resolve_active_account() -> str:
+    """z.ai's OWN active browser account (independent of every other provider)."""
     from engine.config import get_active_account
-    return get_active_account()
+    return get_active_account("zai")
 
 
 def _load_token_store() -> dict[str, list[str]]:
@@ -464,7 +465,7 @@ class ZaiClient:
 
     def _account_dir(self) -> str:
         from engine.config import get_browser_data_dir
-        return str(get_browser_data_dir())
+        return str(get_browser_data_dir("zai"))
 
     async def _ensure_page(self):
         # 1) Prefer the shared service browser (no profile-lock conflict)

@@ -1497,7 +1497,7 @@
         if (!answerEl) return;
         // Skip markdown re-render for special cards (rate-limit, captcha) that
         // already have their final HTML set via innerHTML.
-        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__" || raw === "__error_card__";
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__" || raw === "__error_card__" || raw === "__no_slot_card__";
         // Final render with full mermaid + math support — only runs when this answer
         // segment is truly done (stream end or skill interleave boundary).
         if (answerContent && raw && !_isSpecialCard) {
@@ -1749,6 +1749,70 @@
           // raw already set to "__captcha_block_card__" above — do NOT overwrite
           scrollBottom();
         },
+        replaceWithNoSlot(message, slots) {
+          hidePending();
+          _thinkCancel();
+          _thinkFrac = 0;
+          _thinkQueue = "";
+          _ansCancel();
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
+          ensureAnswer();
+          answerEl.classList.remove('streaming');
+          raw = "__no_slot_card__";
+          const list = Array.isArray(slots) ? slots : [];
+          const fmtAge = (s) => {
+            if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+            if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
+            return `${s}s`;
+          };
+          const rows = list.map(s => `
+            <div class="nsc-slot" data-pid="${s.pid}">
+              <div class="nsc-slot-main">
+                <span class="nsc-slot-owner">${escHtml(s.owner || 'browser')}</span>
+                <span class="nsc-slot-meta">pid ${s.pid} · idle ${fmtAge(s.idle_sec || 0)} · age ${fmtAge(s.age_sec || 0)}${s.profile ? ' · ' + escHtml(s.profile) : ''}</span>
+              </div>
+              <button class="nsc-kill" data-pid="${s.pid}">Kill</button>
+            </div>`).join('');
+          answerContent.innerHTML = `
+            <div class="no-slot-card">
+              <span class="nsc-icon">🚦</span>
+              <span class="nsc-title">No Browser Slot Available</span>
+              <span class="nsc-detail">Both browser slots are held by live chat sessions, so this message couldn't spawn a browser. Kill one below to free a slot, or wait for a chat to finish.</span>
+              <div class="nsc-slots">${rows || '<div class="nsc-empty">No holders reported.</div>'}</div>
+            </div>`;
+          answerContent.querySelectorAll('.nsc-kill').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const pid = btn.getAttribute('data-pid');
+              btn.disabled = true;
+              btn.textContent = 'Killing…';
+              try {
+                const res = await fetch('/api/settings/browser/slots/kill', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ pid: Number(pid) }),
+                });
+                if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+                btn.textContent = 'Killed ✓';
+                btn.classList.add('nsc-killed');
+                showToast(`Killed browser ${pid} — slot freed. Send your message again.`, 'success');
+              } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Kill';
+                showToast(`Kill failed: ${e.message}`, 'error');
+              }
+            });
+          });
+          scrollBottom();
+        },
         replaceWithError(message) {
           hidePending();
           // Kill typewriter queues — don't leave a half-rendered partial answer
@@ -1889,6 +1953,7 @@
           // closeAnswer() will remove the transient switching-status card first.
           const _prl = this._pendingRateLimit;
           const _pcb = this._pendingCaptchaBlock;
+          const _pns = this._pendingNoSlot;
           closeAnswer();
           if (_prl) {
             this.replaceWithRateLimit(_prl.message, _prl.hours, _prl.debug);
@@ -1896,6 +1961,9 @@
           } else if (_pcb) {
             this.replaceWithCaptchaBlock(_pcb.message, _pcb.debug);
             this._pendingCaptchaBlock = null;
+          } else if (_pns) {
+            this.replaceWithNoSlot(_pns.message, _pns.slots);
+            this._pendingNoSlot = null;
           }
           // Cancel any pending exit timer from a tool that finished just before stop
           if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
@@ -2517,6 +2585,7 @@
             // Recovery: backend auto-switched successfully — clear pending error cards
             ui._pendingRateLimit = null;
             ui._pendingCaptchaBlock = null;
+            ui._pendingNoSlot = null;
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
@@ -2555,6 +2624,10 @@
           } else if (evt.type === "waf_blocked") {
             // Don't break — backend auto-switches and emits account_switch events.
             ui._pendingCaptchaBlock = { message: evt.message, debug: evt };
+          } else if (evt.type === "no_slot") {
+            // Both browser slots are held by live chat browsers. This is not an
+            // error — it is a choice. Render the kill card instead of a toast.
+            ui._pendingNoSlot = { message: evt.message, slots: evt.slots || [] };
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";

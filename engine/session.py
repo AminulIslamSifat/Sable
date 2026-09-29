@@ -262,6 +262,15 @@ class BrowserManager:
         # dir). We own only our tab; the hub owns the browser.
         self._hub = None
         self._hub_page = None
+        # Governor slot for a browser WE launched (ephemeral priority — the
+        # header/token path). Released in close().
+        self._slot = None
+        # Job-and-die bookkeeping. This manager exists to mint headers, not to
+        # live forever: once the last header op finishes it schedules its own
+        # teardown so it does not squat a slot the chat side may need.
+        self._hold_count = 0
+        self._close_timer: asyncio.Task | None = None
+        self._auto_close_ttl = float(os.environ.get("SABLE_HEADER_BROWSER_TTL", "20"))
 
     @property
     def browser_headless(self) -> bool:
@@ -501,6 +510,17 @@ class BrowserManager:
                 return
             except Exception as exc:
                 last_exc = exc
+                # A full pool is not a broken profile. Retrying (and especially
+                # killing profile holders) would tear down a live chat browser
+                # to make room for a mere token refresh — exactly backwards.
+                # Bubble it untouched so the caller renders the kill card.
+                from engine.browser_governor import NoSlotAvailable
+                if isinstance(exc, NoSlotAvailable):
+                    logger.info(
+                        "Browser start skipped for %s — no slot available "
+                        "(all held by chat)", self.user_data_dir)
+                    self._start_failed = False
+                    raise
                 logger.warning(
                     "Browser start attempt %d/%d failed for %s: %s: %s — "
                     "killing profile browsers & retrying",
@@ -571,6 +591,15 @@ class BrowserManager:
         logger.debug(f"start() #{launch_num} from {_caller.filename}:{_caller.lineno} in {_caller.name}")
         from playwright.async_api import async_playwright
         from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        # EPHEMERAL priority: this browser mints headers/tokens and then dies.
+        # At the cap it waits for a chat browser rather than evicting one; if
+        # every slot is chat-held it raises NoSlotAvailable, which the caller
+        # surfaces as the "no browser slot" card.
+        from engine import browser_governor
+        self._slot = await browser_governor.acquire(
+            f"headers:{Path(self.user_data_dir).name}",
+            priority=browser_governor.PRIORITY_EPHEMERAL,
+        )
         try:
             self.playwright = await async_playwright().start()
             profile_name = getattr(self, "profile_name", None) or Path(self.user_data_dir).name
@@ -596,6 +625,15 @@ class BrowserManager:
             if exe_path:
                 launch_kwargs["executable_path"] = exe_path
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
+            # Bind the launched browser's pid to our governor slot. Playwright
+            # spawns the process for us, so the pid is resolved from the
+            # profile dir rather than a Popen handle.
+            try:
+                _roots = browser_governor.find_browser_pids(self.user_data_dir)
+                if _roots:
+                    self._slot.attach(_roots[0], user_data_dir=self.user_data_dir)
+            except Exception as _att_exc:
+                logger.debug("could not attach browser pid to slot: %s", _att_exc)
             self.page = await self.context.new_page()
             await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
 
@@ -623,8 +661,79 @@ class BrowserManager:
             # Mark as permanently failed so callers can't loop on this profile.
             # One failure = done. Re-login or delete the profile to recover.
             self._start_failed = True
+            # A slot held by a browser that never came up would wedge the cap —
+            # drop it before closing.
+            try:
+                if self._slot is not None:
+                    self._slot.release(kill=True)
+                    self._slot = None
+            except Exception:
+                pass
             await self.close()
             raise
+
+    # -- job-and-die lifecycle ------------------------------------------
+
+    def hold(self) -> None:
+        """Pin the browser open for the duration of a real chat session.
+
+        Header refreshes are fire-and-forget: the browser mints tokens and
+        dies. But some callers (MiMo, Gemini web) keep riding the live context
+        to talk to the model. They call ``hold()`` before the session and
+        ``unhold()`` after, which cancels the auto-close timer so the browser
+        is not torn down mid-conversation.
+        """
+        self._hold_count += 1
+        self._cancel_auto_close()
+
+    def unhold(self) -> None:
+        """Release a hold taken with :meth:`hold`; may schedule auto-close."""
+        if self._hold_count > 0:
+            self._hold_count -= 1
+        if self._hold_count == 0:
+            self._schedule_auto_close()
+
+    def _cancel_auto_close(self) -> None:
+        if self._close_timer is not None and not self._close_timer.done():
+            self._close_timer.cancel()
+        self._close_timer = None
+
+    def _schedule_auto_close(self) -> None:
+        """Close ourselves once the TTL lapses with nobody holding us.
+
+        TTL>0 lets a burst of header ops in one turn reuse the same warm
+        browser (each op re-arms the timer) while still guaranteeing the
+        browser is gone before the next turn. TTL=0 closes immediately.
+        Adopted/hub browsers are never auto-closed — we don't own them.
+        """
+        if self._hold_count > 0:
+            return
+        if self._adopted or self._hub is not None:
+            return
+        if self.playwright is None:
+            return
+        self._cancel_auto_close()
+        ttl = self._auto_close_ttl
+
+        async def _closer() -> None:
+            try:
+                if ttl > 0:
+                    await asyncio.sleep(ttl)
+                if self._hold_count > 0:
+                    return
+                logger.debug("header browser idle past TTL — closing %s",
+                             self.user_data_dir)
+                await self.close()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("auto-close failed: %s", exc)
+
+        try:
+            self._close_timer = asyncio.create_task(_closer())
+        except RuntimeError:
+            # No running loop (sync caller) — close synchronously instead.
+            self._close_timer = None
 
     async def restart(self, headless: bool | None = None) -> None:
         """Close and relaunch the browser with an optional new headless flag."""
@@ -735,6 +844,9 @@ class BrowserManager:
         except Exception:
             pass
 
+        # Job done — re-arm the auto-close timer. Another header op in this
+        # same turn re-arms it again; the browser dies once the turn ends.
+        self._schedule_auto_close()
         return build_headers(
             cookies=cookie_str,
             bx_ua=captured.get("bx-ua"),
@@ -837,6 +949,7 @@ class BrowserManager:
         except Exception:
             pass
 
+        self._schedule_auto_close()
         return build_headers(
             cookies=cookie_str,
             bx_ua=bx_ua,
@@ -1210,6 +1323,7 @@ class BrowserManager:
             self.page = None
             self._adopted = False
             return
+        self._cancel_auto_close()
         if self.context:
             await self.context.close()
             self.context = None
@@ -1217,6 +1331,14 @@ class BrowserManager:
             await self.playwright.stop()
             self.playwright = None
         self.page = None
+        # Free the governor slot the moment the browser is gone, so the next
+        # chat message can claim the capacity immediately.
+        if self._slot is not None:
+            try:
+                self._slot.release()
+            except Exception:
+                pass
+            self._slot = None
 
 
 async def create_new_chat(headers: dict[str, str], model: str | None = None) -> str | None:

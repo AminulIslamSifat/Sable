@@ -39,6 +39,20 @@ def _spawn_bg(coro) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+def _active_account_names() -> set[str]:
+    """Every account that is active for AT LEAST ONE provider.
+
+    With per-provider active browsers there is no single "active" profile, so
+    destructive ops (delete/restore/strip) must protect any profile a provider
+    is currently pinned to.
+    """
+    try:
+        from engine.config import BROWSER_PROVIDERS, get_provider_active_account
+        return {get_provider_active_account(p) for p in BROWSER_PROVIDERS}
+    except Exception:
+        return set()
+
+
 # --- Browser profile stripping (shared by switch + manual strip endpoint) ---
 _STRIP_KEEP = [
     "Local State", "Last Version",
@@ -55,13 +69,18 @@ _STRIP_KEEP = [
 
 def _strip_one_profile(profile: Path) -> tuple[str, float, float]:
     """Strip a single browser profile to bare session data. Returns (name, before_mb, after_mb)."""
-    # Safety: never strip the currently-active profile. Matters when invoked as
-    # a background task after a switch — the user may have switched back since.
+    # Safety: never strip a profile that is ACTIVE for ANY provider. Matters
+    # when invoked as a background task after a switch — the user (or another
+    # provider) may still be using it.
     try:
-        from engine.config import get_active_account, _SYSTEM as _SYS
-        active_dir = _SYS / get_active_account()
-        if active_dir.exists() and Path(profile).resolve() == active_dir.resolve():
-            raise RuntimeError(f"refusing to strip active profile {profile.name}")
+        from engine.config import BROWSER_PROVIDERS, get_provider_active_account, _SYSTEM as _SYS
+        target = Path(profile).resolve()
+        for _p in BROWSER_PROVIDERS:
+            _active_dir = _SYS / get_provider_active_account(_p)
+            if _active_dir.exists() and target == _active_dir.resolve():
+                raise RuntimeError(
+                    f"refusing to strip profile {profile.name} (active for {_p})"
+                )
     except OSError:
         pass
     import tempfile
@@ -123,6 +142,53 @@ async def update_browser_settings(payload: dict[str, bool]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Missing 'headless' field")
     await service.restart_browser(headless=headless)
     return {"status": "ok", "headless": service.browser_headless}
+
+
+# --- Browser fleet slots: inspect and kill ---------------------------------
+# Backs the 'no browser slot available' card. When both slots are held by live
+# chat browsers a new chat cannot spawn one; the user is shown the holders and
+# can kill one to free capacity immediately.
+
+@router.get("/api/settings/browser/slots")
+async def list_browser_slots() -> dict[str, Any]:
+    """Live view of every browser slot this Sable process holds."""
+    from engine import browser_governor
+    try:
+        snap = await asyncio.to_thread(browser_governor.own_slot_snapshot)
+        stat = await asyncio.to_thread(browser_governor.stats)
+    except Exception as exc:
+        logger.warning("browser slot listing failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Slot listing failed: {exc}")
+    return {
+        "status": "ok",
+        "max_browsers": stat.get("max_browsers"),
+        "slots": snap,
+    }
+
+
+@router.post("/api/settings/browser/slots/kill")
+async def kill_browser_slot(payload: dict[str, Any]) -> dict[str, Any]:
+    """Kill one browser by pid and release its slot.
+
+    Deliberately blunt, and behind an explicit user click: the pid comes from
+    the no-slot card, so the user is choosing which of THEIR chat browsers to
+    sacrifice. Kills the whole process group and drops the slot so the next
+    chat message can claim the capacity right away.
+    """
+    from engine import browser_governor
+    try:
+        pid = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A numeric 'pid' is required")
+    try:
+        ok = await asyncio.to_thread(browser_governor.kill_slot, pid)
+    except Exception as exc:
+        logger.warning("browser slot kill failed for pid %s: %s", pid, exc)
+        raise HTTPException(status_code=500, detail=f"Kill failed: {exc}")
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"No live browser with pid {pid}")
+    return {"status": "ok", "pid": pid,
+            "message": f"Killed browser {pid} — slot freed"}
 
 
 # --- Network access mode: localhost-only vs shared LAN bind ----------------
@@ -366,11 +432,12 @@ async def refresh_kimi_token() -> dict[str, Any]:
 
 @router.post("/api/settings/refresh-all-tokens")
 async def refresh_all_tokens() -> dict[str, Any]:
-    """Refresh every browser-backed provider token for the active account.
+    """Refresh every browser-backed provider against ITS OWN active account.
 
-    One warm browser pass covers Qwen WAF, DeepSeek, z.ai, Gemini (web), MiMo,
-    and Kimi. Each provider is isolated — one failure never blocks the rest —
-    and the per-provider result map is returned alongside a summary string.
+    Providers are grouped by the account they resolve to, so any two (or more)
+    sharing the same active profile refresh together in one browser pass. Each
+    provider is isolated — one failure never blocks the rest — and the
+    per-provider result map is returned alongside a summary string.
     """
     try:
         results = await service.refresh_all_provider_tokens()
@@ -1445,8 +1512,10 @@ async def list_accounts() -> dict[str, Any]:
         accounts.sort(key=lambda a: a["num"])
         return accounts
     accounts = await asyncio.to_thread(_scan)
-    from engine.config import get_active_account as _get_active
-    active = _get_active()
+    # Legacy endpoint: `active` reflects the PRIMARY provider (qwen) slot only.
+    # The per-provider store is the source of truth for every other provider.
+    from engine.config import get_provider_active_account, PRIMARY_BROWSER_PROVIDER
+    active = get_provider_active_account(PRIMARY_BROWSER_PROVIDER)
     _settings = _read_system_settings()
     return {
         "accounts": accounts,
@@ -1515,8 +1584,8 @@ def get_auto_switch_for_provider(provider: str) -> bool:
 @router.get("/api/settings/accounts/by-provider")
 async def list_accounts_by_provider() -> dict[str, Any]:
     """Return all providers with their accounts/keys, active status, and auto-switch state."""
-    from engine.config import get_active_account as _get_active
-    active_account = _get_active()
+    from engine.config import get_provider_active_account, PRIMARY_BROWSER_PROVIDER
+    active_account = get_provider_active_account(PRIMARY_BROWSER_PROVIDER)
     _settings = _read_system_settings()
     per_provider_switch = _settings.get("account_auto_switch", {})
     if not isinstance(per_provider_switch, dict):
@@ -1803,35 +1872,32 @@ async def list_accounts_by_provider() -> dict[str, Any]:
 
     unregistered_browser_data = await asyncio.to_thread(_scan_unregistered_browser_data)
 
-    from engine.config import get_provider_account as _get_pin
+    from engine.config import get_provider_active_account as _get_active_for
 
     def _browser_provider(pid: str, label: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
         """Shape a browser-backed provider payload.
 
-        `active` = the pinned account when one is set, else the global active
-        account IF it holds this provider's auth. Each account gets a `pinned`
-        flag so the UI can offer an unpin ("Follow Active") affordance.
+        Every provider owns its OWN active account — `active` is that provider's
+        slot (never the global/primary slot of another provider). The card whose
+        name matches is flagged `active`; because there is no more "follow the
+        global" concept, `pinned` is True for the active card (kept for UI
+        back-compat with the old unpin affordance).
 
         Account dicts are shallow-copied because the same object appears in
-        several provider lists and each provider has its own pin state.
+        several provider lists and each provider has its own active account.
         """
-        pinned = _get_pin(pid)
+        own_active = _get_active_for(pid)
         rows = [dict(a) for a in accounts]
         names = {a["name"] for a in rows}
-        if pinned and pinned in names:
-            active = pinned
-        elif active_account in names:
-            active = active_account
-        else:
-            active = None
+        active = own_active if own_active in names else None
         for a in rows:
-            a["pinned"] = bool(pinned) and a["name"] == pinned
+            a["pinned"] = bool(active) and a["name"] == active
         return {
             "type": "browser",
             "label": label,
             "accounts": rows,
             "active": active,
-            "pinned": pinned if (pinned and pinned in names) else None,
+            "pinned": active if (active and active in names) else None,
             "auto_switch_enabled": _auto_sw(pid),
         }
 
@@ -1869,6 +1935,15 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     mistral_web_accounts = [a for a in browser_accounts if a.get("has_mistral_web")]
     mistral_web_accounts += [a for a in unregistered_browser_data if a.get("has_mistral_web")]
     providers["mistral_web"] = _browser_provider("mistral_web", "Mistral (Web)", mistral_web_accounts)
+
+    # DeepSeek (scraper): headed-browser transport. It is its OWN browser
+    # provider with its own active-account slot — separate from the DeepSeek
+    # API-key provider below. Lists every standard acc* profile (any of which
+    # could hold a deepseek.com login).
+    ds_scraper_accounts = list(browser_accounts)
+    providers["deepseek_scraper"] = _browser_provider(
+        "deepseek_scraper", "DeepSeek (Scraper)", ds_scraper_accounts
+    )
 
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
     try:
@@ -2029,34 +2104,36 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
-# Providers whose account selection is per-provider (pinned) rather than global.
-# Qwen is deliberately excluded: it IS the global active account, so its switch
-# stays on /accounts/switch and every unpinned provider follows it.
-_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt")
+# Every browser-backed provider now owns an independent active-account slot.
+# This is the canonical set for per-provider switching (qwen included — it is
+# just another provider with its own slot, no longer a special global).
+_BROWSER_PROVIDERS_ALL = (
+    "qwen", "deepseek", "deepseek_scraper", "zai", "gemini_web", "gemini",
+    "mimo", "kimi", "mistral_web", "chatgpt",
+)
+# Back-compat alias (older references).
+_PER_PROVIDER_SWITCH = _BROWSER_PROVIDERS_ALL
 
 
 @router.post("/api/settings/accounts/switch-provider")
 async def switch_provider_account(payload: dict[str, Any]) -> dict[str, Any]:
-    """Pin a provider to a specific browser account, or unpin it.
+    """Set ONE provider's active browser account (independent of all others).
 
-    Independent from the global active account: pinning zai to acc7 does not
-    move qwen or gemini. Passing a falsy/absent `profile` clears the pin so the
-    provider follows the global active account again.
-
-    Browser teardown: the provider's current BrowserManager is closed so the
-    next use relaunches against the new data dir. Browsers are keyed by data
-    dir, so if another provider is pinned to the same account it keeps its own
-    handle and is unaffected.
+    Each provider owns its own active-account slot: switching zai to acc7 does
+    not move qwen, gemini, or any other provider. Browser teardown: the
+    provider's current BrowserManager is closed so the next use relaunches
+    against the new data dir. Browsers are keyed by data dir, so a provider
+    sharing the same account keeps its own handle and is unaffected.
     """
     provider = str(payload.get("provider", "")).lower().strip()
-    if provider not in _PER_PROVIDER_SWITCH:
+    if provider not in _BROWSER_PROVIDERS_ALL:
         raise HTTPException(
             status_code=400,
             detail=f"Provider '{provider}' does not support per-provider switching",
         )
     target_name = str(payload.get("profile", "") or "").strip()
 
-    from engine.config import set_provider_account, get_provider_browser_dir
+    from engine.config import set_provider_active_account, get_provider_browser_dir
 
     if target_name:
         if not re.match(r"^browser-data-[a-z0-9-]+$", target_name):
@@ -2064,19 +2141,35 @@ async def switch_provider_account(payload: dict[str, Any]) -> dict[str, Any]:
         if not (_SYSTEM_DIR / target_name).is_dir():
             raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
 
-    # Resolve the dir currently in use BEFORE changing the pin, so we tear down
-    # the right browser even when unpinning (which falls back to active).
+    # Resolve the dir currently in use BEFORE changing the slot, so we tear down
+    # the right browser.
     old_dir = str(await asyncio.to_thread(get_provider_browser_dir, provider))
 
     try:
-        await asyncio.to_thread(set_provider_account, provider, target_name or None)
+        await asyncio.to_thread(set_provider_active_account, provider, target_name or "")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to persist pin: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to persist active account: {exc}")
 
     # Tear down the old browser for this provider so it relaunches on the new dir.
+    # The default browser (self._browser) is qwen's slot — if THIS provider was
+    # using it, close the default too and repoint it, else only the scoped one.
     try:
+        from engine.config import PRIMARY_BROWSER_PROVIDER
         default_dir = str(service._browser.user_data_dir)
-        if old_dir != default_dir:
+        is_primary = provider == PRIMARY_BROWSER_PROVIDER
+        if is_primary:
+            # Qwen owns the default browser — close it and reset its dir so the
+            # next launch uses the new slot.
+            if service._headers_account != (target_name or None):
+                service._headers = None
+                service._headers_account = None
+            await service.close()
+            new_dir_for_default = str(await asyncio.to_thread(get_provider_browser_dir, provider))
+            service._browser.user_data_dir = new_dir_for_default
+            # Repoint the override to the resolved account (empty string → None
+            # so the service re-resolves from the store on next use).
+            service._account_override = Path(new_dir_for_default).name or None
+        elif old_dir != default_dir:
             await service.close_scoped(old_dir)
     except Exception as exc:
         logger.warning("switch-provider teardown failed for %s: %s", provider, exc)
@@ -2118,6 +2211,12 @@ async def switch_provider_account(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/switch")
 async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Legacy global switch — now scoped to the PRIMARY provider (qwen).
+
+    There is no shared global browser anymore: this sets qwen's own slot and
+    repoints the default browser. Other providers keep their independent
+    active accounts untouched. New UI should call /accounts/switch-provider.
+    """
     target_name = payload.get("profile", "")
     if not target_name.startswith("browser-data-acc"):
         raise HTTPException(status_code=400, detail="Profile must match 'browser-data-acc*'")
@@ -2125,16 +2224,19 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
     # Resolve old profile before switching (for post-switch strip)
-    from engine.config import get_active_account as _get_act, set_active_account, _SYSTEM as _SYS
+    from engine.config import (
+        get_provider_active_account, set_provider_active_account,
+        PRIMARY_BROWSER_PROVIDER, _SYSTEM as _SYS,
+    )
     old_profile: Path | None = None
-    current_active = _get_act()
+    current_active = get_provider_active_account(PRIMARY_BROWSER_PROVIDER)
     current_path = _SYS / current_active
     if current_path != target_path and current_path.is_dir():
         old_profile = current_path
 
     try:
         await service.close()
-        set_active_account(target_name)
+        set_provider_active_account(PRIMARY_BROWSER_PROVIDER, target_name)
         # Update the singleton service's browser profile and account override
         # so subsequent requests use the NEW account, not the stale one from init.
         service._browser.user_data_dir = str(target_path)
@@ -2153,10 +2255,10 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     # the DeepSeek client falls back to its disk store / browser refresh.
     async def _post_switch_warmup(account: str) -> None:
         try:
-            # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) for
-            # the newly-active profile. Isolated per provider so one failure
-            # never blocks the rest.
-            _tok = await service.refresh_all_provider_tokens(account=account)
+            # Refresh every provider against ITS OWN active account (grouped so
+            # providers sharing an account refresh together). Isolated per
+            # provider so one failure never blocks the rest.
+            _tok = await service.refresh_all_provider_tokens()
             logger.info("Post-switch provider token refresh for %s: %s", account, _tok)
             from connectors.common.instruction_builder import invalidate_cache
             invalidate_cache()
@@ -2283,8 +2385,11 @@ async def create_account(payload: dict[str, Any] | None = None) -> dict[str, Any
     if not resolved_browser:
         raise HTTPException(status_code=500, detail="No browser found. Set one in settings.")
 
-    # Fire-and-forget: raw subprocess, no Playwright
-    cmd: list[str] = [resolved_browser, "--password-store=basic", "--use-mock-keychain", f"--user-data-dir={profile_path}"]
+    # Fire-and-forget: raw subprocess, no Playwright.
+    # No --password-store=basic / --use-mock-keychain: the engine launches this
+    # profile with the real OS keyring, so account creation must too, or the
+    # cookies written here are unreadable by the engine (and vice versa).
+    cmd: list[str] = [resolved_browser, f"--user-data-dir={profile_path}"]
     cmd.extend(_LOGIN_URLS[p] for p in _providers)
     try:
         import subprocess
@@ -2305,19 +2410,9 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
-    # Block deleting the active profile.
-    # Use get_active_account() (file-based) rather than is_symlink(), because on
-    # Windows the "browser-data" pointer is a directory junction which returns
-    # False for Path.is_symlink(), making the old guard a silent no-op.
-    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
-    try:
-        active_dir = _ENGINE_SYSTEM / get_active_account()
-        if active_dir.resolve() == target_path.resolve():
-            raise HTTPException(status_code=400, detail="Cannot delete the active profile. Switch first.")
-    except HTTPException:
-        raise
-    except OSError:
-        pass
+    # Block deleting a profile that is active for ANY provider.
+    if target_name in _active_account_names():
+        raise HTTPException(status_code=400, detail="Cannot delete an active profile. Switch first.")
 
     def _remove() -> None:
         shutil.rmtree(target_path)
@@ -2360,16 +2455,9 @@ async def restore_account(payload: dict[str, str]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"No backup found for '{target_name}'")
     target_path = _SYSTEM_DIR / target_name
 
-    # Block restoring over the active profile
-    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
-    try:
-        active_dir = _ENGINE_SYSTEM / get_active_account()
-        if active_dir.resolve() == target_path.resolve():
-            raise HTTPException(status_code=400, detail="Cannot restore over the active profile. Switch first.")
-    except HTTPException:
-        raise
-    except OSError:
-        pass
+    # Block restoring over a profile that is active for ANY provider.
+    if target_name in _active_account_names():
+        raise HTTPException(status_code=400, detail="Cannot restore over an active profile. Switch first.")
 
     def _restore() -> None:
         if target_path.exists():
@@ -2401,11 +2489,7 @@ async def backup_all_accounts() -> dict[str, Any]:
 @router.post("/api/settings/accounts/restore-all")
 async def restore_all_accounts() -> dict[str, Any]:
     """Restore all browser-data-accN profiles from their .bak counterparts."""
-    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
-    try:
-        active_name = get_active_account()
-    except Exception:
-        active_name = None
+    active_names = _active_account_names()
 
     def _restore_all() -> tuple[list[str], list[str]]:
         restored: list[str] = []
@@ -2414,7 +2498,7 @@ async def restore_all_accounts() -> dict[str, Any]:
             m = re.match(r"^(browser-data-acc\d+)\.bak$", entry.name)
             if entry.is_dir() and m:
                 acc_name = m.group(1)
-                if acc_name == active_name:
+                if acc_name in active_names:
                     skipped.append(acc_name)
                     continue
                 target_path = _SYSTEM_DIR / acc_name
@@ -2442,7 +2526,12 @@ def _kill_browsers_for_profile(profile_path: Path) -> list[int]:
     from engine.process_utils import kill_process_tree
 
     killed: list[int] = []
-    flag = f"--user-data-dir={profile_path}"
+    # Chromium may have been launched with either the raw or the resolved
+    # profile path; match BOTH so no holder slips through the kill.
+    flags = {
+        f"--user-data-dir={profile_path}",
+        f"--user-data-dir={profile_path.resolve()}",
+    }
 
     try:
         result = subprocess.run(
@@ -2460,7 +2549,8 @@ def _kill_browsers_for_profile(profile_path: Path) -> list[int]:
         if not pid_str.isdigit() or not args:
             continue
         # Exact token compare — a substring test would collide acc1 with acc11.
-        if flag not in args.split():
+        tokens = set(args.split())
+        if not flags & tokens:
             continue
         pid = int(pid_str)
         try:
@@ -2511,6 +2601,17 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Failed to release Sable browser for %s: %s", target_name, exc)
 
+    # 1a. Evict any ProfileHub (CDP ghost browser) bound to this dir. The hub
+    #     owns a SEPARATE browser process that close_profile does not know
+    #     about; if it survives, Chromium sees the SingletonLock and forwards
+    #     the new launch to the existing (often headless) instance instead of
+    #     opening a fresh headed window.
+    try:
+        from connectors.common.profile_hub import ProfileHub
+        await ProfileHub.evict(target_path)
+    except Exception as exc:
+        logger.warning("Failed to evict ProfileHub for %s: %s", target_name, exc)
+
     try:
         from connectors.deepseek.ghost import GhostSession
         ghost = GhostSession._registry.get(target_name)
@@ -2536,8 +2637,13 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     if not resolved_browser:
         raise HTTPException(status_code=500, detail="No browser found. Set one in settings.")
 
-    # Fire-and-forget: raw subprocess, no Playwright
-    cmd: list[str] = [resolved_browser, "--password-store=basic", "--use-mock-keychain", f"--user-data-dir={target_path}", url]
+    # Fire-and-forget: raw subprocess, no Playwright.
+    # NOTE: no --password-store=basic / --use-mock-keychain here. The engine /
+    # scraper launches this SAME profile with the real OS keyring, so its
+    # Cookies DB is keyring-encrypted. Launching with the mock store made
+    # Chromium unable to decrypt those cookies -> the user got logged out on
+    # every Open. Match the engine: use the default (real keyring) store.
+    cmd: list[str] = [resolved_browser, f"--user-data-dir={target_path}", url]
     try:
         import subprocess
         subprocess.Popen(cmd, start_new_session=True)

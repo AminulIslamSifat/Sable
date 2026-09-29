@@ -76,6 +76,64 @@ def _raise_nofile_limit() -> None:
         logger.warning("Could not raise RLIMIT_NOFILE: %s", exc)
 
 
+# ── Lazy startup warmup ────────────────────────────────────────────────────
+# Browser warmup (Qwen WAF + provider token refresh + context sync) used to
+# fire the instant the server came up. That meant a headless server with
+# nobody at the keyboard would launch Chromium, mint tokens, and hold a
+# browser slot — pure waste, and it competed with real chat browsers for the
+# 2-slot cap.
+#
+# It is now LAZY: the first UI load calls POST /api/warmup, which starts it
+# exactly once per server process. A tab refresh is a no-op (the flag is
+# already set), and an API-only deployment never pays for it at all — the
+# chat path self-heals through service._ensure_headers().
+_warmup_started: bool = False
+_warmup_task: "asyncio.Task[None] | None" = None
+
+
+async def _run_startup_warmup() -> None:
+    """One-shot warmup: WAF headers, every provider token, then context sync.
+
+    Runs in the background off the first UI load. Each stage is isolated so
+    one provider failing never blocks the others.
+    """
+    # Qwen WAF headers (cached tokens load instantly; browser fills in live ones)
+    try:
+        await service.warmup()
+    except Exception as exc:
+        logger.warning("Startup warmup failed: %s: %s", type(exc).__name__, exc)
+    # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) so every
+    # backend starts on the active profile's credentials, not a stale one.
+    try:
+        _tok = await service.refresh_all_provider_tokens()
+        logger.info("Startup provider token refresh: %s", _tok)
+    except Exception as exc:
+        logger.warning("Startup provider token refresh failed: %s: %s", type(exc).__name__, exc)
+    # Auto-sync context for the active browser profile on first load
+    try:
+        await service.sync_context()
+        logger.info("Context synced on first UI load")
+    except Exception as exc:
+        logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
+
+
+def ensure_warmup_started() -> bool:
+    """Start the lazy warmup on first call; no-op on every later call.
+
+    The flag is checked-and-set synchronously (no await between), so
+    concurrent first-loads from two tabs cannot both spawn a warmup.
+    Returns True only for the call that actually started it.
+    """
+    global _warmup_started, _warmup_task
+    if _warmup_started:
+        return False
+    _warmup_started = True
+    # Strong reference so the task isn't silently GC'd mid-flight.
+    _warmup_task = asyncio.create_task(_run_startup_warmup())
+    logger.info("Lazy warmup started (first UI load)")
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     _raise_nofile_limit()
@@ -170,38 +228,14 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
 
 
 
-    # Browser warmup + provider token refresh + context sync used to run inline
-    # here, blocking `yield` for 30-60s+ (each Chromium launch costs 8-24s, and
-    # the provider chain runs them serially). None of it is required for the
-    # server to serve requests, so run it in the background and come up instantly.
-    async def _startup_warmup() -> None:
-        # Qwen WAF headers (cached tokens load instantly; browser fills in live ones)
-        try:
-            await service.warmup()
-        except Exception as exc:
-            logger.warning("Startup warmup failed: %s: %s", type(exc).__name__, exc)
-        # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) so every
-        # backend starts on the active profile's credentials, not a stale one.
-        try:
-            _tok = await service.refresh_all_provider_tokens()
-            logger.info("Startup provider token refresh: %s", _tok)
-        except Exception as exc:
-            logger.warning("Startup provider token refresh failed: %s: %s", type(exc).__name__, exc)
-        # Auto-sync context for the active browser profile on startup
-        try:
-            await service.sync_context()
-            logger.info("Context synced on startup")
-        except Exception as exc:
-            logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
-
-    # Strong reference so the task isn't silently GC'd mid-flight.
-    app.state._warmup_task = _aio.create_task(_startup_warmup())
+    # NOTE: warmup is intentionally NOT started here. It fires lazily on the
+    # first UI load (POST /api/warmup -> ensure_warmup_started). Starting a
+    # server with nobody watching no longer launches a single Chromium.
     yield
     # ── Fast shutdown (≤1s budget) ──
-    # 0. Stop the background warmup so it can't relaunch browsers mid-shutdown
-    _warm = getattr(app.state, "_warmup_task", None)
-    if _warm is not None and not _warm.done():
-        _warm.cancel()
+    # 0. Stop a running lazy warmup so it can't relaunch browsers mid-shutdown
+    if _warmup_task is not None and not _warmup_task.done():
+        _warmup_task.cancel()
     # 1. Cancel running agents immediately
     try:
         from engine.agents import get_runtime as _get_rt

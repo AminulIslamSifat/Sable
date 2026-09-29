@@ -100,9 +100,9 @@ window.safeCopy = async function(text) {
     // Helper: badge
     const _badge = (txt, warn) => `<span style="font-size:10px;color:${warn ? 'var(--danger)' : 'var(--text-dim)'};border:1px solid ${warn ? 'var(--danger)' : 'var(--border)'};border-radius:4px;padding:1px 5px;">${txt}</span>`;
 
-    // Providers whose account selection is per-provider (pinned), not global.
-    // Mirrors _PER_PROVIDER_SWITCH in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
+    // Every browser provider now owns its OWN active account — qwen included.
+    // Mirrors _BROWSER_PROVIDERS_ALL in settings.py — keep in sync.
+    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
     function _renderBrowserCard(acc, active, providerId) {
@@ -144,10 +144,73 @@ window.safeCopy = async function(text) {
           ${providerId === 'qwen' ? `<button class="icon-btn account-clear-history-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:#f59e0b;" title="Delete all Qwen chat history for this account">🗑 Clear History</button>` : ''}
           <div style="flex:1;"></div>
           ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" data-provider="${providerId || ''}" data-per-provider="${perProvider ? '1' : '0'}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
-          ${(isActive && isPinned) ? `<button class="icon-btn account-unpin-btn" data-provider="${providerId || ''}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Follow Active</button>` : ''}
           ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
         </div>
       </div>`;
+    }
+
+    // Render a combined card in the "All" view: one account, with a pill for
+    // every provider that holds it. Clicking a pill makes that provider use
+    // THIS account (independent per-provider switch).
+    function _renderCombinedBrowserCard(entry) {
+      const acc = entry.acc;
+      const email = acc.label || acc.email || "unknown account";
+      const size = acc.size_mb ? acc.size_mb + " MB" : "";
+      const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
+      const isActiveAnywhere = (entry.activeFor || []).length > 0;
+      const borderColor = browserMissing ? 'var(--danger)' : isActiveAnywhere ? '#4ade80' : 'var(--border)';
+      const pills = (entry.holders || []).map(h =>
+        `<button class="combined-provider-pill icon-btn" data-provider="${h.pid}" data-profile="${acc.name}" style="width:auto;padding:3px 9px;font-size:10px;white-space:nowrap;${h.active ? 'border-color:var(--accent);color:var(--accent-text);background:var(--accent-dim);font-weight:600;' : ''}" title="Switch ${h.label} to ${acc.name}">${h.label}${h.active ? ' ●' : ''}</button>`
+      ).join("");
+      const unregPill = entry.unregistered ? `<span style="font-size:10px;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:1px 5px;">unregistered</span>` : "";
+      return `<div style="background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:14px 18px;display:flex;flex-direction:column;gap:10px;margin-bottom:8px;">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
+            <span>${acc.name}</span>
+            ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
+            ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
+            ${acc.exhausted ? _badge('exhausted', true) : ''}
+            ${acc.captcha_blocked ? _badge('captcha', true) : ''}
+            ${acc.has_backup ? _badge('backup') : ''}
+            ${unregPill}
+          </div>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
+          <span style="font-size:10px;color:var(--text-dim);margin-right:2px;">Use for:</span>
+          ${pills || '<span style="font-size:10px;color:var(--text-dim);">no provider holds this account</span>'}
+        </div>
+      </div>`;
+    }
+
+    // Bind the combined-view provider pills: clicking one switches THAT
+    // provider to this account, independent of every other provider.
+    function _bindCombinedProviderPills() {
+      accountProfileCards.querySelectorAll(".combined-provider-pill").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const provider = btn.dataset.provider;
+          const profile = btn.dataset.profile;
+          btn.disabled = true;
+          showToast(`🔄 Switching ${provider} → ${profile}…`, "info");
+          try {
+            const res = await fetch("/api/settings/accounts/switch-provider", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider, profile }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+              showToast(`✅ ${provider} → ${data.email || profile}`, "success");
+              await Promise.all([loadAccountProfiles(), loadModels()]);
+            } else {
+              showToast("Switch failed: " + (data.detail || "unknown"), "error");
+              btn.disabled = false;
+            }
+          } catch (e) {
+            showToast("Switch error: " + e.message, "error");
+            btn.disabled = false;
+          }
+        });
+      });
     }
 
     // Render API key card (for Gemini, Groq, etc.)
@@ -352,7 +415,7 @@ window.safeCopy = async function(text) {
         const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
-        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "deepseek_scraper", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter
@@ -395,60 +458,112 @@ window.safeCopy = async function(text) {
 
         let html = "";
 
-        // Render unregistered browser data first (only in "All" view)
-        if (_activeProviderFilter === "all" && unregisteredData.length > 0) {
-          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>Other Browser Data</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(unregistered)</span></div>`;
-          html += unregisteredData.map(acc => _renderBrowserCard(acc, null, "unregistered")).join("");
-        }
+        if (_activeProviderFilter === "all") {
+          // ── ALL VIEW ── one flat combined browser list (each account once,
+          // tagged with the providers that hold it), then a separate API-keys
+          // section. No per-provider grouping here.
+          const browserProvs = showProvs.filter(p => providers[p].type === "browser");
+          const apiProvs = showProvs.filter(p => providers[p].type === "api_key");
+          const credProvs = showProvs.filter(p => providers[p].type === "credential");
 
-        for (const pid of showProvs) {
-          const pd = providers[pid];
-          // Section header
-          const clearAllBtn = pid === 'qwen' ? `<button class="icon-btn clear-all-history-btn" style="width:auto;padding:2px 8px;font-size:10px;white-space:nowrap;color:#f59e0b;margin-left:auto;" title="Clear Qwen chat history for ALL accounts">🗑 Clear All History</button>` : '';
-          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span>${clearAllBtn}</div>`;
+          // Dedupe accounts by name; record which providers hold it and which
+          // have it as their active account.
+          const accMap = new Map();
+          for (const pid of browserProvs) {
+            const pd = providers[pid];
+            for (const acc of (pd.accounts || [])) {
+              let e = accMap.get(acc.name);
+              if (!e) { e = { acc, holders: [], activeFor: [] }; accMap.set(acc.name, e); }
+              e.holders.push({ pid, label: pd.label, active: acc.name === pd.active });
+              if (acc.name === pd.active) e.activeFor.push(pid);
+            }
+          }
+          for (const acc of unregisteredData) {
+            if (!accMap.has(acc.name)) accMap.set(acc.name, { acc, holders: [], activeFor: [], unregistered: true });
+          }
 
-          if (pd.type === "browser") {
-            // Auto-switch toggle for this provider
-            html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
-              `Auto-Switch on Rate Limit / Captcha`,
-              `Automatically switch to another ${pd.label} account when blocked.`);
-            const accounts = pd.accounts || [];
-            if (!accounts.length) {
-              html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No accounts with ' + pd.label + ' tokens found.</p>';
-            } else {
-              html += accounts.map(acc => _renderBrowserCard(acc, pd.active, pid)).join("");
+          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>Browser Profiles</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(all accounts · one entry each)</span></div>`;
+          if (!accMap.size) {
+            html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No browser accounts found.</p>';
+          } else {
+            for (const e of accMap.values()) html += _renderCombinedBrowserCard(e);
+          }
+
+          if (apiProvs.length) {
+            html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:14px;margin-bottom:4px;">API Keys</div>`;
+            for (const pid of apiProvs) {
+              const pd = providers[pid];
+              const keys = pd.keys || [];
+              if (!keys.length) {
+                html += `<p class="muted" style="font-size:12px;margin:0 0 8px 0;">${pd.label}: no API keys configured.</p>`;
+              } else {
+                html += keys.map(k => _renderApiKeyCard(k, pid)).join("");
+              }
             }
-          } else if (pd.type === "api_key") {
-            html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
-              `Auto-Rotate on Error`,
-              `Automatically rotate to next ${pd.label} key when one fails.`);
-            const keys = pd.keys || [];
-            if (!keys.length) {
-              html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No API keys configured. Add keys from the Providers tab.</p>';
-            } else {
-              html += keys.map(k => _renderApiKeyCard(k, pid)).join("");
+          }
+
+          if (credProvs.length) {
+            html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:14px;margin-bottom:4px;">Credentials</div>`;
+            for (const pid of credProvs) {
+              const pd = providers[pid];
+              html += pd.available
+                ? `<div style="background:var(--panel);border:1px solid #4ade80;border-radius:10px;padding:14px 18px;font-size:12px;color:var(--text);margin-bottom:8px;">${pd.label} — <span style="color:#4ade80;">● Configured</span></div>`
+                : `<p class="muted" style="font-size:12px;margin:0 0 8px 0;">${pd.label}: not configured.</p>`;
             }
-          } else if (pd.type === "credential") {
-            html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
-              `Auto-Switch`, `Toggle auto-switch for ${pd.label}.`);
-            if (pd.available) {
-              html += `<div style="background:var(--panel);border:1px solid #4ade80;border-radius:10px;padding:14px 18px;font-size:12px;color:var(--text);"><span style="color:#4ade80;">● Configured</span></div>`;
-            } else {
-              html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">Not configured. Set up from the Providers tab.</p>';
+          }
+        } else {
+          // ── PER-PROVIDER VIEW ── only this provider's accounts; switching
+          // here never touches another provider's active account.
+          for (const pid of showProvs) {
+            const pd = providers[pid];
+            const clearAllBtn = pid === 'qwen' ? `<button class="icon-btn clear-all-history-btn" style="width:auto;padding:2px 8px;font-size:10px;white-space:nowrap;color:#f59e0b;margin-left:auto;" title="Clear Qwen chat history for ALL accounts">🗑 Clear All History</button>` : '';
+            html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span>${clearAllBtn}</div>`;
+
+            if (pd.type === "browser") {
+              html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
+                `Auto-Switch on Rate Limit / Captcha`,
+                `Automatically switch to another ${pd.label} account when blocked.`);
+              const accounts = pd.accounts || [];
+              if (!accounts.length) {
+                html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No accounts with ' + pd.label + ' tokens found.</p>';
+              } else {
+                html += accounts.map(acc => _renderBrowserCard(acc, pd.active, pid)).join("");
+              }
+            } else if (pd.type === "api_key") {
+              html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
+                `Auto-Rotate on Error`,
+                `Automatically rotate to next ${pd.label} key when one fails.`);
+              const keys = pd.keys || [];
+              if (!keys.length) {
+                html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No API keys configured. Add keys from the Providers tab.</p>';
+              } else {
+                html += keys.map(k => _renderApiKeyCard(k, pid)).join("");
+              }
+            } else if (pd.type === "credential") {
+              html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
+                `Auto-Switch`, `Toggle auto-switch for ${pd.label}.`);
+              if (pd.available) {
+                html += `<div style="background:var(--panel);border:1px solid #4ade80;border-radius:10px;padding:14px 18px;font-size:12px;color:var(--text);"><span style="color:#4ade80;">● Configured</span></div>`;
+              } else {
+                html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">Not configured. Set up from the Providers tab.</p>';
+              }
             }
           }
         }
 
         accountProfileCards.innerHTML = html;
 
-        // Bind per-provider toggles
-        for (const pid of showProvs) {
-          _bindProviderToggle(`autoSwitch_${pid}`, pid);
+        // Bind per-provider toggles (per-provider view only)
+        if (_activeProviderFilter !== "all") {
+          for (const pid of showProvs) {
+            _bindProviderToggle(`autoSwitch_${pid}`, pid);
+          }
         }
 
-        // Bind browser account handlers + API key handlers
+        // Bind browser account handlers + API key handlers + combined pills
         _bindBrowserHandlers();
         _bindApiKeyHandlers();
+        _bindCombinedProviderPills();
 
         // Bind Clear All History button
         const clearAllBtn = accountProfileCards.querySelector(".clear-all-history-btn");

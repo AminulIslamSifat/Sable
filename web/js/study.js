@@ -30,14 +30,13 @@
 
   // ─── Library state (backed by /api/study/*) ───
   let LIBRARY_DOCS = [];
-  let libraryFilter = 'all';   // all | progress | bookmarked | highlights
+  let libView = 'recent';         // unified library view (see VIEWS below)
   let libraryQuery = '';
-  let groupBy = 'recent';      // recent | none | collection | semester | subject | topic
   let COLLECTIONS = [];        // Drive folders that have imported docs
   let DRIVE_FOLDERS = [];      // Drive links saved in the Drive tab (shown as cards)
-  let userChoseGroup = false;  // don't override an explicit group-by choice
-  let ACADEMICS = { semesters: [] };
+  let ACADEMICS = { topics: [], semesters: [] };
   let collapsedGroups = {};    // group key → true when collapsed
+  let allDrillTopic = null;    // topic name we've drilled into in "All documents"
   // Accepted upload formats, fetched from the backend. Falls back to a sane
   // default so the picker works even before /formats responds.
   let FORMATS = { accept: ['.pdf'], converter: true };
@@ -48,28 +47,38 @@
 
   // ─── Rendering ───
 
+  /** Documents matching the current view's filter + the search query. */
   function docsMatchingFilter() {
     const q = libraryQuery.trim().toLowerCase();
     return LIBRARY_DOCS.filter((d) => {
       if (q && !String(d.title || '').toLowerCase().includes(q)) return false;
-      if (libraryFilter === 'progress') return (d.progress && d.progress.percent) > 0;
-      if (libraryFilter === 'bookmarked') return !!d.bookmarked;
-      if (libraryFilter === 'highlights') return (d.highlights || 0) > 0;
+      if (libView === 'progress') return (d.progress && d.progress.percent) > 0;
+      if (libView === 'bookmarked') return !!d.bookmarked;
       return true;
     });
   }
 
-  const GROUP_LABELS = {
-    recent: 'Recent', none: 'None', collection: 'Drive folder',
-    semester: 'Semester', session: 'Session', subject: 'Subject', topic: 'Topic',
-  };
-  // View modes offered in the sidebar, in display order. `recent` is special —
-  // it's a flat list sorted by last opened, not a grouping.
-  const GROUP_MODES = ['recent', 'none', 'collection', 'semester', 'session', 'subject', 'topic'];
-  const GROUP_ICONS = {
-    recent: 'clock', none: 'layout-grid', collection: 'folder-tree',
-    semester: 'graduation-cap', session: 'calendar', subject: 'book', topic: 'tag',
-  };
+  // Unified library views — ONE list, one selection each. Every view fully
+  // determines how the library renders (filter + grouping combined), so the
+  // user never has to set two things to change what they see.
+  //   recent     → composite dashboard (recent docs + jump-back cards)
+  //   all        → flat grid of every document
+  //   progress   → flat grid, docs with reading progress
+  //   bookmarked → flat grid, bookmarked docs
+  //   topic      → documents grouped by topic (the one parent axis)
+  const VIEWS = [
+    { id: 'recent',     label: 'Recent',        icon: 'history' },
+    { id: 'all',        label: 'All documents', icon: 'layers' },
+    { id: 'progress',   label: 'In progress',   icon: 'clock' },
+    { id: 'bookmarked', label: 'Bookmarked',    icon: 'bookmark' },
+    { id: 'topic',      label: 'Topic',         icon: 'tag' },
+  ];
+  const VIEW_LABEL = Object.fromEntries(VIEWS.map((v) => [v.id, v.label]));
+  // Views that group by a tag dimension (vs. flat grids). Topic is the only
+  // grouping axis now — it is the parent every document must belong to.
+  const GROUP_VIEWS = { topic: true };
+  const GROUP_ICON = { topic: 'tag' };
+  const OTHERS_TOPIC = 'Others';
 
   function renderLibrary() {
     if (!LIBRARY_DOCS.length && !DRIVE_FOLDERS.length) {
@@ -82,31 +91,104 @@
         </div>`;
     }
 
-    // Recent — every document opened recently, newest first, regardless of
-    // where it came from (local upload or Drive).
-    if (groupBy === 'recent') return renderRecent();
+    // Recent — the composite dashboard (recent docs + jump-back cards).
+    if (libView === 'recent') return renderRecent();
 
     const docs = docsMatchingFilter();
-    const folders = DRIVE_FOLDERS.map(folderCard).join('');
-    if (!docs.length && !folders) {
-      return `<div class="study-empty"><div class="study-empty-icon">🔍</div><h3>Nothing matches</h3><p>No documents fit this filter or search.</p></div>`;
+
+    // Search applies across every non-recent view: if a query is active and
+    // nothing matches, say so rather than falling back to empty grids.
+    if (libraryQuery.trim() && !docs.length) {
+      return `<div class="study-empty"><div class="study-empty-icon">🔍</div><h3>Nothing matches</h3><p>No documents fit this search.</p></div>`;
     }
 
-    // Flat grid when grouping is off — documents first, then Drive folders.
-    if (groupBy === 'none') {
-      const docGrid = `<div class="study-library">${docs.map(docCard).join('')}</div>`;
-      const folderSection = folders
-        ? `<div class="study-folders">
-             <div class="study-folders-label">
-               <i data-lucide="folder-open" class="icon-lucide"></i> Drive folders
-             </div>
-             <div class="study-library">${folders}</div>
-           </div>`
-        : '';
-      return `${docGrid}${folderSection}`;
+    // "All documents" — a grid of TOPIC FOLDERS first; clicking one drills
+    // into that topic and shows its documents. A breadcrumb walks back out.
+    if (libView === 'all') {
+      if (allDrillTopic) return renderAllDrill(docs);
+      return renderAllFolders(docs);
     }
 
-    return renderGrouped(docs);
+    // Topic-grouped view — documents filed under their parent topic.
+    if (GROUP_VIEWS[libView]) return renderGrouped(docs);
+
+    // Flat grid views (progress / bookmarked).
+    return docs.length
+      ? `<div class="study-library">${docs.map(docCard).join('')}</div>`
+      : `<div class="study-empty"><div class="study-empty-icon">📄</div><h3>Nothing here yet</h3><p>No documents in “${escapeHtml(VIEW_LABEL[libView] || libView)}”.</p></div>`;
+  }
+
+  /** Distinct topic names across the given docs, "Others" always last. */
+  function topicNamesFromDocs(docs) {
+    const names = new Set();
+    for (const d of docs) {
+      const t = (((d.group || {}).topic) || '').trim() || OTHERS_TOPIC;
+      names.add(t);
+    }
+    // Include topics the user created that currently hold no docs, so an empty
+    // topic still shows up as a folder in "All documents".
+    for (const t of (ACADEMICS.topics || [])) {
+      if (t && t.name) names.add(t.name);
+    }
+    return [...names].sort((a, b) => {
+      if (a === OTHERS_TOPIC) return 1;
+      if (b === OTHERS_TOPIC) return -1;
+      return a.localeCompare(b);
+    });
+  }
+
+  /** "All documents" root — a card per topic folder. */
+  function renderAllFolders(docs) {
+    const names = topicNamesFromDocs(docs);
+    const docsFor = (topic) => docs.filter((d) => ((((d.group || {}).topic) || '').trim() || OTHERS_TOPIC) === topic);
+    if (!names.length) {
+      return `<div class="study-empty"><div class="study-empty-icon">📄</div><h3>Nothing here yet</h3><p>Upload a document to get started.</p></div>`;
+    }
+    const cards = names.map((topic) => {
+      const items = docsFor(topic);
+      const isOthers = topic === OTHERS_TOPIC;
+      return `
+        <div class="study-doc-card study-folder-card" data-topic-open="${escapeHtml(topic)}" role="button" tabindex="0">
+          <div class="study-doc-thumb">
+            <i data-lucide="${isOthers ? 'archive' : 'tag'}" class="icon-lucide study-doc-icon"></i>
+          </div>
+          <div class="study-doc-info">
+            <div class="study-doc-title">${escapeHtml(topic)}</div>
+            <div class="study-doc-meta">
+              <span>${items.length} doc${items.length === 1 ? '' : 's'}</span>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    let html = `<div class="study-recent-head">
+                  <span class="study-recent-title"><i data-lucide="layers" class="icon-lucide"></i> Topics — tap to open</span>
+                </div>`;
+    html += `<div class="study-library">${cards}</div>`;
+
+    // Drive folder cards stay a source list at the root level of "All".
+    if (DRIVE_FOLDERS.length) {
+      html += `<div class="study-folders">
+                 <div class="study-folders-label"><i data-lucide="folder-open" class="icon-lucide"></i> Drive folders</div>
+                 <div class="study-library">${DRIVE_FOLDERS.map(folderCard).join('')}</div>
+               </div>`;
+    }
+    return html;
+  }
+
+  /** "All documents" drilled into one topic — breadcrumb + that topic's docs. */
+  function renderAllDrill(docs) {
+    const topic = allDrillTopic;
+    const items = docs.filter((d) => ((((d.group || {}).topic) || '').trim() || OTHERS_TOPIC) === topic);
+    const crumb = `<div class="study-breadcrumb">
+        <button class="study-crumb-link" data-topic-back type="button"><i data-lucide="layers" class="icon-lucide"></i> All documents</button>
+        <i data-lucide="chevron-right" class="icon-lucide study-crumb-sep"></i>
+        <span class="study-crumb-current">${escapeHtml(topic)}</span>
+      </div>`;
+    const body = items.length
+      ? `<div class="study-library">${items.map(docCard).join('')}</div>`
+      : `<div class="study-empty"><div class="study-empty-icon">🗂️</div><h3>No documents</h3><p>Nothing is filed under “${escapeHtml(topic)}” yet.</p></div>`;
+    return `${crumb}${body}`;
   }
 
   /** A Drive folder the user added, shown as a card in the library. */
@@ -127,50 +209,111 @@
       </div>`;
   }
 
-  /** Documents by most-recently-opened, ignoring where they live. */
+  /**
+   * Recent — the composite landing dashboard.
+   *
+   * Row 1: the 4 most-recently-opened documents.
+   * Row 2: "jump back in" cards — last topic and the most recently added
+   *        Drive source.
+   * This is the default view; it never dead-ends, falling back to the newest
+   * uploads when nothing has been opened yet.
+   */
   function renderRecent() {
-    const recent = LIBRARY_DOCS
+    const opened = LIBRARY_DOCS
       .filter((d) => d.progress && d.progress.last_opened > 0)
       .sort((a, b) => (b.progress.last_opened || 0) - (a.progress.last_opened || 0));
-    if (!recent.length) {
-      // Fall back to the full library when nothing has been opened yet, so the
-      // default view is never a dead-end empty screen for a fresh library.
-      if (LIBRARY_DOCS.length) {
-        return `<div class="study-library">${LIBRARY_DOCS.map(docCard).join('')}</div>`;
+    // Fall back to newest uploads when nothing has been opened yet, so a fresh
+    // library still shows something useful on first load.
+    const rowDocs = (opened.length ? opened : LIBRARY_DOCS.slice()).slice(0, 4);
+
+    // Most-recent topic, derived from the docs sorted by last_opened (falling
+    // back to newest-added) so "last topic" reflects what you actually used.
+    const byUse = (opened.length ? opened : LIBRARY_DOCS.slice())
+      .slice()
+      .sort((a, b) => (b.progress && b.progress.last_opened || 0) - (a.progress && a.progress.last_opened || 0));
+    const lastTag = (dim) => {
+      for (const d of byUse) {
+        const v = (((d.group || {})[dim]) || '').trim();
+        if (v) return v;
       }
+      return '';
+    };
+
+    if (!rowDocs.length && !DRIVE_FOLDERS.length) {
       return `<div class="study-empty"><div class="study-empty-icon">🕘</div>
                 <h3>Nothing opened yet</h3>
                 <p>Documents you read will show up here, newest first.</p></div>`;
     }
-    return `<div class="study-library">${recent.map(docCard).join('')}</div>`;
+
+    let html = '';
+
+    // ── Row 1: recent documents ──
+    if (rowDocs.length) {
+      html += `<div class="study-recent-head">
+                 <span class="study-recent-title"><i data-lucide="history" class="icon-lucide"></i> Recently opened</span>
+               </div>`;
+      html += `<div class="study-library">${rowDocs.map(docCard).join('')}</div>`;
+    }
+
+    // ── Row 2: jump-back cards ──
+    const jump = [];
+    const lastTop = lastTag('topic');
+    if (lastTop) jump.push(jumpCard('tag', 'Topic', lastTop, 'topic'));
+    if (DRIVE_FOLDERS.length) {
+      const last = DRIVE_FOLDERS[0];
+      jump.push(`<button class="study-jump-card" data-drive-folder="${escapeHtml(last.id)}" type="button">
+                   <span class="study-jump-icon"><i data-lucide="folder-open" class="icon-lucide"></i></span>
+                   <span class="study-jump-body">
+                     <span class="study-jump-label">Drive</span>
+                     <span class="study-jump-value">${escapeHtml(last.name || 'Last source')}</span>
+                   </span>
+                 </button>`);
+    }
+    if (jump.length) {
+      html += `<div class="study-recent-head" style="margin-top:16px;">
+                 <span class="study-recent-title"><i data-lucide="corner-down-right" class="icon-lucide"></i> Jump back in</span>
+               </div>`;
+      html += `<div class="study-jump-row">${jump.join('')}</div>`;
+    }
+
+    return html;
   }
 
-  /** Build the group → docs map for the active groupBy dimension. */
+  /** A "jump back in" card that switches the library to a tag view. */
+  function jumpCard(icon, label, value, dim) {
+    return `<button class="study-jump-card" data-jump-view="${dim}" type="button">
+              <span class="study-jump-icon"><i data-lucide="${icon}" class="icon-lucide"></i></span>
+              <span class="study-jump-body">
+                <span class="study-jump-label">${escapeHtml(label)}</span>
+                <span class="study-jump-value">${escapeHtml(value)}</span>
+              </span>
+            </button>`;
+  }
+
+  /** Build the group → docs map for the active grouping view dimension. */
   function groupDocs(docs) {
+    const dim = GROUP_VIEWS[libView] ? libView : 'topic';
     const map = new Map();
     for (const d of docs) {
-      // 'collection' groups by the Drive folder a doc was imported from.
-      const label = groupBy === 'collection'
-        ? ((d.collection || '').trim() || 'Ungrouped')
-        : (((d.group || {})[groupBy] || '').trim() || 'Ungrouped');
+      const label = (((d.group || {})[dim] || '').trim() || OTHERS_TOPIC);
       if (!map.has(label)) map.set(label, []);
       map.get(label).push(d);
     }
-    // Named groups first (alphabetical), "Ungrouped" always last.
+    // "Others" (the catch-all bucket) always sorts last; the rest alphabetically.
     return [...map.entries()].sort((a, b) => {
-      if (a[0] === 'Ungrouped') return 1;
-      if (b[0] === 'Ungrouped') return -1;
+      if (a[0] === OTHERS_TOPIC) return 1;
+      if (b[0] === OTHERS_TOPIC) return -1;
       return a[0].localeCompare(b[0]);
     });
   }
 
   function renderGrouped(docs) {
+    const dim = GROUP_VIEWS[libView] ? libView : 'topic';
     const groups = groupDocs(docs);
     const sections = groups.map(([label, items]) => {
-      const key = groupBy + ':' + label;
+      const key = dim + ':' + label;
       const isCollapsed = !!collapsedGroups[key];
-      // A Drive collection gets a folder icon so it reads as a source, not a tag.
-      const icon = groupBy === 'collection' ? 'folder-open' : 'folder-tree';
+      const icon = GROUP_ICON[dim] || 'folder-tree';
       return `
         <div class="study-group${isCollapsed ? ' collapsed' : ''}" data-group-key="${escapeHtml(key)}">
           <button class="study-group-head" data-group-toggle="${escapeHtml(key)}">
@@ -182,7 +325,18 @@
           <div class="study-library study-group-body">${items.map(docCard).join('')}</div>
         </div>`;
     });
-    return `<div class="study-groups">${sections.join('')}</div>`;
+    // Header with an inline "Add topic" so a new topic can be created without
+    // leaving the Topic view.
+    const head = `<div class="study-recent-head" style="justify-content:space-between;">
+        <span class="study-recent-title"><i data-lucide="tag" class="icon-lucide"></i> Topics</span>
+        <button class="study-room-action primary" data-acad="add-topic" style="padding:5px 12px;font-size:12px;">
+          <i data-lucide="plus" class="icon-lucide"></i> Add topic
+        </button>
+      </div>`;
+    if (!sections.length) {
+      return `${head}<div class="study-empty"><div class="study-empty-icon">🏷️</div><h3>No topics yet</h3><p>Create a topic to start filing documents.</p></div>`;
+    }
+    return `${head}<div class="study-groups">${sections.join('')}</div>`;
   }
 
   // Source-format → display icon + accent label.
@@ -200,7 +354,8 @@
     const g = d.group || {};
     const ext = String(d.source_ext || 'pdf').toLowerCase();
     const icon = EXT_ICON[ext] || 'file-text';
-    const tags = [g.semester, g.session, g.subject, g.topic].filter(Boolean);
+    // Only the topic shows on the card — it is the document's parent now.
+    const tags = [g.topic].filter(Boolean);
     const tagHtml = tags.length
       ? `<div class="study-doc-tags">${tags.map((t) => `<span class="study-doc-tag">${escapeHtml(t)}</span>`).join('')}</div>`
       : '';
@@ -208,6 +363,9 @@
     const srcBadge = d.converted
       ? `<span class="study-doc-src" title="Converted from .${escapeHtml(ext)} to PDF">${escapeHtml(ext)}</span>`
       : '';
+    // Indexing badge (OCR / AI job state) — supplied by library-index.js.
+    const idxBadge = (window.libraryIndex && window.libraryIndex.badgeFor)
+      ? window.libraryIndex.badgeFor(d.id) : '';
     // Always attempt to load the page-1 preview. If no cached thumbnail exists,
     // the /thumb endpoint generates it on-the-fly and caches it for next time.
     // A plain <img> can't send an Authorization header, so the thumb request
@@ -233,6 +391,7 @@
           <div class="study-doc-meta">
             <span>${d.pages || 0} pages</span>
             <span>${pct}%</span>
+            ${idxBadge}
           </div>
         </div>
       </div>`;
@@ -288,7 +447,7 @@
       if (!res.ok) throw new Error(res.statusText);
       ACADEMICS = await res.json();
     } catch (err) {
-      ACADEMICS = { semesters: [] };
+      ACADEMICS = { topics: [], semesters: [] };
     }
     return ACADEMICS;
   }
@@ -305,7 +464,8 @@
 
   // ─── Upload (batch + drag & drop + inline grouping) ───
 
-  const TAG_FIELDS = ['semester', 'session', 'subject', 'topic'];
+  // Only the topic is stamped on upload — it is the document's parent now.
+  const TAG_FIELDS = ['topic'];
   const FILE_INPUT_ACCEPT = () => (FORMATS.accept || ['.pdf']).join(',');
 
   // Mirrors _MAX_PDF_BYTES in server/api/routes/study.py. Enforced here too so a
@@ -362,11 +522,18 @@
   // Open the batch upload dialog. `initialFiles` seeds the list (from the file
   // picker or a drop); files can be added/removed before hitting Upload. Tags
   // chosen here are stamped onto every file in the batch.
+  /** <option> list for the topic select: existing topics + Others + New. */
+  function topicOptions(selected) {
+    const topics = (ACADEMICS.topics || []).map((t) => t.name);
+    if (!topics.includes(OTHERS_TOPIC)) topics.push(OTHERS_TOPIC);
+    const opt = (v) => `<option value="${escapeHtml(v)}"${v === selected ? ' selected' : ''}>${escapeHtml(v)}</option>`;
+    return topics.map(opt).join('') + '<option value="__new__">+ New topic…</option>';
+  }
+
   function openUploadDialog(initialFiles) {
     let files = (initialFiles || []).filter(Boolean);
     const overlay = document.createElement('div');
     overlay.className = 'study-modal-overlay';
-    const p = buildGroupPicker({ group: {} });
     overlay.innerHTML = `
       <div class="study-modal study-upload-modal" role="dialog" aria-modal="true">
         <div class="study-modal-head">
@@ -381,21 +548,10 @@
         <div class="study-upload-list" data-filelist></div>
         <div class="study-upload-fields">
           <label class="study-field">
-            <span>Semester / Class</span>
-            <select data-field="semester">${p.semesters}</select>
+            <span>Topic <em class="study-field-req">required</em></span>
+            <select data-field="topic">${topicOptions('')}</select>
           </label>
-          <label class="study-field">
-            <span>Session</span>
-            <select data-field="session">${p.sessions}</select>
-          </label>
-          <label class="study-field">
-            <span>Subject</span>
-            <select data-field="subject"${p.disabledSubject ? ' disabled' : ''}>${p.subjects}</select>
-          </label>
-          <label class="study-field">
-            <span>Topic</span>
-            <select data-field="topic"${p.disabledTopic ? ' disabled' : ''}>${p.topics}</select>
-          </label>
+          <input class="study-field-newtopic" data-newtopic-input type="text" placeholder="New topic name…" style="display:none;" maxlength="80">
         </div>
         <div class="study-modal-actions">
           <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
@@ -433,16 +589,13 @@
       renderList();
     }
 
-    // Tag cascade — semester drives subjects, subject drives topics.
-    const tagVal = (f) => {
-      const el = overlay.querySelector(`[data-field="${f}"]`);
-      return el && !el.disabled ? el.value : '';
-    };
-    $('[data-field="semester"]').addEventListener('change', () => {
-      rebuildFor(overlay, { semester: tagVal('semester') });
-    });
-    $('[data-field="subject"]').addEventListener('change', () => {
-      rebuildFor(overlay, { semester: tagVal('semester'), subject: tagVal('subject') });
+    // Topic is the only field — and it's mandatory. "+ New topic…" reveals an
+    // inline text input so a topic can be created right here during upload.
+    const topicSel = $('[data-field="topic"]');
+    const newTopicInput = $('[data-newtopic-input]');
+    topicSel.addEventListener('change', () => {
+      newTopicInput.style.display = topicSel.value === '__new__' ? '' : 'none';
+      if (topicSel.value === '__new__') newTopicInput.focus();
     });
 
     const browse = document.createElement('input');
@@ -477,18 +630,21 @@
     $('[data-modal-cancel]').onclick = close;
 
     goBtn.onclick = async () => {
-      // Resolve any "+ New …" picks to real names before uploading.
-      const tags = {};
-      for (const f of TAG_FIELDS) {
-        let v = tagVal(f);
-        if (v === '__new__') {
-          v = ((await sableDialog.prompt({ title: `New ${f} name` })) || '').trim();
-          if (!v) return; // cancelled — keep the dialog open
-        }
-        tags[f] = v;
+      // Resolve the topic — mandatory. "+ New topic…" uses the inline input;
+      // blank/"Others" both land in the catch-all bucket.
+      let topic = topicSel.value;
+      if (topic === '__new__') {
+        topic = (newTopicInput.value || '').trim();
+        if (!topic) { newTopicInput.focus(); notify('Enter a topic name'); return; }
       }
-      if (!tags.semester) { tags.subject = ''; tags.topic = ''; }
-      if (!tags.subject) tags.topic = '';
+      if (!topic) topic = OTHERS_TOPIC;
+      // Register a newly-typed topic in the academics list so it persists even
+      // if the upload later fails.
+      if (topic !== OTHERS_TOPIC && !(ACADEMICS.topics || []).some((t) => t.name === topic)) {
+        try { await apiSend('/api/study/academics/topics', 'POST', { name: topic }); }
+        catch { /* already exists / offline — upload still proceeds */ }
+      }
+      const tags = { topic };
 
       goBtn.disabled = true;
       const queue = files.filter((f) => !fileRejection(f));
@@ -633,31 +789,29 @@
       const nAll = LIBRARY_DOCS.length;
       const nProg = LIBRARY_DOCS.filter((d) => (d.progress && d.progress.percent) > 0).length;
       const nMark = LIBRARY_DOCS.filter((d) => d.bookmarked).length;
-      const nHigh = LIBRARY_DOCS.filter((d) => (d.highlights || 0) > 0).length;
-      const sel = (f) => (libraryFilter === f ? ' active' : '');
+      // Count of distinct non-empty values for a tag dimension.
+      const nTag = (dim) => new Set(
+        LIBRARY_DOCS.map((d) => ((d.group || {})[dim] || '').trim()).filter(Boolean)
+      ).size;
+      const countFor = (id) => {
+        if (id === 'all') return nAll;
+        if (id === 'progress') return nProg;
+        if (id === 'bookmarked') return nMark;
+        if (id === 'topic') return nTag('topic');
+        return null; // recent — no count
+      };
       html = `
         <div class="study-sidebar-search-wrap">
           <i data-lucide="search" class="icon-lucide"></i>
           <input class="study-sidebar-search" placeholder="Search library..." id="studyLibSearch" value="${escapeHtml(libraryQuery)}">
         </div>
         <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Smart filters</div>
-          <button class="study-sidebar-item${sel('all')}" data-lib-filter="all"><i data-lucide="layers" class="icon-lucide"></i> All documents <span class="sidebar-count">${nAll}</span></button>
-          <button class="study-sidebar-item${sel('progress')}" data-lib-filter="progress"><i data-lucide="clock" class="icon-lucide"></i> In progress <span class="sidebar-count">${nProg}</span></button>
-          <button class="study-sidebar-item${sel('bookmarked')}" data-lib-filter="bookmarked"><i data-lucide="bookmark" class="icon-lucide"></i> Bookmarked <span class="sidebar-count">${nMark}</span></button>
-          <button class="study-sidebar-item${sel('highlights')}" data-lib-filter="highlights"><i data-lucide="highlighter" class="icon-lucide"></i> Highlights <span class="sidebar-count">${nHigh}</span></button>
-        </div>
-        <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Group by</div>
-          ${GROUP_MODES.map((mode) => {
-            const n = mode === 'collection'
-              ? COLLECTIONS.length
-              : (mode === 'none' ? null : new Set(
-                  LIBRARY_DOCS.map((d) => ((d.group || {})[mode] || '').trim()).filter(Boolean)
-                ).size);
+          <div class="study-sidebar-label">Library</div>
+          ${VIEWS.map((v) => {
+            const n = countFor(v.id);
             const badge = n ? `<span class="sidebar-count">${n}</span>` : '';
-            return `<button class="study-sidebar-item${groupBy === mode ? ' active' : ''}" data-group-by="${mode}">
-                      <i data-lucide="${GROUP_ICONS[mode]}" class="icon-lucide"></i> ${GROUP_LABELS[mode]} ${badge}
+            return `<button class="study-sidebar-item${libView === v.id ? ' active' : ''}" data-lib-view="${v.id}">
+                      <i data-lucide="${v.icon}" class="icon-lucide"></i> ${v.label} ${badge}
                     </button>`;
           }).join('')}
         </div>
@@ -683,20 +837,15 @@
           <button class="study-sidebar-item active"><i data-lucide="bar-chart-3" class="icon-lucide"></i> Study time</button>
         </div>`;
     } else {
-      const sems = ACADEMICS.semesters || [];
-      const nSubj = sems.reduce((n, s) => n + (s.subjects || []).length, 0);
-      const nTopic = sems.reduce((n, s) => n + (s.subjects || []).reduce((m, x) => m + (x.topics || []).length, 0), 0);
+      const nTopic = (ACADEMICS.topics || []).length;
       html = `
         <div class="study-sidebar-section">
           <div class="study-sidebar-label">Overview</div>
-          <button class="study-sidebar-item active"><i data-lucide="graduation-cap" class="icon-lucide"></i> Semesters <span class="sidebar-count">${sems.length}</span></button>
-          <button class="study-sidebar-item"><i data-lucide="calendar" class="icon-lucide"></i> Sessions <span class="sidebar-count">${(ACADEMICS.sessions || []).length}</span></button>
-          <button class="study-sidebar-item"><i data-lucide="book" class="icon-lucide"></i> Subjects <span class="sidebar-count">${nSubj}</span></button>
-          <button class="study-sidebar-item"><i data-lucide="tag" class="icon-lucide"></i> Topics <span class="sidebar-count">${nTopic}</span></button>
+          <button class="study-sidebar-item active"><i data-lucide="tag" class="icon-lucide"></i> Topics <span class="sidebar-count">${nTopic}</span></button>
         </div>
         <div class="study-sidebar-section">
           <div class="study-sidebar-label">Actions</div>
-          <button class="study-sidebar-item" data-acad="add-semester"><i data-lucide="plus-circle" class="icon-lucide"></i> Add semester</button>
+          <button class="study-sidebar-item" data-acad="add-topic"><i data-lucide="plus-circle" class="icon-lucide"></i> Add topic</button>
           <button class="study-sidebar-item" data-study-action="refresh-library"><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh</button>
         </div>`;
     }
@@ -883,21 +1032,39 @@
       return;
     }
 
-    // Library filter buttons live in the sidebar, not the content pane.
-    const filterEl = e.target.closest('[data-lib-filter]');
-    if (filterEl) {
-      libraryFilter = filterEl.dataset.libFilter;
+    // Drill into a topic folder in "All documents".
+    const topicOpenEl = e.target.closest('[data-topic-open]');
+    if (topicOpenEl) {
+      allDrillTopic = topicOpenEl.dataset.topicOpen;
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    // Breadcrumb back out of a drilled-in topic folder.
+    const topicBackEl = e.target.closest('[data-topic-back]');
+    if (topicBackEl) {
+      allDrillTopic = null;
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    // Unified library view selector (sidebar) — one list, one selection.
+    const viewEl = e.target.closest('[data-lib-view]');
+    if (viewEl) {
+      libView = viewEl.dataset.libView;
+      allDrillTopic = null;   // leaving "All" clears any drilled-in folder
       renderSidebar('library');
       content.innerHTML = renderLibrary();
       if (window.lucide) window.lucide.createIcons();
       return;
     }
 
-    // "Group by" selector (sidebar)
-    const groupEl = e.target.closest('[data-group-by]');
-    if (groupEl) {
-      groupBy = groupEl.dataset.groupBy;
-      userChoseGroup = true;
+    // "Jump back in" card on the Recent dashboard — switches to a tag view.
+    const jumpEl = e.target.closest('[data-jump-view]');
+    if (jumpEl) {
+      libView = jumpEl.dataset.jumpView;
       renderSidebar('library');
       content.innerHTML = renderLibrary();
       if (window.lucide) window.lucide.createIcons();
@@ -1001,65 +1168,19 @@
 
   async function handleAcadAction(action, id) {
     try {
-      if (action === 'add-semester') {
-        const name = ((await sableDialog.prompt({
-          title: 'New semester', label: 'Semester / class name',
-          placeholder: 'e.g. 5th Semester', okText: 'Create',
-        })) || '').trim();
-        if (!name) return;
-        await apiSend('/api/study/academics/semesters', 'POST', { name });
-
-      } else if (action === 'add-session') {
-        const name = ((await sableDialog.prompt({
-          title: 'New session', label: 'Session name',
-          placeholder: 'e.g. 2019-2020', okText: 'Create',
-        })) || '').trim();
-        if (!name) return;
-        await apiSend('/api/study/academics/sessions', 'POST', { name });
-
-      } else if (action === 'del-session') {
-        if (!(await sableDialog.confirm({
-          title: 'Delete this session?',
-          message: 'Documents in it will become ungrouped.',
-          okText: 'Delete', danger: true,
-        }))) return;
-        await apiSend(`/api/study/academics/sessions/${id}`, 'DELETE');
-
-      } else if (action === 'del-semester') {
-        if (!(await sableDialog.confirm({
-          title: 'Delete this semester?',
-          message: 'Documents in it will become ungrouped.',
-          okText: 'Delete', danger: true,
-        }))) return;
-        await apiSend(`/api/study/academics/semesters/${id}`, 'DELETE');
-
-      } else if (action === 'add-subject') {
-        const name = ((await sableDialog.prompt({
-          title: 'New subject', label: 'Subject name',
-          placeholder: 'e.g. Data Structures', okText: 'Create',
-        })) || '').trim();
-        if (!name) return;
-        await apiSend(`/api/study/academics/semesters/${id}/subjects`, 'POST', { name });
-
-      } else if (action === 'del-subject') {
-        if (!(await sableDialog.confirm({
-          title: 'Delete this subject?',
-          message: 'Its topics go too, and documents become ungrouped.',
-          okText: 'Delete', danger: true,
-        }))) return;
-        await apiSend(`/api/study/academics/subjects/${id}`, 'DELETE');
-
-      } else if (action === 'add-topic') {
+      if (action === 'add-topic') {
         const name = ((await sableDialog.prompt({
           title: 'New topic', label: 'Topic name',
           placeholder: 'e.g. Trees & Graphs', okText: 'Create',
         })) || '').trim();
         if (!name) return;
-        await apiSend(`/api/study/academics/subjects/${id}/topics`, 'POST', { name });
+        await apiSend('/api/study/academics/topics', 'POST', { name });
 
       } else if (action === 'del-topic') {
         if (!(await sableDialog.confirm({
-          title: 'Delete this topic?', okText: 'Delete', danger: true,
+          title: 'Delete this topic?',
+          message: 'Documents in it move to “Others”.',
+          okText: 'Delete', danger: true,
         }))) return;
         await apiSend(`/api/study/academics/topics/${id}`, 'DELETE');
 
@@ -1082,64 +1203,29 @@
   }
 
   /** Cascade options from the academics tree for the three assignment selects. */
-  function buildGroupPicker(doc) {
-    const g = (doc && doc.group) || {};
-    const semesters = ACADEMICS.semesters || [];
-
-    const sem = semesters.find((s) => s.name === g.semester);
-    const subjects = sem ? (sem.subjects || []) : [];
-    const subj = subjects.find((s) => s.name === g.subject);
-    const topics = subj ? (subj.topics || []) : [];
-
-    const opt = (v, sel) => `<option value="${escapeHtml(v)}"${sel ? ' selected' : ''}>${escapeHtml(v)}</option>`;
-    const blank = '<option value="">— none —</option>';
-
-    return {
-      semesters: blank + semesters.map((s) => opt(s.name, s.name === g.semester)).join('') +
-        '<option value="__new__">+ New semester…</option>',
-      sessions: blank + (ACADEMICS.sessions || []).map((s) => opt(s.name, s.name === g.session)).join('') +
-        '<option value="__new__">+ New session…</option>',
-      subjects: blank + subjects.map((s) => opt(s.name, s.name === g.subject)).join('') +
-        (g.semester ? '<option value="__new__">+ New subject…</option>' : ''),
-      topics: blank + topics.map((t) => opt(t.name, t.name === g.topic)).join('') +
-        (g.subject ? '<option value="__new__">+ New topic…</option>' : ''),
-      disabledSubject: !g.semester,
-      disabledTopic: !g.subject,
-    };
-  }
-
   function openDocMenu(docId) {
     const doc = findDoc(docId);
     if (!doc) return;
-    const p = buildGroupPicker(doc);
+    const g = doc.group || {};
+    const current = g.topic || OTHERS_TOPIC;
 
     const overlay = document.createElement('div');
     overlay.className = 'study-modal-overlay';
     overlay.innerHTML = `
       <div class="study-modal" role="dialog" aria-modal="true">
         <div class="study-modal-head">
-          <h3>Group document</h3>
+          <h3>Assign topic</h3>
           <button class="study-modal-x" data-modal-close>&times;</button>
         </div>
         <p class="study-modal-doc">${escapeHtml(doc.title)}</p>
         <label class="study-field">
-          <span>Semester / Class</span>
-          <select data-field="semester">${p.semesters}</select>
+          <span>Topic <em class="study-field-req">required</em></span>
+          <select data-field="topic">${topicOptions(current)}</select>
         </label>
-        <label class="study-field">
-          <span>Session</span>
-          <select data-field="session">${p.sessions}</select>
-        </label>
-        <label class="study-field">
-          <span>Subject</span>
-          <select data-field="subject"${p.disabledSubject ? ' disabled' : ''}>${p.subjects}</select>
-        </label>
-        <label class="study-field">
-          <span>Topic</span>
-          <select data-field="topic"${p.disabledTopic ? ' disabled' : ''}>${p.topics}</select>
-        </label>
+        <input class="study-field-newtopic" data-newtopic-input type="text" placeholder="New topic name…" style="display:none;" maxlength="80">
         <div class="study-modal-actions">
           <button class="study-room-action danger" data-modal-remove>Remove</button>
+          <button class="study-room-action secondary" data-modal-index type="button">Index…</button>
           <span class="study-modal-spacer"></span>
           <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
           <button class="study-room-action primary" data-modal-save>Save</button>
@@ -1153,19 +1239,25 @@
     $('[data-modal-close]').onclick = close;
     $('[data-modal-cancel]').onclick = close;
 
-    // Cascade: changing semester rebuilds subject options, etc.
-    $('[data-field="semester"]').addEventListener('change', (e) => {
-      if (e.target.value === '__new__') return; // handled on save
-      rebuildFor(overlay, { semester: e.target.value, subject: '', topic: '' });
-    });
-    $('[data-field="subject"]').addEventListener('change', (e) => {
-      if (e.target.value === '__new__') return;
-      const sem = $('[data-field="semester"]').value;
-      rebuildFor(overlay, { semester: sem, subject: e.target.value, topic: '' });
+    const topicSel = $('[data-field="topic"]');
+    const newTopicInput = $('[data-newtopic-input]');
+    topicSel.addEventListener('change', () => {
+      newTopicInput.style.display = topicSel.value === '__new__' ? '' : 'none';
+      if (topicSel.value === '__new__') newTopicInput.focus();
     });
 
     $('[data-modal-save]').onclick = () => saveGroup(overlay, doc, close);
     $('[data-modal-remove]').onclick = () => removeDoc(doc, close);
+    const indexBtn = $('[data-modal-index]');
+    if (indexBtn) {
+      indexBtn.onclick = () => {
+        if (window.libraryIndex && window.libraryIndex.open) {
+          window.libraryIndex.open(doc.id, doc.title);
+        } else {
+          notify('Indexing UI unavailable');
+        }
+      };
+    }
   }
 
   /**
@@ -1194,41 +1286,24 @@
     }
   }
 
-  /** Re-render the modal's selects against a partial group selection. */
-  function rebuildFor(overlay, partial) {
-    const fake = { group: partial };
-    const p = buildGroupPicker(fake);
-    const sem = overlay.querySelector('[data-field="semester"]');
-    const subj = overlay.querySelector('[data-field="subject"]');
-    const top = overlay.querySelector('[data-field="topic"]');
-    sem.innerHTML = p.semesters;
-    subj.innerHTML = p.subjects;
-    subj.disabled = p.disabledSubject;
-    top.innerHTML = p.topics;
-    top.disabled = p.disabledTopic;
-  }
-
   async function saveGroup(overlay, doc, close) {
-    const val = async (f) => {
-      const el = overlay.querySelector(`[data-field="${f}"]`);
-      if (!el || el.disabled) return '';
-      let v = el.value;
-      if (v === '__new__') {
-        v = ((await sableDialog.prompt({ title: `New ${f} name` })) || '').trim();
-        if (!v) return '';
-      }
-      return v;
-    };
-    const group = {
-      semester: await val('semester'), session: await val('session'),
-      subject: await val('subject'), topic: await val('topic'),
-    };
+    const sel = overlay.querySelector('[data-field="topic"]');
+    const newInput = overlay.querySelector('[data-newtopic-input]');
+    let topic = sel ? sel.value : '';
+    if (topic === '__new__') topic = (newInput && newInput.value || '').trim();
+    if (!topic) topic = OTHERS_TOPIC;   // topic is mandatory — fall back to catch-all
+
+    // Register a newly-created topic so it shows up in the topic list.
+    if (topic !== OTHERS_TOPIC && !(ACADEMICS.topics || []).some((t) => t.name === topic)) {
+      try { await apiSend('/api/study/academics/topics', 'POST', { name: topic }); }
+      catch { /* already exists / offline — save still proceeds */ }
+    }
 
     try {
       const res = await fetch(`/api/study/doc/${doc.id}/group`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(group),
+        body: JSON.stringify({ topic }),
       });
       if (!res.ok) throw new Error(res.statusText);
       doc.group = await res.json();
@@ -1236,97 +1311,57 @@
       await loadAcademics();
       content.innerHTML = renderLibrary();
       if (window.lucide) window.lucide.createIcons();
-      notify('Grouping updated ✓');
+      notify('Topic updated ✓');
     } catch (err) {
-      notify('Could not save grouping: ' + err.message);
+      notify('Could not save topic: ' + err.message);
     }
   }
 
   // ─── Academics manager ───
 
   function renderAcademics() {
-    const sems = ACADEMICS.semesters || [];
-    const countDocs = (pred) => LIBRARY_DOCS.filter((d) => pred(d.group || {})).length;
-
-    const sessions = ACADEMICS.sessions || [];
-    const sessionDocs = (name) => LIBRARY_DOCS.filter((d) => (d.group || {}).session === name).length;
-    const sessionsCard = `
-      <div class="study-acad-sessions">
-        <div class="study-acad-row top">
-          <span class="study-acad-name"><i data-lucide="calendar" class="icon-lucide"></i> Sessions</span>
-          <button class="study-acad-mini" data-acad="add-session" title="Add session"><i data-lucide="plus" class="icon-lucide"></i></button>
-        </div>
-        <div class="study-acad-chips">
-          ${sessions.length
-            ? sessions.map((s) => `
-                <span class="study-acad-chip">
-                  ${escapeHtml(s.name)}
-                  <span class="study-acad-chip-count">${sessionDocs(s.name)}</span>
-                  <button class="study-acad-chip-del" data-acad="del-session" data-id="${s.id}" title="Delete session">&times;</button>
-                </span>`).join('')
-            : '<div class="study-acad-empty">No sessions yet</div>'}
-        </div>
-      </div>`;
+    const topics = ACADEMICS.topics || [];
+    const countDocs = (name) => LIBRARY_DOCS.filter((d) => ((d.group || {}).topic || '') === name).length;
 
     const header = `
       <div class="study-acad-head">
         <div>
-          <h3>Academics</h3>
-          <p>Organize your library into semesters, sessions, subjects, and topics.</p>
+          <h3>Topics</h3>
+          <p>Every document belongs to a topic. Create topics here, or assign one while uploading.</p>
         </div>
-        <button class="study-room-action primary" data-acad="add-semester">
-          <i data-lucide="plus" class="icon-lucide"></i> Add semester
+        <button class="study-room-action primary" data-acad="add-topic">
+          <i data-lucide="plus" class="icon-lucide"></i> Add topic
         </button>
       </div>`;
 
-    if (!sems.length) {
+    if (!topics.length) {
       return `<div class="study-academics-manager">${header}
         <div class="study-empty">
-          <div class="study-empty-icon">🎓</div>
-          <h3>No semesters yet</h3>
-          <p>Add your first semester or class, then nest subjects and topics inside it.</p>
+          <div class="study-empty-icon">🏷️</div>
+          <h3>No topics yet</h3>
+          <p>Create your first topic — every upload gets filed under one.</p>
         </div>
       </div>`;
     }
 
-    const tree = sems.map((sem) => {
-      const semDocs = countDocs((g) => g.semester === sem.name);
-      const subjects = (sem.subjects || []).map((subj) => {
-        const subjDocs = countDocs((g) => g.subject === subj.name);
-        const topics = (subj.topics || []).map((t) => {
-          const tDocs = countDocs((g) => g.topic === t.name);
-          return `
-            <div class="study-acad-topic">
-              <span class="study-acad-name">${escapeHtml(t.name)}</span>
-              <span class="study-acad-count">${tDocs}</span>
-              <button class="study-acad-del" data-acad="del-topic" data-id="${t.id}" title="Delete topic">&times;</button>
-            </div>`;
-        }).join('');
-        return `
-          <div class="study-acad-subject">
-            <div class="study-acad-row">
-              <span class="study-acad-name"><i data-lucide="book" class="icon-lucide"></i> ${escapeHtml(subj.name)}</span>
-              <span class="study-acad-count">${subjDocs} docs</span>
-              <button class="study-acad-mini" data-acad="add-topic" data-id="${subj.id}" title="Add topic"><i data-lucide="plus" class="icon-lucide"></i></button>
-              <button class="study-acad-del" data-acad="del-subject" data-id="${subj.id}" title="Delete subject">&times;</button>
-            </div>
-            ${topics ? `<div class="study-acad-topics">${topics}</div>` : ''}
-          </div>`;
-      }).join('');
-
+    // "Others" is the catch-all — keep it visually last and non-deletable.
+    const sorted = topics.slice().sort((a, b) => {
+      if (a.name === OTHERS_TOPIC) return 1;
+      if (b.name === OTHERS_TOPIC) return -1;
+      return a.name.localeCompare(b.name);
+    });
+    const rows = sorted.map((t) => {
+      const n = countDocs(t.name);
+      const isOthers = t.name === OTHERS_TOPIC;
       return `
-        <div class="study-acad-semester">
-          <div class="study-acad-row top">
-            <span class="study-acad-name"><i data-lucide="graduation-cap" class="icon-lucide"></i> ${escapeHtml(sem.name)}</span>
-            <span class="study-acad-count">${semDocs} docs</span>
-            <button class="study-acad-mini" data-acad="add-subject" data-id="${sem.id}" title="Add subject"><i data-lucide="plus" class="icon-lucide"></i></button>
-            <button class="study-acad-del" data-acad="del-semester" data-id="${sem.id}" title="Delete semester">&times;</button>
-          </div>
-          <div class="study-acad-subjects">${subjects || '<div class="study-acad-empty">No subjects yet</div>'}</div>
+        <div class="study-acad-topic">
+          <span class="study-acad-name"><i data-lucide="tag" class="icon-lucide"></i> ${escapeHtml(t.name)}${isOthers ? ' <em class="study-acad-hint">catch-all</em>' : ''}</span>
+          <span class="study-acad-count">${n} doc${n === 1 ? '' : 's'}</span>
+          ${isOthers ? '' : `<button class="study-acad-del" data-acad="del-topic" data-id="${t.id}" title="Delete topic">&times;</button>`}
         </div>`;
     }).join('');
 
-    return `<div class="study-academics-manager">${header}${sessionsCard}<div class="study-acad-tree">${tree}</div></div>`;
+    return `<div class="study-academics-manager">${header}<div class="study-acad-tree">${rows}</div></div>`;
   }
 
   function notify(msg) {
@@ -1359,6 +1394,15 @@
     content.addEventListener('click', handleContentClick);
     content.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ') return;
+      // Topic folder card → drill in ("All documents" root).
+      const topicEl = e.target.closest('[data-topic-open]');
+      if (topicEl) {
+        e.preventDefault();
+        allDrillTopic = topicEl.dataset.topicOpen;
+        content.innerHTML = renderLibrary();
+        if (window.lucide) window.lucide.createIcons();
+        return;
+      }
       const folder = e.target.closest('[data-drive-folder]');
       if (folder) {
         e.preventDefault();
@@ -1424,6 +1468,9 @@
 
     // Drive imports add docs — reload the library when one lands.
     window.addEventListener('study-library-changed', () => { loadDocs(); });
+
+    // Indexing finished (badges + page text changed) — repaint the grid.
+    window.addEventListener('study-index-changed', () => { loadDocs(); });
 
     // A Drive link added/removed changes the folder cards in the library.
     window.addEventListener('drive-sources-changed', () => { loadDriveFolders().then(() => loadDocs()); });

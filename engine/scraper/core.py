@@ -314,9 +314,11 @@ class BaseScraperEngine(ABC):
         from engine import browser_governor
 
         # Fleet-wide admission control: at most MAX_BROWSERS live browsers
-        # across every Sable process, each capped to MAX_BYTES of memory.
+        # across every Sable process.
+        # CHAT priority: this browser backs a live scraper chat session.
         slot = await browser_governor.acquire(
-            f"{getattr(self, 'profile_name', None) or Path(self.user_data_dir).name}"
+            f"{getattr(self, 'profile_name', None) or Path(self.user_data_dir).name}",
+            priority=browser_governor.PRIORITY_CHAT,
         )
 
         try:

@@ -33,6 +33,24 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.post("/api/warmup")
+async def warmup() -> dict[str, Any]:
+    """Kick off the one-shot browser/token warmup. Idempotent.
+
+    Called by the UI once it has actually loaded — so a headless server with
+    nobody watching never launches Chromium. Only the FIRST call starts
+    anything; a tab refresh, a second tab, or a manual re-POST all return
+    ``started: false`` without touching a browser.
+    """
+    from ..application import ensure_warmup_started
+    started = ensure_warmup_started()
+    return {
+        "status": "ok",
+        "started": started,
+        "message": "Warmup started" if started else "Warmup already ran this session",
+    }
+
+
 @router.get("/api/env")
 def env_info() -> dict[str, str]:
     """Return non-sensitive environment info for frontend path resolution."""

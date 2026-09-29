@@ -58,8 +58,9 @@ def _load_instructions(project_id: str | None = None, layout_mode: str | None = 
 
 
 def _resolve_active_account() -> str:
+    """ChatGPT's OWN active browser account (independent of every other provider)."""
     from engine.config import get_active_account
-    return get_active_account()
+    return get_active_account("chatgpt")
 
 
 def _provider_account() -> str | None:

@@ -54,7 +54,8 @@ class BaseScraperConnector:
 
     @property
     def account(self) -> str:
-        return self._account or get_active_account()
+        # Each scraper connector tracks its own provider's active browser slot.
+        return self._account or get_active_account(self.backend_name)
 
     def _lock_for(self, account: str) -> asyncio.Lock:
         lock = self._locks.get(account)
@@ -94,7 +95,7 @@ class BaseScraperConnector:
     @property
     def is_available(self) -> bool:
         try:
-            return get_browser_data_dir().is_dir()
+            return get_browser_data_dir(self.backend_name).is_dir()
         except Exception:
             return False
 

@@ -717,11 +717,19 @@ def _apply_group(doc_id: str, group: dict[str, Any]) -> None:
         return
     try:
         meta = json.loads(path.read_text(encoding="utf-8"))
+        topic = str(group.get("topic") or "").strip()[:80] or "Others"
         meta["group"] = {
             "semester": str(group.get("semester") or ""),
             "subject": str(group.get("subject") or ""),
-            "topic": str(group.get("topic") or ""),
+            # Topic is mandatory — Drive imports with no topic land in "Others".
+            "topic": topic,
         }
+        # Register the topic in the flat academics list.
+        try:
+            from server.api.routes.study import _ensure_topic
+            _ensure_topic(topic)
+        except Exception:
+            pass
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)

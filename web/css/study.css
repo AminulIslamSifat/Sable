@@ -892,6 +892,119 @@ body[data-mode="study"] #chatCompact {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* Inline "required" marker next to a field label. */
+.study-field > span .study-field-req {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  font-style: normal;
+  vertical-align: middle;
+}
+/* Inline "new topic name" text input (revealed by the + New option). */
+.study-field-newtopic {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  margin-bottom: 12px;
+}
+.study-field-newtopic:focus { border-color: var(--accent); }
+/* Small muted note next to a topic row (e.g. the "catch-all" tag). */
+.study-acad-hint {
+  font-size: 10px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--muted-2);
+  margin-left: 6px;
+}
+/* Breadcrumb shown when drilled into a topic folder in "All documents". */
+.study-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.study-crumb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+}
+.study-crumb-link:hover { color: var(--accent); background: var(--panel-2, var(--panel)); }
+.study-crumb-link .icon-lucide { width: 14px; height: 14px; }
+.study-crumb-sep { width: 14px; height: 14px; opacity: 0.5; }
+.study-crumb-current { font-weight: 600; color: var(--text); }
+
+/* ── Library indexing: card badge + modal ── */
+.li-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.li-badge.running { border-color: var(--accent); color: var(--accent-text, var(--accent)); }
+.li-badge.done { border-color: #4ade80; color: #4ade80; }
+.li-badge.paused { border-color: #f59e0b; color: #f59e0b; }
+.li-badge.error { border-color: var(--danger); color: var(--danger); }
+
+.li-modal { max-width: 480px; }
+.li-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.li-check input { margin-top: 2px; accent-color: var(--accent); }
+.li-check em { font-style: normal; color: var(--text-dim); font-size: 11px; }
+.li-ai-fields { margin-top: 4px; }
+
+.li-progress { margin: 14px 0 4px; }
+.li-bar {
+  height: 6px;
+  border-radius: 6px;
+  background: var(--border);
+  overflow: hidden;
+}
+.li-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+.li-progress-text {
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
 .study-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1050,11 +1163,88 @@ body[data-mode="study"] #chatCompact {
   font-style: italic;
 }
 
+/* ── Recent dashboard (default library view) ── */
+.study-recent-head {
+  display: flex;
+  align-items: center;
+  margin: 0 0 10px;
+}
+.study-recent-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.study-recent-title .icon-lucide { width: 14px; height: 14px; }
+
+/* "Jump back in" cards */
+.study-jump-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.study-jump-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  font: inherit;
+  color: var(--text);
+}
+.study-jump-card:hover {
+  border-color: var(--accent);
+  background: var(--panel-2, var(--panel));
+}
+.study-jump-card:active { transform: scale(0.98); }
+.study-jump-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--accent-dim, rgba(120,120,255,0.12));
+  color: var(--accent);
+}
+.study-jump-icon .icon-lucide { width: 16px; height: 16px; }
+.study-jump-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.study-jump-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-2, var(--text-dim));
+}
+.study-jump-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Responsive: rooms stack on narrow screens */
 @media (max-width: 600px) {
   .study-rooms {
     grid-template-columns: 1fr;
   }
+  .study-jump-row { grid-template-columns: 1fr 1fr; }
   .study-content {
     margin: 0;
     border-radius: 14px 14px 0 0;

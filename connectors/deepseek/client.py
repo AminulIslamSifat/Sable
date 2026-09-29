@@ -185,9 +185,9 @@ _LEGACY_MIGRATED = False  # guard so migration only runs once
 # --------------------------------------------------------------------------
 
 def _resolve_active_account() -> str:
-    """Get the active account name. Delegates to engine.config.get_active_account()."""
+    """DeepSeek's OWN active browser account (independent of every provider)."""
     from engine.config import get_active_account
-    return get_active_account()
+    return get_active_account("deepseek")
 
 
 def _read_pinned_token() -> str | None:
@@ -861,8 +861,9 @@ class DeepSeekClient:
 
     @property
     def _BROWSER_PROFILE(self) -> Path:
-        from engine.config import BROWSER_DATA_DIR
-        return BROWSER_DATA_DIR
+        # DeepSeek's OWN active browser profile (not the primary/qwen slot).
+        from engine.config import get_browser_data_dir
+        return get_browser_data_dir("deepseek")
 
     async def refresh_token(self) -> str:
         """Public method — refresh token using injected refresher or fallback browser profile."""

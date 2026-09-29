@@ -352,7 +352,8 @@ def ingest_bytes(
         "progress": {"current_page": 1, "percent": 0, "last_opened": 0},
         "highlights": [],
         "bookmarked": False,
-        "group": {"semester": "", "subject": "", "topic": ""},
+        # Topic is mandatory — docs ingested without one are filed under "Others".
+        "group": {"semester": "", "subject": "", "topic": "Others"},
         "source": source,
         "source_url": source_url,
         # Drive folder (or similar) this doc was pulled from, for grouping.

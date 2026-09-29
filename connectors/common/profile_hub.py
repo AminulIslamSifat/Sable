@@ -681,7 +681,13 @@ class ProfileHub:
         # path. Playwright starts the process for us here, so the pid is
         # resolved afterwards from the profile dir rather than from Popen.
         from engine import browser_governor
-        slot = await browser_governor.acquire(f"hub:{self.profile_dir.name}")
+        # CHAT priority: a hub browser is the user's live ghost-tab session.
+        # It outranks ephemeral header-refresh browsers, so a token mint can
+        # never evict it.
+        slot = await browser_governor.acquire(
+            f"hub:{self.profile_dir.name}",
+            priority=browser_governor.PRIORITY_CHAT,
+        )
 
         self._pw = await async_playwright().start()
         # A headed launch needs a display. On a host with none (server / WSL),

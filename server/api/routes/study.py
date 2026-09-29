@@ -11,6 +11,7 @@ frontend never has to re-parse the PDF to draw the sidebar.
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import logging
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from engine.config import (
     LIBRARY_ACADEMICS_PATH,
@@ -44,9 +45,31 @@ from engine.library_ingest import (
 from engine import library_rag as _rag
 from engine import library_search as _search
 from engine import library_sessions as _sessions
+from engine import library_index as _index
 
 router = APIRouter()
 logger = logging.getLogger("sable.study")
+
+# Fire-and-forget indexing tasks, kept referenced so they aren't GC'd mid-run.
+_INDEX_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_index_job(doc_id: str, *, pages: list[int] | None = None,
+                     do_ai: bool = False, lang: str = "eng+ben",
+                     model: str = "", thinking_mode: str = "") -> None:
+    """Run an index job in the background, tracked so it isn't collected."""
+    async def _run() -> None:
+        try:
+            await _index.run_job(
+                doc_id, do_ocr=True, do_ai=do_ai, pages=pages, lang=lang,
+                model=model, thinking_mode=thinking_mode,
+            )
+        except Exception:
+            logger.warning("index job failed for %s", doc_id, exc_info=True)
+
+    task = asyncio.create_task(_run())
+    _INDEX_TASKS.add(task)
+    task.add_done_callback(_INDEX_TASKS.discard)
 
 _MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MB
 _MAX_RECTS = 200  # highlight rectangles per selection
@@ -245,7 +268,7 @@ def _read_group(meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _empty_academics() -> dict[str, Any]:
-    return {"version": _ACADEMICS_VERSION, "semesters": [], "sessions": []}
+    return {"version": _ACADEMICS_VERSION, "topics": [], "semesters": [], "sessions": []}
 
 
 def _read_academics() -> dict[str, Any]:
@@ -259,13 +282,39 @@ def _read_academics() -> dict[str, Any]:
     if not isinstance(data, dict):
         return _empty_academics()
     data.setdefault("version", _ACADEMICS_VERSION)
+    # Topics are the PRIMARY organizing axis now — a flat, top-level list. A
+    # document's topic is its parent; semester/subject are legacy metadata.
+    if not isinstance(data.get("topics"), list):
+        data["topics"] = []
     if not isinstance(data.get("semesters"), list):
         data["semesters"] = []
     # Sessions are a flat cohort list (e.g. "2019-2020") — a sibling axis to
     # semesters, not nested inside them.
     if not isinstance(data.get("sessions"), list):
         data["sessions"] = []
+    # One-time migration: fold any legacy nested topics
+    # (semesters → subjects → topics) into the flat top-level list. Idempotent.
+    seen = {t.get("name") for t in data["topics"] if isinstance(t, dict)}
+    for sem in data.get("semesters", []):
+        for subj in (sem.get("subjects") or []):
+            for t in (subj.get("topics") or []):
+                nm = t.get("name")
+                if nm and nm not in seen:
+                    data["topics"].append({"id": t.get("id") or uuid.uuid4().hex[:12], "name": nm})
+                    seen.add(nm)
     return data
+
+
+def _ensure_topic(topic: str) -> None:
+    """Idempotently create a flat top-level topic. Empty/blank is ignored."""
+    topic = (topic or "").strip()[:80]
+    if not topic:
+        return
+    data = _read_academics()
+    topics = data.setdefault("topics", [])
+    if not any(t.get("name") == topic for t in topics):
+        topics.append({"id": uuid.uuid4().hex[:12], "name": topic})
+        _write_academics(data)
 
 
 def _write_academics(data: dict[str, Any]) -> None:
@@ -297,6 +346,28 @@ def _find_subject(sem: dict[str, Any], subj_id: str) -> dict[str, Any] | None:
 def _extract(raw: bytes) -> dict[str, Any]:
     """Thin delegate — shared with the Drive importer."""
     return _shared_extract_pdf(raw)
+
+
+def _pdf_page_count(raw: bytes) -> int:
+    """Page count only — used for scanned PDFs that have no text layer."""
+    try:
+        import pymupdf  # type: ignore
+
+        doc = pymupdf.open(stream=raw, filetype="pdf")
+        try:
+            return int(doc.page_count)
+        finally:
+            doc.close()
+    except Exception:
+        pass
+    try:
+        import io
+
+        from pypdf import PdfReader  # type: ignore
+
+        return len(PdfReader(io.BytesIO(raw)).pages)
+    except Exception:
+        return 0
 def _clean_rects(raw: Any) -> list[dict[str, float]]:
     """Validate/normalize highlight rectangles ({x,y,w,h} normalized 0–1).
 
@@ -391,11 +462,21 @@ async def study_upload(
 
     try:
         extracted = _extract(pdf_bytes)
-    except ValueError as e:
-        detail = str(e)
-        if converted:
-            detail += " (converted from " + ext.lstrip(".") + ")"
-        raise HTTPException(status_code=422, detail=detail)
+    except ValueError:
+        # No text layer — this is almost certainly a scanned/image-only PDF.
+        # Those are exactly the documents OCR exists for, so DON'T reject the
+        # upload: ingest it with blank page text and let the auto-OCR pass fill
+        # it in. Only the page count is needed up front.
+        pages = _pdf_page_count(pdf_bytes)
+        if pages <= 0:
+            raise HTTPException(status_code=422, detail="could not read PDF")
+        logger.info("no text layer in %s (%d pages) — queuing for OCR", file.filename, pages)
+        extracted = {
+            "pages": pages,
+            "page_text": [""] * pages,
+            "outline": [],
+            "meta_title": "",
+        }
 
     _ensure_dirs()
     doc_id = uuid.uuid4().hex
@@ -415,17 +496,11 @@ async def study_upload(
         "semester": semester.strip()[:80],
         "session": session.strip()[:80],
         "subject": subject.strip()[:80],
-        "topic": topic.strip()[:80],
+        # Topic is MANDATORY — every document is filed under one. Uploads that
+        # don't pick a topic land in the catch-all "Others" bucket.
+        "topic": (topic.strip()[:80] or "Others"),
     }
-    # A subject without its parent semester is meaningless — drop it.
-    if not group["semester"]:
-        group["subject"] = ""
-    if not group["subject"]:
-        group["topic"] = ""
-    if any(group.values()):
-        _ensure_academic_path(
-            group["semester"], group["subject"], group["topic"], group["session"]
-        )
+    _ensure_topic(group["topic"])
 
     meta: dict[str, Any] = {
         "version": _META_VERSION,
@@ -457,6 +532,16 @@ async def study_upload(
         _rag.build(doc_id, extracted["page_text"])
     except Exception:
         logger.warning("rag index failed for %s", doc_id, exc_info=True)
+
+    # Auto-OCR: any page that came out blank (a scanned/image-only page) is
+    # queued for OCR in the background. AI embedding is deliberately NOT run
+    # here — it stays a manual, user-driven action.
+    try:
+        needed = _index.pages_needing_ocr(extracted["page_text"])
+        if needed:
+            _spawn_index_job(doc_id, pages=needed)
+    except Exception:
+        logger.warning("auto-OCR kickoff failed for %s", doc_id, exc_info=True)
 
     return {"uploaded": True, **_summarize(meta)}
 
@@ -681,16 +766,11 @@ def study_update_group(doc_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             if key in payload:
                 group[key] = str(payload.get(key) or "").strip()[:80]
 
-        # A subject without its parent semester is meaningless — drop it.
-        if not group["semester"]:
-            group["subject"] = ""
-        if not group["subject"]:
-            group["topic"] = ""
-
-        if any(group.values()):
-            _ensure_academic_path(
-                group["semester"], group["subject"], group["topic"], group["session"]
-            )
+        # Topic is MANDATORY — clear/blank resolves to the "Others" bucket so a
+        # document is never left without a parent topic.
+        if not group["topic"]:
+            group["topic"] = "Others"
+        _ensure_topic(group["topic"])
 
         meta["group"] = group
         return group
@@ -808,6 +888,151 @@ def study_reindex(payload: dict[str, Any] | None = None) -> dict[str, Any]:
                 built += 1
         out["rag"] = {"indexed": built}
     return out
+
+
+# ── Index jobs (OCR + AI passes) ─────────────────────────────────────────────
+
+
+@router.post("/api/study/index/start")
+async def study_index_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Start (or resume) an indexing job for one doc, or the whole library.
+
+    body: {doc_id?, all?: bool, ocr?: bool, ai?: bool, pages?: [int],
+           lang?: str, model?: str, thinking_mode?: str}
+
+    OCR runs first, then AI. Both passes are resumable: re-invoking picks up
+    from the persisted cursors, so a stop never loses work.
+    """
+    payload = payload or {}
+    do_ocr = bool(payload.get("ocr", True))
+    do_ai = bool(payload.get("ai", False))
+    lang = str(payload.get("lang") or "eng+ben")
+    model = str(payload.get("model") or "")
+    thinking_mode = str(payload.get("thinking_mode") or "")
+    target = str(payload.get("doc_id") or "")
+    raw_pages = payload.get("pages")
+    pages = [int(p) for p in raw_pages] if isinstance(raw_pages, list) else None
+
+    if target:
+        if not _valid_id(target):
+            raise HTTPException(status_code=400, detail="invalid doc id")
+        if not _read_meta(target):
+            raise HTTPException(status_code=404, detail="document not found")
+        _spawn_index_job(
+            target, pages=pages, do_ai=do_ai, lang=lang,
+            model=model, thinking_mode=thinking_mode,
+        )
+        return {"status": "started", "doc_id": target, "ocr": do_ocr, "ai": do_ai}
+
+    # Whole-library kickoff — one background task per document.
+    if payload.get("all"):
+        started = 0
+        for path in sorted(LIBRARY_TEXT_DIR.glob("*.json")):
+            doc_id = path.stem
+            if _valid_id(doc_id):
+                _spawn_index_job(
+                    doc_id, do_ai=do_ai, lang=lang,
+                    model=model, thinking_mode=thinking_mode,
+                )
+                started += 1
+        return {"status": "started", "docs": started, "ocr": do_ocr, "ai": do_ai}
+
+    raise HTTPException(status_code=400, detail="provide doc_id or all=true")
+
+
+@router.post("/api/study/index/pause")
+def study_index_pause(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Pause a doc's job. The next start resumes from the saved cursors."""
+    payload = payload or {}
+    doc_id = str(payload.get("doc_id") or "")
+    if not _valid_id(doc_id):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+    job = _index.load_job(doc_id)
+    job["status"] = "paused"
+    _index.save_job(job)
+    return {"status": "paused", "doc_id": doc_id}
+
+
+@router.get("/api/study/index/status")
+def study_index_status(doc_id: str = "") -> dict[str, Any]:
+    """Job status for one doc, or a summary of every job in the library."""
+    if doc_id:
+        if not _valid_id(doc_id):
+            raise HTTPException(status_code=400, detail="invalid doc id")
+        return _index.status_for(doc_id)
+    jobs = _index.list_jobs()
+    return {
+        "jobs": [_index.status_for(str(j.get("doc_id"))) for j in jobs if j.get("doc_id")],
+        "active": sum(1 for j in jobs if j.get("status") == "running"),
+        "total": len(jobs),
+    }
+
+
+@router.post("/api/study/index/stream")
+async def study_index_stream(payload: dict[str, Any] | None = None) -> StreamingResponse:
+    """SSE: run an index job for one doc, streaming live progress.
+
+    body: {doc_id, ocr?: bool, ai?: bool, lang?: str, model?: str, thinking_mode?: str}
+    """
+    import json as _json
+
+    payload = payload or {}
+    doc_id = str(payload.get("doc_id") or "")
+    if not _valid_id(doc_id):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+    if not _read_meta(doc_id):
+        raise HTTPException(status_code=404, detail="document not found")
+
+    do_ocr = bool(payload.get("ocr", True))
+    do_ai = bool(payload.get("ai", False))
+    lang = str(payload.get("lang") or "eng+ben")
+    model = str(payload.get("model") or "")
+    thinking_mode = str(payload.get("thinking_mode") or "")
+
+    queue: asyncio.Queue = asyncio.Queue()
+    stop_flag = {"stop": False}
+
+    def _on_progress(event: dict[str, Any]) -> None:
+        try:
+            queue.put_nowait(event)
+        except Exception:
+            pass
+
+    async def _worker() -> None:
+        try:
+            await _index.run_job(
+                doc_id, do_ocr=do_ocr, do_ai=do_ai, lang=lang,
+                model=model, thinking_mode=thinking_mode,
+                on_progress=_on_progress,
+                should_stop=lambda: stop_flag["stop"],
+            )
+            queue.put_nowait({"done": True})
+        except Exception as exc:
+            queue.put_nowait({"error": str(exc)})
+
+    async def _gen():
+        task = asyncio.create_task(_worker())
+        yield f"data: {_json.dumps({'type': 'init', 'doc_id': doc_id, 'ocr': do_ocr, 'ai': do_ai})}\n\n"
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if event.get("done"):
+                    yield f"data: {_json.dumps({'type': 'complete', 'doc_id': doc_id})}\n\n"
+                    break
+                if event.get("error"):
+                    yield f"data: {_json.dumps({'type': 'error', 'message': event['error']})}\n\n"
+                    break
+                yield f"data: {_json.dumps({'type': 'progress', **event})}\n\n"
+        finally:
+            stop_flag["stop"] = True
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
 @router.get("/api/study/search/stats")
@@ -1054,8 +1279,46 @@ def _ensure_academic_path(
 
 @router.get("/api/study/academics")
 def academics_get() -> dict[str, Any]:
-    """The full semester → subject → topic tree, plus the session list."""
+    """Topics (primary flat list) + legacy semester tree + sessions."""
     return _read_academics()
+
+
+# ── Topics (flat, primary organizing axis) ───────────────────────────────────
+
+
+def _find_topic(data: dict[str, Any], topic_id: str) -> dict[str, Any] | None:
+    return next((t for t in data.get("topics", []) if t.get("id") == topic_id), None)
+
+
+@router.post("/api/study/academics/topics")
+def academics_add_flat_topic(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    data = _read_academics()
+    topics = data.setdefault("topics", [])
+    if any(t.get("name") == name for t in topics):
+        raise HTTPException(status_code=409, detail="topic already exists")
+    topic = {"id": uuid.uuid4().hex[:12], "name": name}
+    topics.append(topic)
+    _write_academics(data)
+    return topic
+
+
+@router.patch("/api/study/academics/topics/{topic_id}")
+def academics_rename_flat_topic(topic_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    data = _read_academics()
+    topic = _find_topic(data, topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="topic not found")
+    old = topic["name"]
+    topic["name"] = name
+    _write_academics(data)
+    _retag_docs("topic", old, name)
+    return topic
 
 
 # ── Sessions (flat cohort axis) ─────────────────────────────────────────────
@@ -1221,15 +1484,32 @@ def academics_add_topic(subj_id: str, payload: dict[str, Any]) -> dict[str, Any]
 
 @router.delete("/api/study/academics/topics/{topic_id}")
 def academics_delete_topic(topic_id: str) -> dict[str, Any]:
+    """Delete a topic from the flat list (and any legacy nested copy).
+
+    Documents filed under a deleted topic are re-bucketed into "Others" so no
+    document is ever left without its mandatory parent topic.
+    """
     data = _read_academics()
+    hit = _find_topic(data, topic_id)
+    if hit:
+        name = hit["name"]
+        data["topics"] = [t for t in data.get("topics", []) if t.get("id") != topic_id]
+        _write_academics(data)
+        if name == "Others":
+            # "Others" is the catch-all — recreate it so it always exists.
+            _ensure_topic("Others")
+        else:
+            _retag_docs("topic", name, "Others")
+            _ensure_topic("Others")
+        return {"deleted": True, "id": topic_id}
+    # Legacy nested location
     for sem in data["semesters"]:
         for subj in sem.get("subjects", []):
             topics = subj.get("topics", [])
-            hit = next((t for t in topics if t.get("id") == topic_id), None)
-            if hit:
+            leg = next((t for t in topics if t.get("id") == topic_id), None)
+            if leg:
                 subj["topics"] = [t for t in topics if t.get("id") != topic_id]
                 _write_academics(data)
-                _retag_docs("topic", hit["name"], "", cascade=True)
                 return {"deleted": True, "id": topic_id}
     raise HTTPException(status_code=404, detail="topic not found")
 

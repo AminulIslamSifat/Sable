@@ -36,6 +36,61 @@ def _make_service():
     return svc
 
 
+class FakeCffiResponse:
+    """Mimics a curl_cffi streaming response for the Qwen transport."""
+
+    def __init__(self, status_code: int, body: bytes = b"", sse_lines=None):
+        self.status_code = status_code
+        self.content = body
+        self._sse_lines = sse_lines or []
+
+    async def aiter_content(self, chunk_size: int = 0):
+        if self._sse_lines:
+            yield "\n".join(self._sse_lines).encode()
+
+    async def aiter_lines(self):
+        for line in self._sse_lines:
+            yield line
+
+
+class FakeCffiStream:
+    """Async context manager returned by FakeCffiSession.stream()."""
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class FakeCffiSession:
+    """Stand-in for curl_cffi.requests.AsyncSession.
+
+    The Qwen transport moved from httpx to curl_cffi (Chrome TLS
+    impersonation). Tests that patch httpx.AsyncClient no longer intercept
+    anything and silently hit the real network. Patch engine.service.CffiSession
+    instead — that is the seam the code actually uses.
+    """
+
+    def __init__(self, response, *a, **kw):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, method, url, **kwargs):
+        return FakeCffiStream(self._response)
+
+    async def post(self, url, **kwargs):
+        return self._response
+
+
 # ---------------------------------------------------------------------------
 # Test 1: service.py fast-fail on rate-limit keywords
 # ---------------------------------------------------------------------------
@@ -49,23 +104,11 @@ class TestServiceErrorDetection:
         svc._ensure_headers = AsyncMock(return_value={})
         svc._refresh_headers = AsyncMock(return_value={})
 
-        mock_response = AsyncMock()
-        mock_response.status_code = 429
-        mock_response.aread = AsyncMock(return_value=b'{"error": "rate limit exceeded"}')
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        mock_stream_ctx = AsyncMock()
-        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
-
-        mock_client = AsyncMock()
-        mock_client.stream = MagicMock(return_value=mock_stream_ctx)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        resp = FakeCffiResponse(429, b'{"error": "rate limit exceeded"}')
 
         events = []
-        with patch("engine.service.httpx.AsyncClient", return_value=mock_client), \
+        with patch("engine.service.CffiSession",
+                   lambda *a, **kw: FakeCffiSession(resp)), \
              patch("engine.service.mark_account_exhausted"):
             async for event in svc.stream_events("hello", chat_id="c1"):
                 events.append(event)
@@ -79,23 +122,11 @@ class TestServiceErrorDetection:
         svc._ensure_headers = AsyncMock(return_value={})
         svc._refresh_headers = AsyncMock(return_value={})
 
-        mock_response = AsyncMock()
-        mock_response.status_code = 503
-        mock_response.aread = AsyncMock(return_value=b'{"error": "captcha validation required"}')
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        mock_stream_ctx = AsyncMock()
-        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
-
-        mock_client = AsyncMock()
-        mock_client.stream = MagicMock(return_value=mock_stream_ctx)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        resp = FakeCffiResponse(503, b'{"error": "captcha validation required"}')
 
         events = []
-        with patch("engine.service.httpx.AsyncClient", return_value=mock_client):
+        with patch("engine.service.CffiSession",
+                   lambda *a, **kw: FakeCffiSession(resp)):
             async for event in svc.stream_events("hello", chat_id="c1"):
                 events.append(event)
 

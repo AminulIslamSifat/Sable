@@ -79,8 +79,11 @@ class ChatService:
 
     def __init__(self, user_data_dir: str | None = None) -> None:
         if user_data_dir is None:
-            from engine.config import BROWSER_DATA_DIR
-            user_data_dir = str(BROWSER_DATA_DIR)
+            # Default browser = the PRIMARY provider's (qwen) active account.
+            # Each provider owns its own slot; this default only backs the
+            # default chat path (qwen), which callers may override per-provider.
+            from engine.config import get_browser_data_dir
+            user_data_dir = str(get_browser_data_dir("qwen"))
         self._browser = BrowserManager(user_data_dir=user_data_dir)
         self._headers: dict[str, str] | None = None
         # Which account self._headers belong to (guards against fast double-switch
@@ -171,14 +174,12 @@ class ChatService:
     def _browser_for_provider(self, provider: str) -> BrowserManager:
         """Resolve the BrowserManager a provider should use.
 
-        Providers pinned to an account in settings (provider_accounts) get an
-        isolated browser for that profile. Unpinned providers follow the global
-        active account and share the default browser.
-
-        Browsers are keyed by data dir — so two providers pinned to the SAME
-        account share one BrowserManager (Chromium permits one process per
-        profile); different accounts get fully independent browsers that can
-        run concurrently.
+        Every provider owns an independent active-account slot (there is no
+        shared global browser), so a provider always launches against its own
+        profile. Browsers are keyed by data dir — two providers that happen to
+        share the SAME account reuse one BrowserManager (Chromium permits one
+        process per profile); different accounts get fully independent browsers
+        that can run concurrently.
         """
         from engine.config import get_provider_browser_dir
         try:
@@ -197,15 +198,15 @@ class ChatService:
         the service override, then the global active account.
         """
         import re as _re
-        from engine.config import _resolve_active_account, get_provider_account
+        from engine.config import _resolve_active_account
         if bdd:
             basename = Path(bdd).name
             if _re.match(r"browser-data-acc\d+$", basename):
                 return basename
+        # Named provider → that provider's own active account (no global fallback).
         if provider:
-            pinned = get_provider_account(provider)
-            if pinned:
-                return pinned
+            return _resolve_active_account(provider)
+        # Default path = primary provider (qwen), honoring an explicit override.
         return self._account_override or _resolve_active_account()
 
     async def close_scoped(self, bdd: str) -> None:
@@ -281,6 +282,12 @@ class ChatService:
                         )
                     except Exception as exc:
                         logger.warning("Browser launch failed for %s: %s: %s", account, type(exc).__name__, exc)
+                        # A full browser pool is a USER-FACING condition, not a
+                        # token problem — cached fallback would mask it. Let it
+                        # bubble so the chat stream can render the kill card.
+                        from engine.browser_governor import NoSlotAvailable
+                        if isinstance(exc, NoSlotAvailable):
+                            raise
                         # Fall back to cached tokens on disk before giving up
                         cached = get_qwen_tokens_for_account(account)
                         if cached and cached.get("cookies"):
@@ -331,6 +338,9 @@ class ChatService:
                 return headers
             except Exception as exc:
                 logger.warning("Browser launch failed for %s (scoped %s): %s: %s", account, bdd, type(exc).__name__, exc)
+                from engine.browser_governor import NoSlotAvailable
+                if isinstance(exc, NoSlotAvailable):
+                    raise
                 cached = get_qwen_tokens_for_account(account)
                 if cached and cached.get("cookies"):
                     from engine.session import build_headers
@@ -397,11 +407,13 @@ class ChatService:
         Chromium launch, then starts the browser in the background so that
         subsequent requests can call get_live_headers() for fresh bx-ua/cookies.
 
-        Pass account= to pin the target — background callers MUST, since the
-        active-profile symlink can move between scheduling and execution.
+        Pass account= to pin the target — background callers MUST, since a
+        provider's active account can move between scheduling and execution.
+        Qwen is its own provider and uses its own browser slot.
         """
         from engine.config import _resolve_active_account
-        account = account or self._account_override or _resolve_active_account()
+        browser = self._browser_for_provider("qwen")
+        account = account or _resolve_active_account("qwen")
         # Fast path: headers for this account already in memory
         if self._headers and self._headers_account == account:
             return
@@ -423,9 +435,9 @@ class ChatService:
         # (BrowserManager.start() guards against missing profiles)
         async with self._lock:
             try:
-                await self._browser.start()
+                await browser.start()
                 if not self._headers or self._headers_account != account:
-                    self._headers = await self._browser.get_fresh_headers()
+                    self._headers = await browser.get_fresh_headers()
                     self._headers_account = account
                     self._headers_ts = time.time()
                     # Persist WAF tokens to per-account cache
@@ -443,16 +455,19 @@ class ChatService:
                 logger.warning("Warmup browser start failed: %s: %s (cached headers still usable)", type(exc).__name__, exc)
 
     async def force_refresh_waf(self, account: str | None = None) -> None:
-        """Always launch browser to collect fresh WAF tokens, ignoring cache.
+        """Always launch Qwen's browser to collect fresh WAF tokens, ignoring cache.
 
-        Designed for post-switch background warmup — never blocks the main
-        request path. Updates in-memory headers AND persists to disk cache.
+        Qwen is its own provider with its own active-account slot — this never
+        touches another provider's profile. Designed for post-switch/startup
+        background warmup; never blocks the main request path. Updates the
+        in-memory Qwen headers AND persists to the per-account disk cache.
         """
-        from engine.config import _resolve_active_account
-        account = account or self._account_override or _resolve_active_account()
+        from engine.config import get_provider_active_account
+        browser = self._browser_for_provider("qwen")
+        account = account or get_provider_active_account("qwen")
         async with self._lock:
             try:
-                await self._browser.start()
+                await browser.start()
                 # warmup() already fetched fresh headers for this account a
                 # moment ago — get_fresh_headers() costs ~9s (2 probes + WAF
                 # cookie poll), so re-running it back-to-back is pure waste.
@@ -468,7 +483,7 @@ class ChatService:
                         time.time() - self._headers_ts, account,
                     )
                 else:
-                    self._headers = await self._browser.get_fresh_headers()
+                    self._headers = await browser.get_fresh_headers()
                     self._headers_account = account
                     self._headers_ts = time.time()
                     save_qwen_tokens_for_account(
@@ -495,92 +510,126 @@ class ChatService:
                     self._headers = None
                     self._headers_account = None
 
-    async def refresh_all_provider_tokens(self, account: str | None = None) -> dict[str, bool]:
-        """Refresh Qwen WAF + DeepSeek + z.ai + Gemini auth for `account`.
+    async def refresh_provider_token(self, provider: str) -> bool:
+        """Refresh ONE provider's credentials against its OWN active account.
 
-        Single entry point used by startup and post-account-switch warmup so
-        every provider's credentials track the active browser profile. Each
-        provider is isolated: one failure never blocks the others, and the
-        result map reports what actually succeeded.
-
-        account=None resolves to the active profile (pinned/override aware).
+        Each provider owns an independent browser slot, so this never reads or
+        writes another provider's profile. Returns True on success; a failure
+        is logged and reported as False (never raised) so callers can batch.
         """
-        results: dict[str, bool] = {
-            "qwen": False, "deepseek": False, "zai": False, "gemini": False,
-            "mimo": False, "kimi": False,
-        }
-
-        # --- Qwen WAF (cookies + bx-ua) ---
+        provider = (provider or "").strip().lower()
         try:
-            await self.force_refresh_waf(account=account)
-            results["qwen"] = bool(self._headers and self._headers.get("Cookie"))
-        except Exception as exc:
-            logger.warning("refresh_all: Qwen WAF failed: %s: %s", type(exc).__name__, exc)
+            # --- Qwen WAF (cookies + bx-ua) ---
+            if provider == "qwen":
+                await self.force_refresh_waf()
+                return bool(self._headers and self._headers.get("Cookie"))
 
-        # --- DeepSeek (browser localStorage bearer) ---
-        try:
-            from connectors.deepseek.client import (
-                get_client as get_deepseek_client,
-                get_own_token_for_account as _ds_own,
-            )
-            ds_client = get_deepseek_client()
-            own = _ds_own(account) if account else None
-            if own:
-                ds_client.set_token(own, account=account)
-            else:
-                ds_token = await self.refresh_deepseek_token()
-                if ds_token:
-                    # Only persist under the account if it's genuinely ours,
-                    # else keep in-memory so we don't smear a foreign token.
-                    fresh_own = _ds_own(account) if account else None
-                    if account and fresh_own == ds_token:
-                        ds_client.set_token(ds_token, account=account)
-                    else:
-                        ds_client.set_token(ds_token, account=account, persist=False)
-            results["deepseek"] = bool(ds_client.token)
-        except Exception as exc:
-            logger.warning("refresh_all: DeepSeek failed: %s: %s", type(exc).__name__, exc)
+            # --- DeepSeek (browser localStorage bearer) ---
+            if provider in ("deepseek", "deepseek_scraper"):
+                from connectors.deepseek.client import (
+                    get_client as get_deepseek_client,
+                    get_own_token_for_account as _ds_own,
+                )
+                from engine.config import get_provider_active_account
+                account = get_provider_active_account("deepseek")
+                ds_client = get_deepseek_client()
+                own = _ds_own(account)
+                if own:
+                    ds_client.set_token(own, account=account)
+                else:
+                    ds_token = await self.refresh_deepseek_token()
+                    if ds_token:
+                        # Only persist under the account if it's genuinely ours,
+                        # else keep in-memory so we don't smear a foreign token.
+                        if _ds_own(account) == ds_token:
+                            ds_client.set_token(ds_token, account=account)
+                        else:
+                            ds_client.set_token(ds_token, account=account, persist=False)
+                return bool(ds_client.token)
 
-        # --- z.ai (browser JWT) ---
-        try:
-            from connectors.zai.client import get_client as _zai_client
-            zai_token = await self.refresh_zai_token()
-            if zai_token:
-                _zai_client().set_token(zai_token)
-                results["zai"] = True
-        except Exception as exc:
-            logger.warning("refresh_all: z.ai failed: %s: %s", type(exc).__name__, exc)
+            # --- z.ai (browser JWT) ---
+            if provider == "zai":
+                from connectors.zai.client import get_client as _zai_client
+                zai_token = await self.refresh_zai_token()
+                if zai_token:
+                    _zai_client().set_token(zai_token)
+                    return True
+                return False
 
-        # --- Gemini (Google auth cookies → disk snapshot) ---
-        try:
-            jar = await self.get_gemini_cookies()
-            if jar:
-                from connectors.gemini_web.client import get_client as _gw
-                _gw().invalidate_jar()
-                results["gemini"] = True
-        except Exception as exc:
-            logger.warning("refresh_all: Gemini failed: %s: %s", type(exc).__name__, exc)
+            # --- Gemini (Google auth cookies → disk snapshot) ---
+            if provider in ("gemini_web", "gemini"):
+                jar = await self.get_gemini_cookies()
+                if jar:
+                    from connectors.gemini_web.client import get_client as _gw
+                    _gw().invalidate_jar()
+                    return True
+                return False
 
-        # --- MiMo (Xiaomi auth cookies) ---
-        try:
-            jar = await self.get_mimo_cookies()
-            if jar:
-                from connectors.mimo.client import get_client as _mimo
-                _mimo().invalidate_jar()
-                results["mimo"] = True
-        except Exception as exc:
-            logger.warning("refresh_all: MiMo failed: %s: %s", type(exc).__name__, exc)
+            # --- MiMo (Xiaomi auth cookies) ---
+            if provider == "mimo":
+                jar = await self.get_mimo_cookies()
+                if jar:
+                    from connectors.mimo.client import get_client as _mimo
+                    _mimo().invalidate_jar()
+                    return True
+                return False
 
-        # --- Kimi (ghost-tab localStorage bearer) ---
-        try:
-            results["kimi"] = await self.refresh_kimi_token(account=account)
+            # --- Mistral (Web) (Ory session cookies) ---
+            if provider == "mistral_web":
+                jar = await self.get_mistral_web_cookies()
+                if jar:
+                    from connectors.mistral_web.client import get_client as _mw
+                    _mw().invalidate_jar()
+                    return True
+                return False
+
+            # --- Kimi (ghost-tab localStorage bearer) ---
+            if provider == "kimi":
+                return await self.refresh_kimi_token()
+
+            logger.debug("refresh_provider_token: no refresher for '%s'", provider)
+            return False
         except Exception as exc:
-            logger.warning("refresh_all: Kimi failed: %s: %s", type(exc).__name__, exc)
+            logger.warning("refresh_provider_token[%s] failed: %s: %s",
+                           provider, type(exc).__name__, exc)
+            return False
+
+    async def refresh_all_provider_tokens(self, account: str | None = None) -> dict[str, bool]:
+        """Refresh EVERY browser provider against its own active account.
+
+        Providers are grouped by the account they resolve to, so two or more
+        providers sharing the same active browser profile refresh together in
+        one browser pass (the shared BrowserManager is reused). Each provider is
+        isolated: one failure never blocks the others, and the result map
+        reports what actually succeeded.
+
+        account= pins a single provider refresh (post-switch warmup) — pass the
+        provider via `only=` for that. Left as a positional compat shim.
+        """
+        from engine.config import get_provider_active_account
+
+        # Providers that own a browser-backed token we know how to refresh.
+        _REFRESHABLE = ("qwen", "deepseek", "zai", "gemini_web", "mimo", "kimi", "mistral_web")
+
+        # Group providers by the account dir they resolve to — shared dirs
+        # refresh together (one Chromium, reused across the group).
+        groups: dict[str, list[str]] = {}
+        for prov in _REFRESHABLE:
+            try:
+                acct = get_provider_active_account(prov)
+            except Exception:
+                acct = "?"
+            groups.setdefault(acct, []).append(prov)
+
+        results: dict[str, bool] = {p: False for p in _REFRESHABLE}
+        for acct, provs in groups.items():
+            logger.info("refresh_all: account=%s providers=%s", acct, provs)
+            for prov in provs:
+                results[prov] = await self.refresh_provider_token(prov)
 
         logger.info(
-            "refresh_all: account=%s qwen=%s deepseek=%s zai=%s gemini=%s mimo=%s kimi=%s",
-            account or "active", results["qwen"], results["deepseek"],
-            results["zai"], results["gemini"], results["mimo"], results["kimi"],
+            "refresh_all groups=%s results=%s",
+            {a: p for a, p in groups.items()}, results,
         )
         return results
 
@@ -611,16 +660,17 @@ class ChatService:
         return await session.has_token()
 
     async def refresh_deepseek_token(self) -> str:
-        """Extract a fresh DeepSeek token. Reuses an already-running browser
-        (e.g. one a cold warmup left open); closes it only if this call
-        launched it AND warmup hasn't started it for live header refresh."""
+        """Extract a fresh DeepSeek token from DeepSeek's own browser profile.
+
+        Uses the deepseek provider's active account (NOT qwen's), so each
+        provider reads the bearer out of its own logged-in profile. Reuses an
+        already-running browser; never closes it so the next provider refresh
+        can reuse the same Chromium instead of relaunching.
+        """
+        browser = self._browser_for_provider("deepseek")
         async with self._lock:
-            await self._browser.start()
-            # Never close the browser here. Keeping it alive lets the next
-            # provider refresh (qwen/z.ai/…) reuse the SAME running Chromium
-            # instead of relaunching — the old `finally: close()` caused the
-            # open→close→open churn when refreshing providers one after another.
-            return await self._browser.extract_deepseek_token()
+            await browser.start()
+            return await browser.extract_deepseek_token()
 
     async def get_zai_page(self):
         """Return a Playwright page on chat.z.ai from the z.ai browser context.
@@ -1018,6 +1068,17 @@ class ChatService:
                 return
         except Exception as exc:
             logger.debug(f"✗ Session startup failed: {type(exc).__name__}: {exc}")
+            from engine.browser_governor import NoSlotAvailable
+            if isinstance(exc, NoSlotAvailable):
+                # Both browser slots are held by live chat sessions. This is
+                # not a failure to report as an error — it is a choice for the
+                # user: kill one of the holders, or wait.
+                yield {
+                    "type": "no_slot",
+                    "message": str(exc),
+                    "slots": getattr(exc, "slots", []) or [],
+                }
+                return
             yield {"type": "error", "message": f"Session startup failed: {type(exc).__name__}: {exc}"}
             return
 

@@ -181,6 +181,13 @@ async def _make_client(fake_http: FakeHttpSession) -> Any:
     client._token_refresher = None
     client._model_id = "deepseek-instant"
     client._consecutive_failures = 0
+    # __init__ builds an ErrorContext, and the failure paths this suite
+    # exercises call self.ctx.error(). This helper bypasses __init__ via
+    # __new__, so without this the error handler itself crashes with
+    # AttributeError and masks the behaviour under test.
+    from connectors.common.error_ctx import ErrorContext
+    client.ctx = ErrorContext("deepseek")
+    client.ctx.model = client._model_id
     return client
 
 

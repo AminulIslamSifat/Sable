@@ -76,6 +76,19 @@ def kill_process_tree(
     if sig is None:
         sig = signal.SIGTERM
 
+    # Never killpg a zombie: getpgid() on a dead-but-unreaped pid can return a
+    # group that still holds LIVE processes, so killpg would murder healthy
+    # browsers. If the pid isn't a running process, there is nothing to kill.
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+        rparen = data.rfind(b")")
+        state = data[rparen + 2:rparen + 3].decode("ascii", "ignore") if rparen != -1 else ""
+    except (OSError, ValueError):
+        return
+    if state in ("Z", "X", "x"):
+        return
+
     try:
         pgid = os.getpgid(pid)
         os.killpg(pgid, sig)

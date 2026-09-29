@@ -809,6 +809,16 @@
     (async () => {
     await ensureAuth();
     await loadModels();
+
+    // One-shot lazy warmup: the server no longer warms browsers at startup.
+    // Fire this only after the UI has genuinely loaded, and guard it per
+    // BROWSER SESSION (sessionStorage, not localStorage) so a tab refresh or
+    // a second tab doesn't re-trigger it — the server is idempotent anyway,
+    // but this keeps the request off the wire entirely on reload.
+    if (!sessionStorage.getItem('sable_warmup_sent')) {
+      sessionStorage.setItem('sable_warmup_sent', '1');
+      fetch('/api/warmup', { method: 'POST' }).catch(() => {});
+    }
     // Fetch typewriter animation speed from server config
     fetch("/api/config/ui").then(r => r.json()).then(cfg => {
       if (cfg.typewriter_chars_per_tick) TW_CHARS = cfg.typewriter_chars_per_tick;

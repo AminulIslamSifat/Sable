@@ -122,16 +122,43 @@ def _pids_using_profile(profile_dir: str) -> set[int]:
     return pids
 
 
+def _pid_is_running(pid: int) -> bool:
+    """True only if `pid` is a live, non-zombie process.
+
+    ``os.kill(pid, 0)`` returns success for zombies, so it is NOT a liveness
+    test. We inspect /proc/<pid>/stat state instead and reject 'Z' (zombie)
+    and 'X' (dead).
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+        # state is the field right after the comm parenthesised name
+        rparen = data.rfind(b")")
+        if rparen == -1:
+            return False
+        state = data[rparen + 2:rparen + 3].decode("ascii", "ignore")
+        return state not in ("Z", "X", "x")
+    except (OSError, ValueError):
+        return False
+
+
 def _singleton_pid(profile_dir: str) -> int | None:
-    """PID recorded in the profile's SingletonLock symlink, if any."""
+    """PID recorded in the profile's SingletonLock symlink, if any.
+
+    Returns None when the recorded pid is a zombie or already gone — a stale
+    symlink must never be allowed to seed a kill.
+    """
     lock = Path(profile_dir) / "SingletonLock"
     if not (lock.is_symlink() or lock.exists()):
         return None
     try:
         _, _, pid_str = os.readlink(lock).rpartition("-")
-        return int(pid_str)
+        pid = int(pid_str)
     except Exception:
         return None
+    if not _pid_is_running(pid):
+        return None
+    return pid
 
 
 def purge_profile_browsers(profile_dir: str, *, exclude_pid: int | None = None) -> list[int]:
@@ -154,9 +181,10 @@ def purge_profile_browsers(profile_dir: str, *, exclude_pid: int | None = None) 
     victims = sorted(p for p in pids if p and p != me and p != exclude_pid)
 
     for pid in victims:
-        try:
-            os.kill(pid, 0)  # liveness probe
-        except (ProcessLookupError, PermissionError, OSError):
+        # A zombie still answers os.kill(pid, 0) but getpgid() can return a
+        # group that contains LIVE siblings — killpg would then nuke healthy
+        # browsers. Verify the pid is actually running before touching it.
+        if not _pid_is_running(pid):
             continue
         try:
             kill_process_tree(pid)
@@ -321,7 +349,12 @@ class BaseBrowserEngine:
         # Reserve a fleet-wide slot BEFORE spawning. At most MAX_BROWSERS exist
         # across every Sable process; if all are busy this waits instead of
         # piling on another Chromium.
-        slot = await browser_governor.acquire(f"{self.spec.provider}:{self.profile_name}")
+        # CHAT priority: a scraper session is a live chat connection and is
+        # never evicted to make room for a token-refresh browser.
+        slot = await browser_governor.acquire(
+            f"{self.spec.provider}:{self.profile_name}",
+            priority=browser_governor.PRIORITY_CHAT,
+        )
 
         self.chrome_log_file = os.path.join(self.user_data_dir, "browser.log")
         log_file = open(self.chrome_log_file, "a", encoding="utf-8")
