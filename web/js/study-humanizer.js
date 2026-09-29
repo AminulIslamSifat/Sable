@@ -23,7 +23,7 @@
   let PERSONAS = [];
   let cfg = {
     model: '', thinking_mode: '', persona: 'peer',
-    strength: 0.6, seed: '',
+    strength: 0.6, seed: '', typos: 0,
   };
   let input = '';
   let output = '';
@@ -73,6 +73,7 @@
         cfg.persona = c.persona || 'peer';
         cfg.strength = c.strength != null && c.strength !== '' ? parseFloat(c.strength) : 0.6;
         cfg.seed = c.seed || '';
+        cfg.typos = c.typos != null && c.typos !== '' ? parseFloat(c.typos) : 0;
       }
     } catch (err) {
       toast('Could not load humanizer options: ' + err.message);
@@ -109,6 +110,7 @@
         model: cfg.model,
         thinking_mode: cfg.thinking_mode,
         strength: cfg.strength,
+        typos: cfg.typos,
         seed: cfg.seed === '' ? null : cfg.seed,
         skip_llm: !!(opts && opts.skipLlm),
       };
@@ -125,15 +127,18 @@
     }
   }
 
-  async function copyOutput() {
-    if (!output) return;
+  async function copyText(text, label) {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(output);
-      toast('Copied');
+      await navigator.clipboard.writeText(text);
+      toast(label ? label + ' copied' : 'Copied');
     } catch {
       toast('Copy failed — select it manually');
     }
   }
+
+  async function copyOutput() { return copyText(output, 'Output'); }
+  async function copyInput() { return copyText(input, 'Input'); }
 
   function useOutputAsInput() {
     if (!output) return;
@@ -195,6 +200,9 @@
     chips.push(phases.rule
       ? `<span class="hz-chip ok"><i data-lucide="check" class="icon-lucide"></i> Rule pass · strength ${esc(phases.strength)}</span>`
       : `<span class="hz-chip warn"><i data-lucide="alert-triangle" class="icon-lucide"></i> Rule pass unavailable</span>`);
+    if (phases.typos > 0) {
+      chips.push(`<span class="hz-chip chaos"><i data-lucide="zap" class="icon-lucide"></i> Anti-detector · ${esc(phases.typos)}</span>`);
+    }
     return `<div class="hz-chips">${chips.join('')}</div>`;
   }
 
@@ -220,6 +228,10 @@
         <div class="hz-field">
           <label>Rule strength <span class="hz-val">${cfg.strength.toFixed(2)}</span></label>
           <input type="range" min="0" max="1" step="0.05" value="${cfg.strength}" data-hz="strength">
+        </div>
+        <div class="hz-field">
+          <label>Anti-detector <span class="hz-hint">(0 = off, 1 = full — typos + grammar slips)</span></label>
+          <input type="range" min="0" max="1" step="0.1" value="${cfg.typos != null ? cfg.typos : 0}" data-hz="typos">
         </div>
         <div class="hz-field">
           <label>Seed <span class="hz-hint">(blank = random)</span></label>
@@ -251,7 +263,12 @@
           <div class="hz-col">
             <div class="hz-col-head">
               <span>Input</span>
-              <span class="hz-count">${input.trim() ? input.trim().split(/\s+/).length + ' words' : ''}</span>
+              <span class="hz-head-right">
+                <span class="hz-count">${input.trim() ? input.trim().split(/\s+/).length + ' words' : ''}</span>
+                <button class="hz-copy-btn" data-hz-action="copy-input"${input ? '' : ' disabled'} title="Copy input">
+                  <i data-lucide="copy" class="icon-lucide"></i> Copy
+                </button>
+              </span>
             </div>
             <textarea class="hz-textarea" id="hzInput" placeholder="Paste AI-generated text here…">${esc(input)}</textarea>
           </div>
@@ -259,7 +276,12 @@
           <div class="hz-col">
             <div class="hz-col-head">
               <span>Output</span>
-              <span class="hz-count">${output ? output.trim().split(/\s+/).length + ' words' : ''}</span>
+              <span class="hz-head-right">
+                <span class="hz-count">${output ? output.trim().split(/\s+/).length + ' words' : ''}</span>
+                <button class="hz-copy-btn" data-hz-action="copy-output"${output ? '' : ' disabled'} title="Copy output">
+                  <i data-lucide="copy" class="icon-lucide"></i> Copy
+                </button>
+              </span>
             </div>
             <div class="hz-output" id="hzOutput">${output ? esc(output) : `<span class="hz-placeholder">${lastError ? esc(lastError) : 'Humanized text appears here.'}</span>`}</div>
           </div>
@@ -368,6 +390,9 @@
     } else if (key === 'strength') {
       saveConfig({ strength: parseFloat(el.value) });
       refresh();
+    } else if (key === 'typos') {
+      saveConfig({ typos: parseFloat(el.value) });
+      refresh();
     } else if (key === 'seed') {
       saveConfig({ seed: el.value.trim() });
     }
@@ -394,6 +419,8 @@
     if (a === 'run') run();
     else if (a === 'run-rule') run({ skipLlm: true });
     else if (a === 'copy') copyOutput();
+    else if (a === 'copy-output') copyOutput();
+    else if (a === 'copy-input') copyInput();
     else if (a === 'reuse') useOutputAsInput();
     else if (a === 'clear') { input = ''; output = ''; stats = null; phases = null; lastError = ''; refresh(); }
     else if (a === 'advanced') { advanced = !advanced; refresh(); }

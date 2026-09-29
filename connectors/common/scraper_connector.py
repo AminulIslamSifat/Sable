@@ -184,6 +184,7 @@ class BaseScraperConnector:
         files: list[str] | None = None,
         chat_url: str | None = None,
         browser_data_dir: str | None = None,
+        stateless: bool = False,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         account = self.account
@@ -192,7 +193,21 @@ class BaseScraperConnector:
         # the sub-chat its own page + active_chat_id, so it can never
         # hard-reset the parent chat's upstream session.
         scope, browser_data_dir = self._engine_key(account, browser_data_dir)
-        if system_instruction and "-agent-" in str(chat_id or ""):
+        # Stateless call (e.g. the humanizer): a throwaway chat whose ONLY
+        # instruction is the supplied system_instruction. No Maria/Sable
+        # persona, no format primer, no shared session history.
+        if stateless:
+            if system_instruction:
+                message = (
+                    "[SYSTEM INSTRUCTION]\n" + system_instruction
+                    + "\n\n[USER MESSAGE]\n" + message
+                )
+            # raw=True skips both the first-message instruction dump and the
+            # per-turn quick reminder (engine.send_msg honours it below).
+            inject_instructions = False
+            chat_id = None
+            chat_url = None
+        elif system_instruction and "-agent-" in str(chat_id or ""):
             message = (
                 "[SYSTEM INSTRUCTION]\n" + system_instruction
                 + "\n\n[USER MESSAGE]\n" + message

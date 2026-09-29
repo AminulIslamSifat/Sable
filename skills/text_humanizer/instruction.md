@@ -5,7 +5,7 @@
 Two-phase pipeline. **The LLM writes; the rule script enforces structure.**
 No external API — the rewrite is done by whatever model the caller selects.
 
-1. **Phase 1 — LLM rewrite** using a persona prompt (peer / grad / anti / custom).
+1. **Phase 1 — LLM rewrite** using a persona prompt (peer / grad / chaos).
 2. **Phase 2 — Rule script** (`scripts/humanize.py`) enforces burstiness, raises
    perplexity, collapses n-gram repetition, kills AI tells.
 
@@ -44,14 +44,24 @@ without explanation. Occasional tangent, then self-correction.
 No bullet points. No "in summary."
 ```
 
-**Persona: anti** (aggressive detector evasion)
+**Persona: chaos** (anti-detector — formal register, max evasion)
 ```
+Rewrite as a knowledgeable human expert writing a professional report —
+someone who deeply understands the topic but is typing fast and NOT
+proofreading. Goal: defeat AI detectors by killing perplexity AND burstiness.
+Keep a FORMAL register. No slang, no "gonna", no rhetorical questions.
+Structure: vary sentence length wildly (3-6 words up to 40+); include one
+deliberate fragment; no equal-length paragraphs; start one sentence with
+"And" or "But"; remove all hedging; no conclusion. Every sentence still ends
+with a full stop / question mark / exclamation.
+Vocabulary: formal, but kill predictable model phrasing. Few or no contractions.
 Never use: delve, leverage, tapestry, furthermore, moreover, notably,
 "it's important to note", "in conclusion", "additionally", "crucial",
-"landscape", "multifaceted", "nuanced", "comprehensive", "seamless", "robust"
-Vary sentence length wildly (3 words to 40+). Include a sentence fragment.
-One colloquial contraction per paragraph. No equal-length paragraphs.
-Start one sentence with "And" or "But". Remove all hedging. No conclusion.
+"landscape", "multifaceted", "nuanced", "comprehensive", "seamless",
+"robust", "remarkably", "plenty of", "various", "numerous".
+Grammar: leave in the mistakes a real expert makes when not proofreading —
+subject-verb slips, missing/wrong articles, a mid-sentence capital, missing
+possessive apostrophe, missing plural, a comma splice. Do NOT clean them up.
 ```
 
 ### Step 2 — Rule pass
@@ -98,8 +108,7 @@ Return the script's output as the final text. No preamble, no commentary.
 |:--|:--|:--|
 | "humanize this" / "make it sound human" | peer | Default |
 | "for my thesis" / "academic" | grad | Keep jargon |
-| "bypass GPTZero/Turnitin" / "undetectable" | anti | Most aggressive |
-| "write like [X]" | custom | Use their description as the prompt |
+| "bypass GPTZero/Turnitin" / "undetectable" | chaos | Formal register, max evasion |
 
 > [!WARNING]
 > No humanizer guarantees a detector pass. Detector scores are classifier

@@ -350,7 +350,7 @@ async def drive_source_files(source_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/drive/search")
-async def drive_search(q: str = "", limit: int = 100) -> dict[str, Any]:
+async def drive_search(q: str = "", limit: int = 100, source_id: str = "") -> dict[str, Any]:
     """Search across every indexed Drive source by file/folder name.
 
     Walks each source's cached index and does a case-insensitive substring
@@ -368,6 +368,8 @@ async def drive_search(q: str = "", limit: int = 100) -> dict[str, Any]:
     total = 0
     for src in sources:
         if src.get("kind") != "folder":
+            continue
+        if source_id and src["id"] != source_id:
             continue
         idx = read_index(src["id"])
         if not idx:

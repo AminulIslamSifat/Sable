@@ -200,6 +200,42 @@ def _find_split_point(sentence: str) -> int:
     return -1
 
 
+def _break_runons(sentences: list[str], max_words: int = 35) -> list[str]:
+    """Split any sentence longer than ``max_words`` at a natural comma.
+
+    This runs INDEPENDENTLY of burstiness: the score can be fooled by a short
+    fragment next to a huge run-on, so length is checked on its own. Repeated
+    until every resulting sentence is under the limit.
+    """
+    out: list[str] = []
+    for s in sentences:
+        out.extend(_split_one_runon(s, max_words))
+    return out
+
+
+def _split_one_runon(sentence: str, max_words: int) -> list[str]:
+    """Recursively split ``sentence`` at commas until it fits under max_words."""
+    if _word_count(sentence) <= max_words:
+        return [sentence]
+
+    # Find a comma near the middle to break on.
+    commas = [m.start() for m in re.finditer(r",\s", sentence)]
+    if not commas:
+        return [sentence]  # nothing to split on — leave it
+    mid = len(sentence) / 2
+    split_at = min(commas, key=lambda c: abs(c - mid))
+
+    head = sentence[:split_at].strip().rstrip(",")
+    tail = sentence[split_at:].strip().lstrip(", ")
+    if not head or not tail:
+        return [sentence]
+    head = head[0].upper() + head[1:]
+    if len(tail) > 1 and tail[1:2].islower():
+        tail = tail[0].lower() + tail[1:]
+
+    return _split_one_runon(head + ".", max_words) + _split_one_runon(tail, max_words)
+
+
 def enforce_burstiness(
     sentences: list[str],
     rng: random.Random,
@@ -216,6 +252,12 @@ def enforce_burstiness(
         return sentences
 
     result = list(sentences)
+
+    # Hard length guard FIRST: any sentence over ~35 words is a run-on no
+    # human writes, and it must be split even if the burstiness score looks
+    # "good". A 1-word fragment next to a 60-word monster yields a high
+    # coefficient of variation while reading as clearly machine-broken.
+    result = _break_runons(result, max_words=35)
 
     # Only touch text that is actually flat. If it already clears the target,
     # any surgery is more likely to flatten it than help (splitting a long
@@ -448,6 +490,333 @@ def add_controlled_imperfections(text: str, rng: random.Random) -> str:
     return " ".join(sentences)
 
 
+# ─── Human Typos (the "chaos" pass) ─────────────────────────────────────────
+#
+# Real humans make small, inconsistent mistakes. LLMs almost never do — the
+# error rate is one of the strongest signals a detector uses. This pass injects
+# a small, seeded number of REALISTIC typos (not keyboard-mash): dropped
+# apostrophes, doubled letters, transposed letters in common words, and the
+# occasional doubled word. It is deliberately conservative — one or two per
+# piece, never enough to look careless.
+
+# Common words where a transposition reads as a natural slip ("teh", "adn").
+# Keyed lowercase; the first letter's case is preserved on output.
+_TYPO_TRANSPOSE: dict[str, str] = {
+    "the": "teh", "and": "adn", "that": "taht", "with": "wiht",
+    "from": "form", "this": "tihs", "have": "hvae", "they": "tehy",
+    "which": "whcih", "there": "ther", "their": "thier", "about": "abotu",
+    "would": "woudl", "could": "cuold", "should": "shuold",
+    "people": "poeple", "because": "becuase", "between": "bewteen",
+    "another": "anohter", "different": "diffrent", "important": "importnat",
+    "does": "deos", "just": "jsut", "like": "liek", "make": "mkae",
+}
+
+# Contractions that are commonly typed without the apostrophe.
+_TYPO_APOSTROPHE: dict[str, str] = {
+    "don't": "dont", "can't": "cant", "won't": "wont", "isn't": "isnt",
+    "didn't": "didnt", "doesn't": "doesnt", "it's": "its", "that's": "thats",
+    "there's": "theres", "they're": "theyre", "you're": "youre",
+    "we're": "were", "i'm": "im", "let's": "lets", "wasn't": "wasnt",
+    "aren't": "arent", "couldn't": "couldnt", "wouldn't": "wouldnt",
+}
+
+
+def add_human_typos(text: str, rng: random.Random, rate: float = 1.0) -> str:
+    """Inject a small number of realistic, human-looking typos.
+
+    ``rate`` (0..1) scales how many typos are introduced relative to the text
+    length. The count is derived from the word count so a long piece gets a
+    couple more than a short one — always proportionate, never a mess. A
+    single typo per several hundred words is the human norm; we aim low.
+
+    Typo kinds (chosen at random per hit):
+      * dropped apostrophe  — don't → dont
+      * letter transposition — the → teh
+      * doubled letter       — and → annd
+      * doubled word         — the the
+    """
+    if rate <= 0:
+        return text
+
+    words = text.split()
+    if len(words) < 8:
+        return text
+
+    # Roughly one typo per ~50 words at full rate. The ceiling scales with the
+    # text instead of being a flat number: at most one typo per 2.5 sentences,
+    # so a long piece gets more slips but never turns into a minefield.
+    sentences = max(1, len(split_sentences(text)))
+    cap = max(1, int(sentences / 2.5))
+    budget = max(1, min(cap, round(len(words) / 50 * rate)))
+
+    # Work on the raw text via regex so punctuation/casing are preserved.
+    def _drop_apostrophe(m: re.Match) -> str:
+        return m.group(0).replace("'", "", 1) if "'" in m.group(0) else m.group(0)
+
+    def _transpose(m: re.Match) -> str:
+        w = m.group(0)
+        low = w.lower()
+        repl = _TYPO_TRANSPOSE.get(low)
+        if not repl:
+            return w
+        return repl[0].upper() + repl[1:] if w[0].isupper() else repl
+
+    def _double_letter(m: re.Match) -> str:
+        w = m.group(0)
+        # Double a letter in the middle of the word, never the first.
+        if len(w) < 4:
+            return w
+        i = len(w) // 2
+        return w[:i] + w[i - 1] + w[i:]
+
+    def _double_word(m: re.Match) -> str:
+        return f"{m.group(0)} {m.group(0)}"
+
+    apos_pat = r"\b(?:%s)\b" % "|".join(re.escape(k) for k in _TYPO_APOSTROPHE)
+    trans_pat = r"\b(?:%s)\b" % "|".join(re.escape(k) for k in _TYPO_TRANSPOSE)
+    long_word_pat = r"\b[A-Za-z]{6,12}\b"
+    common_word_pat = r"\b(the|and|to|of|a|in|is|it|that|this)\b"
+
+    def _attempt(kind: str) -> str | None:
+        """Try one typo of ``kind``; return the new text or None if no hit."""
+        nonlocal text
+        if kind == "apostrophe":
+            new, n = re.subn(apos_pat, _drop_apostrophe, text, count=1, flags=re.IGNORECASE)
+            return new if n else None
+        if kind == "transpose":
+            hits = list(re.finditer(trans_pat, text, re.IGNORECASE))
+            if not hits:
+                return None
+            m = rng.choice(hits)
+            return text[:m.start()] + _transpose(m) + text[m.end():]
+        if kind == "double_letter":
+            # Only long-ish words, so the doubling is subtle. Skip words that
+            # already have a doubled letter (else "really" -> "reallly").
+            hits = [m for m in re.finditer(long_word_pat, text)
+                    if not re.search(r"(.)\1", m.group(0))]
+            if not hits:
+                return None
+            m = rng.choice(hits)
+            return text[:m.start()] + _double_letter(m) + text[m.end():]
+        # double_word — rare, since it needs a natural repeat point.
+        m = re.search(common_word_pat, text, re.IGNORECASE)
+        if not m:
+            return None
+        # Randomly pick a later common word if there are several.
+        all_hits = list(re.finditer(common_word_pat, text, re.IGNORECASE))
+        if all_hits:
+            m = rng.choice(all_hits)
+        return text[:m.end()] + " " + text[m.start():m.end()] + text[m.end():]
+
+    kinds = ["apostrophe", "transpose", "double_letter", "double_word"]
+    for _ in range(budget):
+        # Shuffle kinds so a piece with no contractions doesn't waste every
+        # attempt on the apostrophe rule — retry until one actually lands.
+        rng.shuffle(kinds)
+        for kind in kinds:
+            new = _attempt(kind)
+            if new is not None and new != text:
+                text = new
+                break
+
+    # Collapse any accidental triple spaces.
+    text = re.sub(r" {3,}", "  ", text)
+    return text
+
+
+# ─── Grammar Chaos ──────────────────────────────────────────────────────────
+#
+# Real human writing is not just typo-free — it is GRAMMATICALLY loose. A
+# detector's strongest "human" signal is grammatical imperfection: a real
+# person drops articles, slips subject-verb agreement, splices commas, and
+# forgets possessive apostrophes. LLM output almost never does any of this.
+# This pass injects those mistakes, seeded and scaled by ``rate``.
+
+# Irregular subject-verb disagreements that read as a natural slip. Only
+# noun/verb pairs where the mismatch is plausible, never nonsense.
+_SV_SLIPS: list[tuple[str, str]] = [
+    (r"\b(they|we|you) are\b", r"\1 is"),
+    (r"\b(they|we|you) were\b", r"\1 was"),
+    (r"\b(they|we|you) have\b", r"\1 has"),
+    (r"\b(they|we|you) do\b", r"\1 does"),
+    (r"\b(they|we|you) don't\b", r"\1 doesn't"),
+    (r"\b(they|we|you) go\b", r"\1 goes"),
+    (r"\b(they|we|you) make\b", r"\1 makes"),
+    (r"\b(they|we|you) need\b", r"\1 needs"),
+    (r"\bthere are\b", "there is"),
+    (r"\bthere were\b", "there was"),
+    (r"\b(it|he|she) are\b", r"\1 is"),
+    (r"\b(it|he|she) were\b", r"\1 was"),
+]
+
+# Singular nouns that commonly lose their article in fast typing. Matched only
+# when preceded by "a"/"an"/"the" and a determiner is safe to drop.
+_ARTICLE_DROP = re.compile(r"\b(?:a|an|the)\s+(?=[a-z])", re.IGNORECASE)
+
+# Possessive words whose apostrophe is often skipped.
+_POSSESSIVES = re.compile(r"\b([A-Za-z]{3,})'s\b")
+
+# Contractions to EXPAND into their sloppier spoken form. Used sparingly —
+# a formal-register chaos rewrite should NOT read as chatty.
+_CONTRACT_SLOP: list[tuple[str, str]] = [
+    (r"\bgoing to\b", "gonna"),
+    (r"\bwant to\b", "wanna"),
+    (r"\bbecause\b", "cause"),
+]
+
+# --- Formal-register mistakes from the gold-standard sample -----------------
+# These are the slips a knowledgeable expert makes when they don't proofread.
+# They read as human WITHOUT dropping the register into casual slop.
+
+# Plural nouns that lose their -s ("input cost" where "costs" was meant).
+# Only nouns that are commonly pluralised in this kind of writing.
+_PLURAL_NOUNS = re.compile(
+    r"\b(services|costs|providers|devices|towers|stations|generators|prices|"
+    r"budgets|markets|carriers|factors|expenses|requirements|components)\b"
+)
+
+# "An" before a consonant sound is a classic hurried slip ("An shocking").
+_WRONG_ARTICLE = re.compile(r"\bAn\s+(?=[bcdfgjklmnpqrstvwxyzBCDFGJKLMNPQRSTVWXYZ])")
+
+# A conjunction/discourse word capitalised mid-sentence ("electricity, Which").
+_CAP_MIDSENTENCE = re.compile(
+    r"([a-z,;]\s+)(Which|That|This|It|Thus|But|And|Which|Where|When|However)\b"
+)
+
+# Possessive nouns that keep the -s but lose the apostrophe.
+# (handled by _POSSESSIVES above)
+
+
+def add_grammar_chaos(text: str, rng: random.Random, rate: float = 1.0) -> str:
+    """Inject grammatical imperfections a hurried human would make.
+
+    ``rate`` (0..1) scales how many slips are attempted, derived from the
+    sentence count so longer pieces get proportionally more. The pass is
+    deliberately gentle: a couple of slips read as human, ten read as broken.
+
+    Kinds:
+      * subject-verb disagreement — "they are" -> "they is"
+      * dropped article          — "a massive grid" -> "massive grid"
+      * missing possessive        — "executives head" (no apostrophe)
+      * sloppy contraction        — "going to" -> "gonna"
+      * lowercase sentence start  — "And that matters"
+      * comma splice              — join two sentences with a comma
+    """
+    if rate <= 0:
+        return text
+
+    words = text.split()
+    if len(words) < 12:
+        return text
+
+    sentences = split_sentences(text)
+    cap = max(1, int(len(sentences) / 3))
+    budget = max(1, min(cap, round(len(sentences) / 3 * rate)))
+
+    def _apply_sv(text: str, rng: random.Random) -> str | None:
+        """Apply one subject-verb slip using the pattern's OWN groups."""
+        pairs = list(_SV_SLIPS)
+        rng.shuffle(pairs)
+        for pat, repl in pairs:
+            hits = list(re.finditer(pat, text, re.IGNORECASE))
+            if not hits:
+                continue
+            m = rng.choice(hits)
+            # Expand against the pattern that actually matched (which owns \1).
+            out = m.expand(repl)
+            if out != m.group(0):
+                return text[:m.start()] + out + text[m.end():]
+        return None
+
+    # Strong signals first (grammar), then weaker stylistic ones. Shuffled
+    # within each tier so variety stays but strong mistakes get picked often.
+    strong = ["sv", "article", "wrong_article", "plural", "possessive"]
+    weak = ["cap_mid", "slop", "splice"]
+
+    for _ in range(budget):
+        rng.shuffle(strong)
+        rng.shuffle(weak)
+        for kind in strong + weak:
+            before = text
+            if kind == "sv":
+                new = _apply_sv(text, rng)
+                if new is not None:
+                    text = new
+            elif kind == "article":
+                hits = list(_ARTICLE_DROP.finditer(text))
+                # Skip when the next word is a proper noun / all-caps acronym.
+                hits = [m for m in hits
+                        if text[m.end():m.end() + 1].islower()]
+                if hits:
+                    m = rng.choice(hits)
+                    text = text[:m.start()] + text[m.end():]
+            elif kind == "wrong_article":
+                # "An" before a consonant sound — drop or swap to "A".
+                m = _WRONG_ARTICLE.search(text)
+                if m:
+                    text = text[:m.start()] + "A " + text[m.end():]
+            elif kind == "plural":
+                # Drop the trailing -s from a plural noun.
+                hits = list(_PLURAL_NOUNS.finditer(text))
+                if hits:
+                    m = rng.choice(hits)
+                    word = m.group(1)
+                    text = text[:m.start()] + word[:-1] + text[m.end():]
+            elif kind == "possessive":
+                hits = list(_POSSESSIVES.finditer(text))
+                if hits:
+                    m = rng.choice(hits)
+                    text = text[:m.start()] + m.group(1) + text[m.end():]
+            elif kind == "cap_mid":
+                # Capitalise a discourse word after a comma ("...oil, Which").
+                m = _CAP_MIDSENTENCE.search(text)
+                if m:
+                    text = text[:m.start(2)] + m.group(2) + text[m.end(2):]
+            elif kind == "slop":
+                hits = []
+                for pat, _ in _CONTRACT_SLOP:
+                    hits += list(re.finditer(pat, text, re.IGNORECASE))
+                if hits:
+                    m = rng.choice(hits)
+                    low = m.group(0).lower()
+                    for pat, repl in _CONTRACT_SLOP:
+                        if low == pat.replace(r"\b", ""):
+                            text = text[:m.start()] + repl + text[m.end():]
+                            break
+            elif kind == "lower":
+                # Lowercase the first letter of a mid-text sentence that
+                # starts with a common word (not a proper noun).
+                sents = split_sentences(text)
+                cands = [i for i, s in enumerate(sents)
+                         if i > 0 and s[:1].isupper()
+                         and s[1:2].islower()
+                         and not s.startswith("I ")]
+                if cands:
+                    i = rng.choice(cands)
+                    s = sents[i]
+                    sents[i] = s[0].lower() + s[1:]
+                    text = " ".join(sents)
+            else:  # splice
+                sents = split_sentences(text)
+                cands = [i for i in range(len(sents) - 1)
+                         if sents[i].rstrip().endswith(".")
+                         and len(sents[i].split()) >= 3
+                         and len(sents[i + 1].split()) >= 3]
+                if cands:
+                    i = rng.choice(cands)
+                    a = sents[i].rstrip().rstrip(".")
+                    b = sents[i + 1]
+                    b = b[0].lower() + b[1:] if len(b) > 1 and b[1:2].islower() else b
+                    sents[i:i + 2] = [a + ", " + b]
+                    text = " ".join(sents)
+            if text != before:
+                break
+
+    # Tidy up spacing the article drop may have left.
+    text = re.sub(r" {2,}", " ", text)
+    return text
+
+
 # ─── Marker passes ──────────────────────────────────────────────────────────
 
 
@@ -565,10 +934,14 @@ def humanize(
     *,
     seed: int | None = None,
     strength: float = 0.6,
+    typos: float = 0.0,
 ) -> str:
     """Full rule-based humanization pipeline.
 
     ``strength`` (0..1) scales burstiness + tell-removal aggressiveness.
+    ``typos`` (0..1) scales how many realistic human typos are injected —
+    0 = none (default), 1 = the full conservative budget (see
+    :func:`add_human_typos`).
     """
     rng = random.Random(seed)
 
@@ -611,6 +984,12 @@ def humanize(
     text, _ = replace_discourse_markers(text, rng)
     text, _ = collapse_ngrams(text)
 
+    # 8. Chaos: grammar slips then typos, LAST — nothing after this may
+    #    "fix" them back. Both share the same slider (``typos``).
+    if typos > 0:
+        text = add_grammar_chaos(text, rng, rate=typos)
+        text = add_human_typos(text, rng, rate=typos)
+
     return text
 
 
@@ -626,6 +1005,7 @@ def main() -> None:
     parser.add_argument("--output", type=str, help="Write to file (default: stdout)")
     parser.add_argument("--seed", type=int, default=None, help="RNG seed for reproducible output")
     parser.add_argument("--strength", type=float, default=0.6, help="0..1 aggressiveness (default 0.6)")
+    parser.add_argument("--typos", type=float, default=0.0, help="0..1 human-typo injection (default 0)")
     parser.add_argument("--stats", action="store_true", help="Print signal stats (JSON) to stderr")
     args = parser.parse_args()
 
@@ -648,7 +1028,12 @@ def main() -> None:
         sys.exit(1)
 
     before = analyze(text)
-    result = humanize(text, seed=args.seed, strength=max(0.0, min(1.0, args.strength)))
+    result = humanize(
+        text,
+        seed=args.seed,
+        strength=max(0.0, min(1.0, args.strength)),
+        typos=max(0.0, min(1.0, args.typos)),
+    )
     after = analyze(result)
 
     if args.output:
