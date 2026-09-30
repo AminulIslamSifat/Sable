@@ -128,6 +128,21 @@ JS_HIJACK_INSTALL = r"""
                    && !u.includes('prepare') && !u.includes('resume')
                    && (opts.method || 'GET') === 'POST';
     if (!isSend) return of.apply(this, args);
+    window.__ghostSentAt = Date.now();
+
+    // The SPA has now READ the composer (it issued the send), so clearing it
+    // here can never race the submit handler. Clearing inside JS_SEND did
+    // race it: whenever sentinel prepare was slow, the composer was emptied
+    // before the SPA read it, the send was aborted, and /f/conversation/prepare
+    // fired with NO POST /f/conversation following. Intermittent by design.
+    try {
+      const _el = document.querySelector('#prompt-textarea');
+      if (_el) {
+        _el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      }
+    } catch (e) {}
 
     // Rewrite ONLY the messages[]; keep every SPA-minted header/cookie.
     let newOpts = opts;
@@ -205,8 +220,9 @@ JS_HIJACK_INSTALL = r"""
 # Sets the prompt and triggers the SPA's own submit. requestSubmit() fires the
 # real submit handler (token minting included) without a synthetic click.
 JS_SEND = r"""
-({ prompt }) => {
+async ({ prompt }) => {
   window.__ghostPrompt = prompt;
+  window.__ghostSentAt = null;
   const el = document.querySelector('#prompt-textarea');
   if (!el) throw new Error('composer not found');
   // Type the REAL prompt so the SPA renders the correct user bubble — the old
@@ -215,15 +231,20 @@ JS_SEND = r"""
   // exact even if the composer mangles mentions/markdown.
   el.focus();
   document.execCommand('selectAll', false, null);
-  document.execCommand('insertText', false, prompt);
+  // Type a SHORT placeholder, NOT the real prompt. The real prompt can be
+  // tens of KB (instruction preamble), and React commits composer text into
+  // component state asynchronously — submitting before that commit made the
+  // SPA read an empty composer and silently drop the send (prepare fired, no
+  // POST). The fetch interceptor below rewrites the outgoing messages[] to
+  // window.__ghostPrompt, so the composer only needs to be non-empty. This
+  // removes React's async commit from the send path entirely.
+  document.execCommand('insertText', false, 'hi');
   const form = el.closest('form');
   if (!form) throw new Error('composer form not found');
-  // requestSubmit() fires the SPA's submit handler SYNCHRONOUSLY and it reads
-  // the composer value before returning. Clear it right after so the input
-  // box doesn't retain a phantom copy of the message.
+  await new Promise(r => setTimeout(r, 80));
   form.requestSubmit();
-  document.execCommand('selectAll', false, null);
-  document.execCommand('delete', false, null);
+  // Do NOT clear the composer here; the fetch interceptor clears it once the
+  // POST is actually on the wire.
   return 'submitted';
 }
 """
@@ -577,10 +598,42 @@ class ChatGPTGhostSession:
             resp = ChatGPTStreamResponse(self._page, task, queue, idle_secs,
                                          on_close=_release)
             self._active_response = resp
+            asyncio.create_task(self._resend_watchdog(prompt, resp))
             return resp
         except Exception:
             _release()
             raise
+
+    async def _resend_watchdog(self, prompt: str,
+                               resp: "ChatGPTStreamResponse") -> None:
+        """Re-trigger the send when the SPA silently swallows it.
+
+        Observed intermittently: ``/f/conversation/prepare`` fires but the
+        POST ``/f/conversation`` never does — the SPA's submit handler aborts
+        before sending. Nothing was sent, so re-firing ``requestSubmit()`` is
+        safe (no duplicate message). Guarded on the in-page POST marker so a
+        request that actually went out is never re-sent.
+        """
+        for attempt in range(1, 3):
+            await asyncio.sleep(6.0 * attempt)
+            if resp._done or resp._closed:
+                return
+            try:
+                sent_at = await self._page.evaluate(
+                    "() => window.__ghostSentAt || null")
+            except Exception:
+                return
+            if sent_at:
+                return
+            logger.warning(
+                "[chatgpt:%s] POST never fired after %.0fs — re-triggering "
+                "submit (attempt %d/2)", self.account, 6.0 * attempt, attempt)
+            try:
+                await self._page.evaluate(JS_SEND, {"prompt": prompt})
+            except Exception as exc:
+                logger.warning("[chatgpt:%s] re-trigger failed: %s",
+                               self.account, exc)
+                return
 
     def cancel_stream(self) -> bool:
         """Out-of-band cancel for the Stop button."""

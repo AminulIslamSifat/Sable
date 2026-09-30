@@ -495,3 +495,46 @@ body.search-open #searchView { display: flex !important; }
   border-radius: 3px;
   padding: 0 2px;
 }
+
+/* ── Indexed Drive hits ──────────────────────────────────────────────────── */
+.search-section.study-drive .search-section-header {
+  --section-color: #3b82f6;
+}
+.study-drive-hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.study-drive-hit:hover { background: color-mix(in srgb, var(--panel) 45%, transparent); }
+.study-drive-hit-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.study-drive-hit-body { min-width: 0; }
+.study-drive-hit-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.study-drive-hit-title mark {
+  background: rgba(255, 214, 102, 0.28);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.study-drive-hit-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

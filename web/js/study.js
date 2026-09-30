@@ -35,6 +35,7 @@
   // Full-text override: when set, it holds the last /api/study/search payload
   // for the sidebar query, rendered above the normal library content.
   let libSearchOverride = null;
+  let libDriveOverride = null;   // indexed Drive hits for the same sidebar query
   let libSearchBusy = false;
   let libSearchSeq = 0;
   let COLLECTIONS = [];        // Drive folders that have imported docs
@@ -146,28 +147,30 @@
   /** The full-text override panel for the sidebar search, or ''. */
   function renderLibSearchOverride() {
     const q = libraryQuery.trim();
-    if (!q) { libSearchOverride = null; libSearchBusy = false; return ''; }
+    if (!q) { libSearchOverride = null; libDriveOverride = null; libSearchBusy = false; return ''; }
 
-    if (libSearchBusy && !libSearchOverride) {
+    if (libSearchBusy && !libSearchOverride && !libDriveOverride) {
       return `<div class="study-search-override" id="studySearchOverride">
         <div class="sso-head">
           <span class="sso-title"><i data-lucide="loader-circle" class="icon-lucide spin"></i> Searching full text…</span>
           <button class="sso-close" data-lib-search="close" title="Clear search"><i data-lucide="x" class="icon-lucide"></i></button>
         </div></div>`;
     }
-    if (!libSearchOverride) return '';
-
-    const total = libSearchOverride.total || 0;
+    const total = (libSearchOverride && libSearchOverride.total) || 0;
+    const driveHits = (libDriveOverride && libDriveOverride.results) || [];
     const block = (window.searchPanel && window.searchPanel.renderDocsBlock)
-      ? window.searchPanel.renderDocsBlock(libSearchOverride, q)
+      ? window.searchPanel.renderDocsBlock(libSearchOverride || {}, q)
       : '';
-    const body = total
-      ? block
+    const driveBlock = (driveHits.length && window.searchPanel && window.searchPanel.renderDriveBlock)
+      ? window.searchPanel.renderDriveBlock(driveHits, q)
+      : '';
+    const body = (total || driveHits.length)
+      ? block + driveBlock
       : `<div class="sso-empty">No indexed matches for <strong>${escapeHtml(q)}</strong>.</div>`;
 
     return `<div class="study-search-override" id="studySearchOverride">
       <div class="sso-head">
-        <span class="sso-title"><i data-lucide="book-open" class="icon-lucide"></i> Full-text results <span class="sso-count">${total}</span></span>
+        <span class="sso-title"><i data-lucide="book-open" class="icon-lucide"></i> Full-text results <span class="sso-count">${total + driveHits.length}</span></span>
         <button class="sso-close" data-lib-search="close" title="Clear search"><i data-lucide="x" class="icon-lucide"></i></button>
       </div>
       <div class="sso-body">${body}</div>
@@ -1366,6 +1369,7 @@
     const q = libraryQuery.trim();
     if (!q) {
       libSearchOverride = null;
+      libDriveOverride = null;
       libSearchBusy = false;
       libSearchSeq++;
       repaintLibraryContent();
@@ -1380,12 +1384,17 @@
     const q = libraryQuery.trim();
     if (!q) return;
     const seq = ++libSearchSeq;
-    const payload = (window.searchPanel && window.searchPanel.runDocSearch)
-      ? await window.searchPanel.runDocSearch(q)
-      : null;
+    // Both indexes at once: library FTS + the local Drive name index.
+    const [payload, drive] = await Promise.all([
+      (window.searchPanel && window.searchPanel.runDocSearch)
+        ? window.searchPanel.runDocSearch(q) : Promise.resolve(null),
+      (window.searchPanel && window.searchPanel.runDriveSearch)
+        ? window.searchPanel.runDriveSearch(q) : Promise.resolve(null),
+    ]);
     // A newer keystroke landed while this was in flight — drop the stale reply.
     if (seq !== libSearchSeq) return;
     libSearchOverride = payload;
+    libDriveOverride = drive;
     libSearchBusy = false;
     repaintLibraryContent();
   }
@@ -1394,6 +1403,7 @@
   function clearLibrarySearch(focusInput) {
     libraryQuery = '';
     libSearchOverride = null;
+    libDriveOverride = null;
     libSearchBusy = false;
     libSearchSeq++;
     clearTimeout(libSearchTimer);
@@ -1703,6 +1713,14 @@
     const liSweep = e.target.closest('[data-li-reindex-missing]');
     if (liSweep && window.libraryIndex) {
       window.libraryIndex.indexMissing();
+      return;
+    }
+    // View the ACTUAL indexed output (per-page text + embedding chunks).
+    const liView = e.target.closest('[data-li-view]');
+    if (liView && window.libraryIndex) {
+      const id = liView.dataset.liView;
+      const d = LIBRARY_DOCS.find((x) => x.id === id);
+      window.libraryIndex.inspect(id, (d && d.title) || id);
       return;
     }
     // Index / Re-index a single doc from the Indexing panel. Routes into the

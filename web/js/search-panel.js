@@ -286,21 +286,26 @@
         .then(r => r.json());
 
       let docP = Promise.resolve(null);
+      let driveP = Promise.resolve(null);
       if (study) {
         const params = new URLSearchParams({ q: query.trim(), limit: '30' });
         if (docScope && docScope.id) params.set('doc_id', docScope.id);
         docP = studyApi('/api/study/search?' + params.toString()).catch(() => null);
+        // Indexed Drive sources are searched by name — they live in their own
+        // local index, not the library FTS one.
+        driveP = studyApi('/api/drive/search?q=' + encodeURIComponent(query.trim()) + '&limit=50')
+          .catch(() => null);
       }
 
-      const [data, docs] = await Promise.all([unifiedP, docP]);
-      renderResults(data, query, docs);
+      const [data, docs, drive] = await Promise.all([unifiedP, docP, driveP]);
+      renderResults(data, query, docs, drive);
     } catch (err) {
       resultsEl.innerHTML = '<div class="search-error">Search failed: ' + escapeHtml(err.message) + '</div>';
     }
   }
 
   /* ── Render grouped results ── */
-  function renderResults(data, query, docs) {
+  function renderResults(data, query, docs, drive) {
     const el = $('#searchResults');
     if (!el) return;
 
@@ -323,19 +328,23 @@
 
     const docHits = (docs && docs.hits) || [];
     const docTotal = (docs && docs.total) || 0;
+    const driveHits = (drive && drive.results) || [];
+    const driveTotal = driveHits.length;
 
-    if (total === 0 && docTotal === 0) {
+    if (total === 0 && docTotal === 0 && driveTotal === 0) {
       el.innerHTML = '<div class="search-empty">No results for "' + escapeHtml(query) + '"</div>';
       return;
     }
 
     const parts = [];
     if (docTotal) parts.push(docTotal + ' in documents');
+    if (driveTotal) parts.push(driveTotal + ' in Drive');
     if (total) parts.push(groups.map(g => g.items.length + ' ' + (SOURCE_META[g.source]?.label || g.source)).join(', '));
     let html = '<div class="search-summary">' + parts.join(' — ') + '</div>';
 
     // Documents come FIRST — they are the reason study mode exists.
     if (docTotal) html += renderDocsBlock(docs, query);
+    if (driveTotal) html += renderDriveBlock(driveHits, query);
 
     for (const group of groups) {
       const meta = SOURCE_META[group.source] || { icon: 'circle', label: group.source, color: 'var(--muted)' };
@@ -373,6 +382,34 @@
         + '<div class="study-doc-hit-body">'
         + '<div class="study-doc-hit-title">' + highlightMatch(escapeHtml(hit.title || 'Untitled'), query) + '</div>'
         + '<div class="study-doc-hit-text">' + renderSnippet(hit.snippet, query) + '</div>'
+        + '</div></div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  /* Indexed Drive sources, rendered as their own section. Clicking a file
+     opens it in Sable's viewer; a folder opens that folder in the Drive tab. */
+  function renderDriveBlock(hits, query) {
+    if (!hits || !hits.length) return '';
+    let html = '<div class="search-section study-drive">';
+    html += '<div class="search-section-header">';
+    html += '<i data-lucide="hard-drive"></i> Drive';
+    html += '<span class="search-section-count">' + hits.length + '</span>';
+    html += '</div>';
+    for (const hit of hits.slice(0, 25)) {
+      const isFolder = hit.kind === 'folder';
+      html += '<div class="study-drive-hit" data-drive-hit="1"'
+        + ' data-drive-id="' + escapeAttr(hit.id || '') + '"'
+        + ' data-drive-name="' + escapeAttr(hit.name || '') + '"'
+        + ' data-drive-kind="' + escapeAttr(hit.kind || 'file') + '"'
+        + ' data-drive-mime="' + escapeAttr(hit.mime || '') + '"'
+        + ' data-drive-source="' + escapeAttr(hit.source_id || '') + '"'
+        + ' data-drive-parent="' + escapeAttr(hit.parent || '') + '">'
+        + '<i data-lucide="' + (isFolder ? 'folder' : 'file-text') + '" class="study-drive-hit-icon"></i>'
+        + '<div class="study-drive-hit-body">'
+        + '<div class="study-drive-hit-title">' + highlightMatch(escapeHtml(hit.name || ''), query) + '</div>'
+        + '<div class="study-drive-hit-meta">' + escapeHtml(hit.source_name || '') + (isFolder ? ' · Folder' : '') + '</div>'
         + '</div></div>';
     }
     html += '</div>';
@@ -449,6 +486,25 @@
         const railBtn = document.querySelector('.rail-btn[data-rail="search"]');
         if (railBtn) railBtn.classList.remove('active');
         window.studyMode.openDoc(docId, page);
+      });
+    });
+
+    // Drive hit → open the file in Sable's viewer, or the folder in Drive tab.
+    container.querySelectorAll('[data-drive-hit]').forEach(hitEl => {
+      hitEl.addEventListener('click', () => {
+        const kind = hitEl.dataset.driveKind;
+        const id = hitEl.dataset.driveId;
+        const name = hitEl.dataset.driveName || '';
+        const mime = hitEl.dataset.driveMime || '';
+        if (!id || !window.driveMode) return;
+        closeSearch();
+        const railBtn = document.querySelector('.rail-btn[data-rail="search"]');
+        if (railBtn) railBtn.classList.remove('active');
+        if (kind === 'folder') {
+          window.driveMode.openFolder(hitEl.dataset.driveSource);
+        } else {
+          window.driveMode.openFile({ id, name, mimeType: mime });
+        }
       });
     });
 
@@ -726,7 +782,14 @@
     // Study sidebar search reuses these so both search boxes render identical
     // document cards and hit the same FTS endpoint.
     renderDocsBlock,
+    renderDriveBlock,
     runDocSearch,
+    async runDriveSearch(query) {
+      if (!query || !query.trim()) return null;
+      try {
+        return await studyApi('/api/drive/search?q=' + encodeURIComponent(query.trim()) + '&limit=50');
+      } catch { return null; }
+    },
     bindDocHits(container) {
       if (container) bindCardEvents(container, '');
     },

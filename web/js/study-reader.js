@@ -44,6 +44,13 @@ let rendering = false;
 let renderGen = 0;      // bumps on every renderAllPages rebuild — stale renders bail
 let progressTimer = null;
 let activeSideTab = 'pages';
+let topicDocs = null;       // [{id,title,pages,progress,...}] siblings of the open doc
+let topicName = '';         // resolved topic name for the open doc
+let topicQuery = '';        // persisted search text in the Topic panel
+let topicResults = null;    // last /api/study/search payload while searching
+let topicSearchBusy = false;
+let topicDebounce = null;
+let topicGen = 0;           // bumped on every open() — invalidates in-flight work
 let pendingSelection = null;
 let built = false;
 
@@ -56,6 +63,12 @@ let aiNotes = [];                 // saved answers for this doc
 let aiConfigLoaded = false;
 let isRemote = false;   // true when reading a Drive doc not yet in the library
 let lastRemoteSaved = false;  // did the server auto-ingest this remote download?
+
+// Formats a remote Drive file can be opened as after a server-side conversion
+// to PDF. Anything else must already be a PDF (or an image, which never
+// reaches the reader). Mirrors the backend's CONVERTIBLE_EXT in
+// engine/library_ingest.py — keep the two in step.
+const REMOTE_DOC_EXT = /\.(pptx?|docx?|odt|odp|ods|rtf|txt|csv|md|epub|xlsx?)$/i;
 
 // Session analytics — when this reader opened, and which pages were visited.
 // Reported to /api/study/doc/<id>/session on close so the dashboard can show
@@ -234,6 +247,7 @@ function build() {
       <aside class="rdr-side">
         <div class="rdr-side-tabs">
           <button class="rdr-side-tab active" data-rdr-tab="pages"><i data-lucide="layout-grid" class="icon-lucide"></i> Pages</button>
+          <button class="rdr-side-tab" data-rdr-tab="topic"><i data-lucide="layers" class="icon-lucide"></i> Topic</button>
           <button class="rdr-side-tab" data-rdr-tab="outline"><i data-lucide="list-tree" class="icon-lucide"></i> Outline</button>
           <button class="rdr-side-tab" data-rdr-tab="notes"><i data-lucide="highlighter" class="icon-lucide"></i> Notes</button>
           <button class="rdr-side-tab" data-rdr-tab="ai"><i data-lucide="sparkles" class="icon-lucide"></i> AI</button>
@@ -427,6 +441,12 @@ function wire() {
       renderSidePanel();
     });
   });
+
+  // The Topic panel uses event delegation so re-renders never drop listeners,
+  // and typing in its search box keeps focus across repaints.
+  const sidePanelHost = overlay.querySelector('#rdrSidePanel');
+  sidePanelHost.addEventListener('click', onTopicPanelClick);
+  sidePanelHost.addEventListener('input', onTopicPanelInput);
 
   // Study tools run by the model can mutate this document (highlights, notes,
   // progress). When one does, the route emits doc_changed — refresh the panes
@@ -667,6 +687,13 @@ async function open(docId, opts) {
   overlay.querySelector('#rdrPages').innerHTML = '<div class="rdr-loading">Loading document…</div>';
   overlay.querySelector('#rdrSidePanel').innerHTML = '';
   teardown();
+  // Invalidate any in-flight topic work from the previous document.
+  topicGen++;
+  topicDocs = null;
+  topicName = '';
+  topicQuery = '';
+  topicResults = null;
+  topicSearchBusy = false;
 
   if (isRemote) {
     // Synthesize a meta record so the rest of the viewer works unchanged.
@@ -695,8 +722,14 @@ async function open(docId, opts) {
     if (isRemote) {
       // Drive files are downloaded on first open. Show real progress — this can
       // be megabytes, and a dead spinner reads as a hang.
-      const t = encodeURIComponent((opts && opts.title) || 'document.pdf');
-      const src = `/api/drive/file/${encodeURIComponent(docId)}/pdf?title=${t}&save=true`;
+      const title = (opts && opts.title) || '';
+      // pdf.js can only parse actual PDFs. A .pptx or .docx arriving from
+      // /pdf is OOXML bytes wearing a pdf/octet-stream label, so the parse
+      // dies. Those formats go through /docpdf, which runs the same
+      // LibreOffice conversion an upload would.
+      const src = REMOTE_DOC_EXT.test(title)
+        ? `/api/drive/file/${encodeURIComponent(docId)}/docpdf?title=${encodeURIComponent(title)}&save=true`
+        : `/api/drive/file/${encodeURIComponent(docId)}/pdf?title=${encodeURIComponent(title || 'document.pdf')}&save=true`;
       buffer = await downloadWithProgress(src, overlay.querySelector('#rdrPages'));
     } else {
       const res = await fetch(`/api/study/doc/${docId}/pdf`);
@@ -705,7 +738,7 @@ async function open(docId, opts) {
     }
   } catch (err) {
     overlay.querySelector('#rdrPages').innerHTML =
-      `<div class="rdr-loading rdr-error">Could not fetch PDF: ${esc(err.message)}</div>`;
+      `<div class="rdr-loading rdr-error">Could not fetch document: ${esc(err.message)}</div>`;
     return;
   }
 
@@ -731,6 +764,8 @@ async function open(docId, opts) {
   if (isRemote) await adoptRemoteDoc();
   aiNotes = meta.ai_notes || [];
   if (!isRemote) loadAiConfig();
+  // Load this document's topic siblings for the Topic side panel.
+  if (!isRemote) loadTopicSiblings();
   // Anything still remote at this point genuinely has no library record to hang
   // state off, so it stays view-only.
   for (const sel of ['#rdrBookmark', '#rdrAi', '#rdrDocChat', '#rdrAiLaunch', '#rdrExport', '#rdrFind', '#rdrSpeak']) {
@@ -1218,6 +1253,7 @@ function renderSidePanel() {
   if (!meta) { host.innerHTML = ''; return; }
 
   if (activeSideTab === 'pages') return renderThumbs(host);
+  if (activeSideTab === 'topic') return renderTopicPanel(host);
   if (activeSideTab === 'outline') return renderOutline(host);
   if (activeSideTab === 'notes') return renderHighlights(host);
   if (activeSideTab === 'ai') return renderAiPanel(host);
@@ -1389,6 +1425,213 @@ function renderInfo(host) {
       </div>
       <div class="rdr-info-file">${esc(meta.filename || '')}</div>
     </div>`;
+}
+
+// ── Topic panel — siblings of the open document + scoped search ──────────────
+
+/** Resolve a doc's topic name, defaulting to the catch-all bucket. */
+function docTopic(d) {
+  const t = ((((d || {}).group || {}).topic) || '').trim();
+  return t || 'Others';
+}
+
+/** Fetch every document sharing this doc's topic (self included). */
+async function loadTopicSiblings() {
+  if (!meta || isRemote) { topicDocs = []; topicName = ''; return; }
+  const gen = topicGen;
+  const want = docTopic(meta);
+  try {
+    const docs = await api('/api/study/docs');
+    if (gen !== topicGen) return;
+    topicName = want;
+    topicDocs = docs.filter((d) => docTopic(d) === want);
+  } catch {
+    if (gen !== topicGen) return;
+    topicName = want;
+    topicDocs = [];
+  }
+  if (activeSideTab === 'topic') renderTopicPanel(overlay.querySelector('#rdrSidePanel'));
+}
+
+function renderTopicPanel(host) {
+  if (isRemote) {
+    host.innerHTML = '<div class="rdr-empty">Drive document.<br><span>Import it to file under a topic.</span></div>';
+    return;
+  }
+  if (!topicDocs) {
+    host.innerHTML = '<div class="rdr-empty">Loading topic\u2026</div>';
+    return;
+  }
+  host.innerHTML = `
+    <div class="rdr-topic">
+      <div class="rdr-topic-head">
+        <i data-lucide="layers" class="icon-lucide"></i>
+        <span class="rdr-topic-name" title="${esc(topicName || 'Others')}">${esc(topicName || 'Others')}</span>
+        <span class="rdr-topic-count">${(topicDocs || []).length}</span>
+      </div>
+      <div class="rdr-topic-search">
+        <i data-lucide="search" class="icon-lucide"></i>
+        <input id="rdrTopicSearch" type="search" placeholder="Search this topic\u2026"
+               value="${esc(topicQuery)}" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="rdr-topic-list" id="rdrTopicList">${topicListHtml()}</div>
+      <button class="rdr-topic-all" data-rdr-topic="search-all">
+        <i data-lucide="search" class="icon-lucide"></i> Search every document
+      </button>
+    </div>`;
+  if (window.lucide) window.lucide.createIcons();
+}
+
+/** Repaint ONLY the list region so the search box keeps focus while typing. */
+function repaintTopicList() {
+  if (activeSideTab !== 'topic') return;
+  const listEl = overlay && overlay.querySelector('#rdrTopicList');
+  if (!listEl) return;
+  listEl.innerHTML = topicListHtml();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function topicListHtml() {
+  if (topicQuery.trim()) return topicSearchHtml(topicQuery.trim());
+  const selfId = (meta && meta.id) || '';
+  const items = topicDocs || [];
+  if (items.length <= 1 && items.every((d) => d.id === selfId)) {
+    return '<div class="rdr-empty">This topic holds no other documents yet.</div>';
+  }
+  return items.map((d) => topicDocItem(d, d.id === selfId)).join('');
+}
+
+/** One browsable document row inside a topic. */
+function topicDocItem(d, isSelf) {
+  const prog = Math.round(((d.progress || {}).percent) || 0);
+  return `
+    <button class="rdr-topic-item${isSelf ? ' active' : ''}" data-rdr-doc="${esc(d.id)}"
+            title="${esc(d.title || 'Untitled')}"${isSelf ? ' aria-current="true"' : ''}>
+      <span class="rdr-topic-item-title">${esc(d.title || 'Untitled')}</span>
+      <span class="rdr-topic-item-meta">
+        <span>${d.pages || 0}p</span>
+        ${prog ? `<span class="rdr-topic-item-prog">${prog}%</span>` : ''}
+        ${isSelf ? '<span class="rdr-topic-item-you">open</span>' : ''}
+      </span>
+    </button>`;
+}
+
+/** Snippets arrive with <mark> tags from the FTS highlighter; escape the rest. */
+function topicSnippet(html) {
+  return String(html || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/&lt;mark&gt;/g, '<mark>').replace(/&lt;\/mark&gt;/g, '</mark>');
+}
+
+/**
+ * Search results, ordered by proximity: the open PDF first, then the rest of
+ * its topic, then everything else in the library.
+ */
+function topicSearchHtml(q) {
+  if (topicSearchBusy && !topicResults) return '<div class="rdr-empty">Searching\u2026</div>';
+  const res = topicResults;
+  if (!res) return '';
+  if (res.error) {
+    return `<div class="rdr-empty">Search failed.<br><span>${esc(res.error)}</span></div>`;
+  }
+  const hits = res.hits || [];
+  if (!hits.length) return `<div class="rdr-empty">No matches for \u201c${esc(q)}\u201d.</div>`;
+
+  const selfId = (meta && meta.id) || '';
+  const topicIds = new Set((topicDocs || []).map((d) => d.id));
+  const titles = new Map();
+  for (const d of (topicDocs || [])) titles.set(d.id, d.title || 'Untitled');
+  for (const d of (res.docs || [])) if (!titles.has(d.doc_id)) titles.set(d.doc_id, d.title || 'Untitled');
+
+  const selfHits = [], topicHits = [], otherHits = [];
+  for (const h of hits) {
+    if (h.doc_id === selfId) selfHits.push(h);
+    else if (topicIds.has(h.doc_id)) topicHits.push(h);
+    else otherHits.push(h);
+  }
+
+  const section = (label, arr) => {
+    const groups = groupHits(arr);
+    if (!groups.length) return '';
+    return `<div class="rdr-topic-sec">${esc(label)}</div>` + groups.map((g) => `
+      <div class="rdr-ts-group">
+        <button class="rdr-ts-doc" data-rdr-doc="${esc(g.doc_id)}">
+          <i data-lucide="file-text" class="icon-lucide"></i>
+          <span class="rdr-ts-doc-title">${esc(titles.get(g.doc_id) || 'Untitled')}</span>
+          <span class="rdr-ts-doc-count">${g.hits.length}</span>
+        </button>
+        ${g.hits.map((h) => `
+          <button class="rdr-ts-hit" data-rdr-doc="${esc(h.doc_id)}" data-rdr-page="${h.page}">
+            <span class="rdr-ts-hit-page">p${h.page}</span>
+            <span class="rdr-ts-hit-text">${topicSnippet(h.snippet)}</span>
+          </button>`).join('')}
+      </div>`).join('');
+  };
+
+  return section('This document', selfHits)
+    + section('In this topic', topicHits)
+    + section('Everywhere else', otherHits);
+}
+
+function groupHits(hits) {
+  const byDoc = new Map();
+  for (const h of hits) {
+    if (!byDoc.has(h.doc_id)) byDoc.set(h.doc_id, { doc_id: h.doc_id, hits: [] });
+    byDoc.get(h.doc_id).hits.push(h);
+  }
+  return [...byDoc.values()];
+}
+
+async function runTopicSearch() {
+  const q = topicQuery.trim();
+  if (!q) { topicResults = null; topicSearchBusy = false; repaintTopicList(); return; }
+  const gen = topicGen;
+  topicSearchBusy = true;
+  repaintTopicList();
+  try {
+    const res = await api(`/api/study/search?q=${encodeURIComponent(q)}&limit=80`);
+    if (gen !== topicGen || q !== topicQuery.trim()) return;
+    topicResults = res;
+  } catch (err) {
+    if (gen !== topicGen || q !== topicQuery.trim()) return;
+    topicResults = { error: err.message, hits: [], docs: [], total: 0 };
+  } finally {
+    if (gen === topicGen) { topicSearchBusy = false; repaintTopicList(); }
+  }
+}
+
+function onTopicPanelInput(e) {
+  if (!e.target || e.target.id !== 'rdrTopicSearch') return;
+  topicQuery = e.target.value;
+  if (topicDebounce) clearTimeout(topicDebounce);
+  if (!topicQuery.trim()) { topicResults = null; topicSearchBusy = false; repaintTopicList(); return; }
+  topicDebounce = setTimeout(runTopicSearch, 220);
+}
+
+function onTopicPanelClick(e) {
+  const docEl = e.target.closest('[data-rdr-doc]');
+  if (docEl) {
+    const id = docEl.dataset.rdrDoc;
+    const page = parseInt(docEl.dataset.rdrPage, 10);
+    if (!id) return;
+    if (id === ((meta && meta.id) || '')) {
+      if (Number.isFinite(page)) scrollToPage(page);
+      return;
+    }
+    open(id, Number.isFinite(page) ? page : 1);
+    return;
+  }
+  const actEl = e.target.closest('[data-rdr-topic]');
+  if (actEl && actEl.dataset.rdrTopic === 'search-all') {
+    const q = topicQuery.trim();
+    const id = (meta && meta.id) || '';
+    const title = (meta && meta.title) || 'Document';
+    close();
+    if (window.searchPanel && window.searchPanel.searchIn) {
+      window.searchPanel.searchIn(id, title);
+      if (q && window.searchPanel.setQuery) window.searchPanel.setQuery(q);
+    }
+  }
 }
 
 // ── Selection & highlighting ─────────────────────────────────────────────────

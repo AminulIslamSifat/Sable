@@ -152,13 +152,18 @@
         </label>
 
         <label class="li-check">
+          <input type="checkbox" data-li-aiocr>
+          <span>AI OCR <em>(vision model — overrides the OCR chain above)</em></span>
+        </label>
+
+        <label class="li-check">
           <input type="checkbox" data-li-search checked>
           <span>Search index <em>(full-text search over the library)</em></span>
         </label>
 
         <label class="li-check">
           <input type="checkbox" data-li-ai>
-          <span>AI pass (embed chunks for document Q&amp;A)</span>
+          <span>AI pass (embed chunks for document Q&amp;A) <em>(local fastembed — no model needed)</em></span>
         </label>
 
         <div class="li-ai-fields" data-li-aifields hidden>
@@ -192,6 +197,8 @@
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
     const aiCheck = $('[data-li-ai]');
+    const aiOcrCheck = $('[data-li-aiocr]');
+    const ocrCheck = $('[data-li-ocr]');
     const aiFields = $('[data-li-aifields]');
     const modelSel = $('[data-li-model]');
     const thinkSel = $('[data-li-thinking]');
@@ -214,7 +221,20 @@
       const m = models.find((x) => x.id === modelSel.value);
       populateThinking(m);
     });
-    aiCheck.addEventListener('change', () => { aiFields.hidden = !aiCheck.checked; });
+    // The vision model + thinking mode fields are ONLY for AI OCR. The
+    // embedding AI pass runs on the local fastembed model and ignores the
+    // model entirely, so showing these for it was a lie.
+    //
+    // AI OCR is a FULL OCR pass — it makes the plain "OCR blank pages" box
+    // irrelevant, so that box is forced-checked and disabled while AI OCR is on.
+    const syncAiFields = () => {
+      const on = aiOcrCheck.checked;
+      aiFields.hidden = !on;
+      ocrCheck.disabled = on;
+      if (on) ocrCheck.checked = true;
+    };
+    aiOcrCheck.addEventListener('change', syncAiFields);
+    syncAiFields();
 
     const progress = $('[data-li-progress]');
     const fill = $('[data-li-fill]');
@@ -246,14 +266,20 @@
     } catch { /* fresh doc */ }
 
     runBtn.onclick = () => {
+      const aiOcr = aiOcrCheck.checked;
       const body = {
         doc_id: docId,
         ocr: $('[data-li-ocr]').checked,
         search: $('[data-li-search]').checked,
         ai: aiCheck.checked,
-        model: aiCheck.checked ? modelSel.value : '',
-        thinking_mode: aiCheck.checked ? thinkSel.value : '',
+        // AI OCR overrides the default OCR chain; it rides the OCR pass but
+        // swaps the engine to the chosen vision model. The embedding AI pass
+        // does NOT take a model — it runs on local fastembed.
+        ai_ocr: aiOcr,
+        model: aiOcr ? modelSel.value : '',
+        thinking_mode: aiOcr ? thinkSel.value : '',
       };
+      if (aiOcr && !modelSel.value) { toast('Pick a vision model for AI OCR'); return; }
       if (!body.ocr && !body.search && !body.ai) { toast('Pick at least one pass'); return; }
       startStream(body, { progress, fill, ptext, runBtn, stopBtn });
     };
@@ -333,6 +359,78 @@
     }
   }
 
+  /** Index inspector: show the REAL extracted text + chunks for one doc. */
+  async function inspect(docId, title) {
+    if (_es) { try { _es.close(); } catch {} _es = null; }
+    if (_overlay) { _overlay.remove(); _overlay = null; }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'study-modal-overlay';
+    overlay.innerHTML = `
+      <div class="study-modal li-inspect" role="dialog" aria-modal="true">
+        <div class="study-modal-head">
+          <h3>Indexed output</h3>
+          <button class="study-modal-x" data-li-close>&times;</button>
+        </div>
+        <p class="study-modal-doc">${escapeHtml(title || docId)}</p>
+        <div class="li-inspect-body" data-li-inspect-body>
+          <p class="li-inspect-loading">Loading…</p>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    _overlay = overlay;
+    if (window.lucide) window.lucide.createIcons();
+    overlay.querySelectorAll('[data-li-close]').forEach((b) => (b.onclick = () => {
+      overlay.remove(); if (_overlay === overlay) _overlay = null;
+    }));
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) { overlay.remove(); if (_overlay === overlay) _overlay = null; }
+    });
+
+    let data;
+    try {
+      data = await api('/api/study/index/inspect/' + encodeURIComponent(docId));
+    } catch (err) {
+      overlay.querySelector('[data-li-inspect-body]').innerHTML =
+        `<p class="li-inspect-err">Failed to load: ${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    const pages = data.page_text || [];
+    const chunks = data.chunks || [];
+    const emptyPages = pages.filter((p) => !p.chars).length;
+    const totalChars = pages.reduce((n, p) => n + (p.chars || 0), 0);
+
+    const health = [
+      `state: ${escapeHtml(data.state || '?')}`,
+      `engine: ${escapeHtml(data.ocr_engine || 'default')}`,
+      `${pages.length} pages`,
+      `${emptyPages} empty`,
+      `${totalChars.toLocaleString()} chars`,
+      `${chunks.length} chunks`,
+      data.stale ? '⚠ STALE EMBEDDINGS' : 'embeddings fresh',
+    ].join(' · ');
+
+    const pageHtml = pages.map((p) => `
+      <details class="li-inspect-page">
+        <summary>Page ${p.page} <span class="li-inspect-meta">${p.chars} chars</span></summary>
+        <pre class="li-inspect-text">${escapeHtml(p.text || '(empty)')}</pre>
+      </details>`).join('');
+
+    const chunkHtml = chunks.map((c, i) => `
+      <details class="li-inspect-page">
+        <summary>Chunk ${i} <span class="li-inspect-meta">p${c.page ?? '?'} · ${c.chars} chars</span></summary>
+        <pre class="li-inspect-text">${escapeHtml(c.text || '(empty)')}</pre>
+      </details>`).join('') || '<p class="li-inspect-empty">No embedding chunks — run the AI pass.</p>';
+
+    overlay.querySelector('[data-li-inspect-body]').innerHTML = `
+      <div class="li-inspect-health">${escapeHtml(health)}</div>
+      <h4 class="li-inspect-h">Page text</h4>
+      <div class="li-inspect-pages">${pageHtml || '<p class="li-inspect-empty">No page text.</p>'}</div>
+      <h4 class="li-inspect-h">Embedding chunks</h4>
+      <div class="li-inspect-pages">${chunkHtml}</div>`;
+  }
+
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -389,6 +487,11 @@
     } else if (state === 'indexed') {
       action = `<button class="li-row-btn" data-li-index="${escapeHtml(s.doc_id)}">Re-index</button>`;
     }
+
+    // "View" opens the index inspector — the REAL extracted text + chunks for
+    // this doc, so a run's actual output is visible instead of a bare percent.
+    const viewBtn = `<button class="li-row-btn" data-li-view="${escapeHtml(s.doc_id)}" title="View indexed output">View</button>`;
+    action = viewBtn + action;
 
     // Which of the two derived indexes exist, for the at-a-glance row.
     const flags = [
@@ -538,6 +641,7 @@
     // The panel's Index / Re-index buttons route through here so there is one
     // indexing UI, not two.
     indexDoc: (docId, title) => open(docId, title),
+    inspect,
     reloadStatuses: loadAllStatuses,
   };
 })();

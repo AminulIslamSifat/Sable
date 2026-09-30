@@ -24,6 +24,7 @@ import re
 import secrets
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -594,6 +595,87 @@ async def drive_stream_raw(
 
     headers = {"Content-Disposition": f'inline; filename="{hint or fid}"'}
     return StreamingResponse(chunks(), media_type=media, headers=headers)
+
+
+@router.get("/api/drive/file/{file_id}/docpdf")
+async def drive_stream_docpdf(
+    file_id: str, title: str = "", save: bool = False,
+) -> StreamingResponse:
+    """Stream a non-PDF Drive document **as a real PDF**, converting on the fly.
+
+    /pdf hands back the file's raw bytes whatever they are — fine for pdf.js
+    only when the file already *is* a PDF. A .pptx goes through as OOXML and
+    pdf.js dies on the first parse. This endpoint runs the same LibreOffice
+    conversion the library importer uses, so the viewer can open the same
+    formats an upload can.
+
+    Conversion is buffered rather than streamed: the progress bar is a nicety,
+    a valid PDF is a requirement, and LibreOffice needs the whole file anyway.
+    """
+    from engine.library_ingest import CONVERTIBLE_EXT, convert_to_pdf
+
+    fid = file_id
+    client = get_drive_client()
+    hint = (title or "").strip()
+    ext = Path(hint).suffix.lower()
+    if ext not in CONVERTIBLE_EXT:
+        raise HTTPException(
+            status_code=415,
+            detail=f"'{ext or '?'}' is not a convertible document type",
+        )
+
+    # Pull the original bytes first — keyless, then authed. Unlike /pdf this
+    # does NOT ingest: conversion is read-only, and auto-saving a second copy
+    # here would double up with the /pdf ingest the reader already triggers.
+    raw = b""
+    name = hint or f"{fid}{ext}"
+    try:
+        hc, resp, rname, _length = await drive_public.open_stream(fid)
+        try:
+            async for chunk in resp.aiter_bytes(1024 * 256):
+                raw += chunk
+                if len(raw) > _MAX_IMPORT_BYTES:
+                    raise drive_public.PublicDriveError(
+                        "File too large (max 100 MB)", status=413
+                    )
+        finally:
+            with contextlib.suppress(Exception):
+                await resp.aclose()
+            with contextlib.suppress(Exception):
+                await hc.aclose()
+        name = rname or name
+    except drive_public.PublicDriveError as pub_err:
+        if not client.connected:
+            raise HTTPException(
+                status_code=pub_err.status or 400, detail=str(pub_err)
+            )
+        dmeta = await client.get_file(fid)
+        raw, rname = await client.download(dmeta)
+        name = rname or name
+
+    try:
+        pdf_bytes = await asyncio.to_thread(convert_to_pdf, raw, Path(name).suffix.lower() or ext)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Ingest the ALREADY-converted PDF. Handing it back through ingest_bytes as
+    # a ".pdf" skips a second LibreOffice pass, and the record is identical to
+    # what an upload produces — so Study AI, highlights and progress all attach.
+    if save:
+        try:
+            meta = await _ingest_once(pdf_bytes, f"{Path(name).stem}.pdf", fid)
+            if meta.get("id"):
+                _DOC_MAP[fid] = meta["id"]
+        except Exception as exc:
+            logger.warning("Auto-save failed for converted %s: %s", fid, exc)
+
+    safe = (hint or Path(name).stem or fid).replace('"', "")
+    headers = {
+        "Content-Disposition": f'inline; filename="{safe}.pdf"',
+        "X-Drive-Converted": "1",
+        "X-Drive-Save": "1" if save else "0",
+    }
+    return StreamingResponse(iter([pdf_bytes]), media_type="application/pdf", headers=headers)
 
 
 @router.get("/api/drive/file/{file_id}/doc")

@@ -1298,10 +1298,72 @@ async def add_model(request: Request) -> dict[str, Any]:
     return {"status": "ok", "model": model_def}
 
 
+@router.patch("/api/settings/models/{model_id:path}")
+async def update_model(model_id: str, request: Request) -> dict[str, Any]:
+    """Update mutable fields (capabilities, thinking, label, max_session_chars) on any model.
+
+    For custom models, updates in-place. For static models, creates a custom override
+    so the changes persist without modifying the hardcoded MODELS list.
+    """
+    from engine.config import add_custom_model, get_all_models
+
+    body = await request.json()
+    all_models = get_all_models()
+    existing = next((m for m in all_models if m["id"] == model_id), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    # Start from a copy of the existing model definition
+    updated = dict(existing)
+
+    # Merge capabilities partially
+    if "capabilities" in body and isinstance(body["capabilities"], dict):
+        caps = dict(updated.get("capabilities") or {})
+        for key in ("image", "video", "document", "audio"):
+            if key in body["capabilities"]:
+                caps[key] = bool(body["capabilities"][key])
+        updated["capabilities"] = caps
+
+    # Update label
+    if "label" in body and isinstance(body["label"], str) and body["label"].strip():
+        updated["label"] = body["label"].strip()
+
+    # Update max_session_chars
+    if "max_session_chars" in body:
+        try:
+            updated["max_session_chars"] = int(body["max_session_chars"])
+        except (ValueError, TypeError):
+            pass
+
+    # Update thinking support
+    if "supports_thinking" in body:
+        supports = bool(body["supports_thinking"])
+        if supports:
+            updated["thinking_modes"] = [
+                {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+                {"id": "high", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+            ]
+        else:
+            updated["thinking_modes"] = [
+                {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            ]
+
+    # Persist as custom model (works for both custom and static overrides)
+    updated["_custom"] = True
+    add_custom_model(updated)
+
+    return {"status": "ok", "model": updated}
+
+
 @router.delete("/api/settings/models/{model_id:path}")
 async def delete_model(model_id: str) -> dict[str, Any]:
     """Remove any model (custom or static). Static models get hidden via an exclusion list."""
     from engine.config import remove_custom_model, _load_hidden_models, _save_hidden_models, MODELS
+    from engine.cookbook.model_settings import delete_model_settings
+
+    # Always clean up orphaned cookbook settings
+    delete_model_settings(model_id)
+
     # Try custom first
     if remove_custom_model(model_id):
         return {"status": "ok", "type": "custom"}

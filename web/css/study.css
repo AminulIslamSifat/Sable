@@ -1479,6 +1479,65 @@ body[data-mode="study"] #chatCompact {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* ── Index inspector (view the real indexed output) ── */
+.li-inspect { max-width: 720px; width: 92vw; }
+.li-inspect-body { max-height: 65vh; overflow-y: auto; margin-top: 6px; }
+.li-inspect-health {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-mono, monospace);
+  word-break: break-word;
+}
+.li-inspect-h {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.li-inspect-pages { display: flex; flex-direction: column; gap: 6px; }
+.li-inspect-page {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.li-inspect-page > summary {
+  cursor: pointer;
+  padding: 8px 11px;
+  font-size: 12px;
+  color: var(--text);
+  list-style: none;
+}
+.li-inspect-page > summary::-webkit-details-marker { display: none; }
+.li-inspect-page > summary::before { content: '▸ '; color: var(--text-dim); }
+.li-inspect-page[open] > summary::before { content: '▾ '; }
+.li-inspect-meta { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
+.li-inspect-text {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.li-inspect-loading, .li-inspect-empty, .li-inspect-err {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 12px 0;
+}
+.li-inspect-err { color: #f87171; }
 /* ── Indexing panel (the "Indexing" library view) ── */
 .li-panel { display: flex; flex-direction: column; gap: 14px; }
 .li-panel-head {
@@ -1865,3 +1924,32 @@ body[data-mode="study"] #chatCompact {
 .study-topic-menu-item:hover { background: var(--panel-3, rgba(255, 255, 255, 0.06)); }
 .study-topic-menu-item.danger { color: #ff6b6b; }
 .study-topic-menu-item.danger:hover { background: rgba(255, 70, 70, 0.14); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Humanizer — standalone main-area view (agent / chat mode)
+   Study mode renders the same .hz-* markup inside the study tab instead.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.humanizer-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+  padding: var(--sp-7, 24px) var(--sp-8, 32px);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.humanizer-view.hidden { display: none !important; }
+
+/* Give the pane a comfortable reading width and center it, like the
+   research/prompt/OCR views do for their standalone panels. */
+.humanizer-view .hz-pane {
+  max-width: 1040px;
+  width: 100%;
+  margin: 0 auto;
+  flex: 1;
+}
+
+body.humanizer-open #chat { display: none !important; }
+body.humanizer-open #inputArea { display: none !important; }

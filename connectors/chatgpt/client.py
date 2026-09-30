@@ -27,7 +27,7 @@ from connectors.common.instruction_builder import get_tool_format
 
 logger = logging.getLogger("sable.chatgpt_api")
 
-_IDLE_TIMEOUT_SECS = 120.0
+_IDLE_TIMEOUT_SECS = 45.0
 _DEFAULT_MODEL = "gpt-5"
 
 _instruction_cache: str | None = None
@@ -225,9 +225,16 @@ class ChatGPTClient:
         if session is None:
             yield self.ctx.error("ghost unavailable — check server logs (stale lock / Helium crash)")
             return
-        if not await session.has_token():
-            yield self.ctx.error(f"not logged in on {self.account}")
-            return
+        # DO NOT call session.has_token() here.
+        #
+        # has_token() fires an in-page fetch('/api/auth/session') right before
+        # open_stream(). The SPA then runs /f/conversation/prepare but never
+        # issues the actual POST /f/conversation — the send is silently
+        # swallowed and the caller sits out the full idle timeout with zero
+        # events. Reproduced deterministically: with has_token -> 0 lines,
+        # without -> 54 lines in 5s. Login is already validated when the
+        # session starts (for_account -> _install_hijack waits for the
+        # composer, and raises "not logged in?" if it never appears).
         upstream = self._conversation_ids.get(chat_id) if chat_id else None
         is_fresh = upstream is None
         if is_fresh and inject_instructions:
@@ -286,7 +293,13 @@ class ChatGPTClient:
                         yield ev
                     if state.get("conversation_id") and chat_id:
                         self._conversation_ids[chat_id] = state["conversation_id"]
-                    if state.get("finished") and got_answer:
+                    # Modern ChatGPT streams emit `message_stream_complete`,
+                    # NOT the legacy `/message/status == finished_successfully`.
+                    # Only checking `finished` meant the completion event was
+                    # silently ignored and the drain sat out the full idle
+                    # timeout even though the answer had already ended.
+                    if (state.get("finished")
+                            or state.get("stream_complete")) and got_answer:
                         break
             if chat_id and state.get("conversation_id"):
                 self._conversation_ids[chat_id] = state["conversation_id"]

@@ -63,13 +63,15 @@ _UPLOAD_TASKS: set[asyncio.Task] = set()
 
 def _spawn_index_job(doc_id: str, *, pages: list[int] | None = None,
                      do_ocr: bool = True, do_search: bool = True,
-                     do_ai: bool = False, lang: str = "eng+ben",
+                     do_ai: bool = False, ai_ocr: bool = False,
+                     lang: str = "eng+ben",
                      model: str = "", thinking_mode: str = "") -> None:
     """Run an index job in the background, tracked so it isn't collected."""
     async def _run() -> None:
         try:
             await _index.run_job(
                 doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai,
+                ai_ocr=ai_ocr,
                 pages=pages, lang=lang, model=model, thinking_mode=thinking_mode,
             )
         except Exception:
@@ -901,6 +903,74 @@ def study_get_text(doc_id: str) -> dict[str, Any]:
     return {"id": doc_id, "pages": len(pages), "page_text": pages}
 
 
+@router.get("/api/study/index/inspect/{doc_id}")
+def study_index_inspect(doc_id: str) -> dict[str, Any]:
+    """The ACTUAL indexed output for one document — what search and Q&A see.
+
+    Lets the Indexing tab show the real product of a run instead of a bare
+    percentage: per-page extracted text, the embedding chunks (with page and
+    length), and a compact health summary. Read-only; never triggers a job.
+    """
+    if not _valid_id(doc_id):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+    meta = _read_meta(doc_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    pages = _load_page_text(meta)
+    page_rows: list[dict[str, Any]] = []
+    for i, text in enumerate(pages):
+        s = (text or "")
+        page_rows.append({
+            "page": i + 1,
+            "chars": len(s.strip()),
+            "text": s,
+        })
+
+    # Embedding chunks live under LIBRARY_EMBED_DIR. Metadata JSON holds the
+    # chunk records; the .npy holds the vectors. We read the JSON only.
+    chunks: list[dict[str, Any]] = []
+    embed_path = LIBRARY_EMBED_DIR / f"{doc_id}.json"
+    embed_built = 0.0
+    if embed_path.exists():
+        try:
+            data = json.loads(embed_path.read_text(encoding="utf-8"))
+            embed_built = float(data.get("built") or 0.0)
+            for c in (data.get("chunks") or []):
+                txt = str(c.get("text") or "")
+                chunks.append({
+                    "page": c.get("page"),
+                    "chars": len(txt.strip()),
+                    "text": txt,
+                })
+        except Exception:
+            logger.warning("index inspect: embed read failed for %s", doc_id, exc_info=True)
+
+    # Freshness: embeddings older than the page text mean a re-OCR happened
+    # without a re-embed — the vectors point at stale text.
+    text_mtime = 0.0
+    try:
+        text_mtime = (_index._text_path(doc_id)).stat().st_mtime  # noqa: SLF001
+    except Exception:
+        text_mtime = 0.0
+    stale = bool(embed_built and text_mtime and text_mtime > embed_built + 60)
+
+    st = _index.status_for(doc_id)
+    return {
+        "id": doc_id,
+        "title": str(meta.get("title") or ""),
+        "pages": len(pages),
+        "page_text": page_rows,
+        "chunks": chunks,
+        "chunk_count": len(chunks),
+        "embed_built": embed_built,
+        "stale": stale,
+        "state": st.get("status", ""),
+        "ocr_engine": (st.get("engine") or ""),
+        "ocr_failed_permanent": int(st.get("ocr_failed_permanent") or 0),
+    }
+
+
 @router.get("/api/study/doc/{doc_id}/thumb")
 def study_get_thumb(doc_id: str) -> FileResponse:
     """Cached page-1 preview. Generated on demand for docs that predate it."""
@@ -1226,16 +1296,23 @@ def study_reindex(payload: dict[str, Any] | None = None) -> dict[str, Any]:
 async def study_index_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     """Start (or resume) an indexing job for one doc, or the whole library.
 
-    body: {doc_id?, all?: bool, ocr?: bool, ai?: bool, pages?: [int],
-           lang?: str, model?: str, thinking_mode?: str}
+    body: {doc_id?, all?: bool, ocr?: bool, ai?: bool, ai_ocr?: bool,
+           pages?: [int], lang?: str, model?: str, thinking_mode?: str}
 
     OCR runs first, then AI. Both passes are resumable: re-invoking picks up
     from the persisted cursors, so a stop never loses work.
+
+    ``ai_ocr`` makes the chosen vision ``model`` the ONLY OCR engine (the
+    BanglaOCR/SableOCR chain is skipped), so AI OCR is the final word when
+    selected.
     """
     payload = payload or {}
-    do_ocr = bool(payload.get("ocr", True))
     do_search = bool(payload.get("search", True))
     do_ai = bool(payload.get("ai", False))
+    ai_ocr = bool(payload.get("ai_ocr", False))
+    # AI OCR IS an OCR pass — selecting it forces the OCR stage on regardless
+    # of the plain OCR checkbox, so the vision model actually runs.
+    do_ocr = bool(payload.get("ocr", True)) or ai_ocr
     lang = str(payload.get("lang") or "eng+ben")
     model = str(payload.get("model") or "")
     thinking_mode = str(payload.get("thinking_mode") or "")
@@ -1250,11 +1327,12 @@ async def study_index_start(payload: dict[str, Any] | None = None) -> dict[str, 
             raise HTTPException(status_code=404, detail="document not found")
         _spawn_index_job(
             target, pages=pages, do_ocr=do_ocr, do_search=do_search,
-            do_ai=do_ai, lang=lang, model=model, thinking_mode=thinking_mode,
+            do_ai=do_ai, ai_ocr=ai_ocr,
+            lang=lang, model=model, thinking_mode=thinking_mode,
         )
         return {
             "status": "started", "doc_id": target,
-            "ocr": do_ocr, "search": do_search, "ai": do_ai,
+            "ocr": do_ocr, "search": do_search, "ai": do_ai, "ai_ocr": ai_ocr,
         }
 
     # Whole-library kickoff — one background task per document.
@@ -1276,12 +1354,13 @@ async def study_index_start(payload: dict[str, Any] | None = None) -> dict[str, 
                 continue
             _spawn_index_job(
                 doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai,
+                ai_ocr=ai_ocr,
                 lang=lang, model=model, thinking_mode=thinking_mode,
             )
             started += 1
         return {
             "status": "started", "docs": started,
-            "ocr": do_ocr, "search": do_search, "ai": do_ai,
+            "ocr": do_ocr, "search": do_search, "ai": do_ai, "ai_ocr": ai_ocr,
         }
 
     raise HTTPException(status_code=400, detail="provide doc_id or all=true")
@@ -1390,8 +1469,14 @@ def _index_overview() -> dict[str, Any]:
         # a document that is mid-flight. Otherwise the derived indexes decide,
         # because they are the truth about what is actually queryable.
         status = str(st.get("status") or "idle")
+        # A page retired after repeated OCR failures makes the doc un-indexable
+        # by OCR. Report it as ``error`` so the panel offers a manual Re-index
+        # instead of the plain "Index" that would silently re-queue it forever.
+        failed_perm = int(st.get("ocr_failed_permanent") or 0)
         if status in ("running", "paused", "error"):
             state = status
+        elif failed_perm and not is_searchable:
+            state = "error"
         elif is_searchable and has_rag:
             state = "indexed"
         elif is_searchable:
@@ -1418,6 +1503,7 @@ def _index_overview() -> dict[str, Any]:
             "ocr_done": int(st.get("ocr_done") or 0),
             "ocr_total": int(st.get("ocr_total") or 0),
             "ocr_failed": int(st.get("ocr_failed") or 0),
+            "ocr_failed_permanent": int(st.get("ocr_failed_permanent") or 0),
             "search_done": int(st.get("search_done") or 0),
             "search_total": int(st.get("search_total") or 0),
             "ai_cursor": int(st.get("ai_cursor") or 0),
@@ -1464,15 +1550,24 @@ async def study_index_stream(payload: dict[str, Any] | None = None) -> Streaming
     if not _read_meta(doc_id):
         raise HTTPException(status_code=404, detail="document not found")
 
-    do_ocr = bool(payload.get("ocr", True))
     do_search = bool(payload.get("search", True))
     do_ai = bool(payload.get("ai", False))
+    ai_ocr = bool(payload.get("ai_ocr", False))
+    # AI OCR IS an OCR pass — selecting it must force the OCR stage on, even if
+    # the plain "OCR blank pages" box is unticked. Otherwise the flag was
+    # silently dropped and the vision model never ran.
+    do_ocr = bool(payload.get("ocr", True)) or ai_ocr
     lang = str(payload.get("lang") or "eng+ben")
     model = str(payload.get("model") or "")
     thinking_mode = str(payload.get("thinking_mode") or "")
 
+    # The job runs DETACHED from this HTTP connection, in its own tracked
+    # background task. The SSE stream only WATCHES it. Closing the modal (or a
+    # dropped connection) must NOT kill the work — previously the whole job
+    # lived inside the stream generator, so a disconnect set the stop flag and
+    # cancelled the task mid-run, which is why AI OCR "stopped at one page"
+    # and everything vanished when the panel closed.
     queue: asyncio.Queue = asyncio.Queue()
-    stop_flag = {"stop": False}
 
     def _on_progress(event: dict[str, Any]) -> None:
         try:
@@ -1483,39 +1578,50 @@ async def study_index_stream(payload: dict[str, Any] | None = None) -> Streaming
     async def _worker() -> None:
         try:
             await _index.run_job(
-                doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai, lang=lang,
+                doc_id, do_ocr=do_ocr, do_search=do_search, do_ai=do_ai,
+                ai_ocr=ai_ocr, lang=lang,
                 model=model, thinking_mode=thinking_mode,
                 on_progress=_on_progress,
-                # Stop when the client goes away OR the job was asked to stop
-                # via /index/stop — otherwise the modal's Stop button would
-                # have no effect on a streamed run.
-                should_stop=lambda: stop_flag["stop"] or _index.is_stop_requested(doc_id),
+                # Stop ONLY on an explicit /index/stop request — never because
+                # the browser went away. The job is durable now.
+                should_stop=lambda: _index.is_stop_requested(doc_id),
             )
             queue.put_nowait({"done": True})
         except Exception as exc:
             queue.put_nowait({"error": str(exc)})
+        finally:
+            queue.put_nowait({"done": True})
+
+    job_task = asyncio.create_task(_worker())
+    _INDEX_TASKS.add(job_task)
+    job_task.add_done_callback(_INDEX_TASKS.discard)
 
     async def _gen():
-        task = asyncio.create_task(_worker())
-        yield f"data: {_json.dumps({'type': 'init', 'doc_id': doc_id, 'ocr': do_ocr, 'search': do_search, 'ai': do_ai})}\n\n"
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                    continue
-                if event.get("done"):
-                    yield f"data: {_json.dumps({'type': 'complete', 'doc_id': doc_id})}\n\n"
-                    break
-                if event.get("error"):
-                    yield f"data: {_json.dumps({'type': 'error', 'message': event['error']})}\n\n"
-                    break
+        yield f"data: {_json.dumps({'type': 'init', 'doc_id': doc_id, 'ocr': do_ocr, 'search': do_search, 'ai': do_ai, 'ai_ocr': ai_ocr})}\n\n"
+        # Relay progress until the job finishes. A client disconnect stops this
+        # generator but NOT job_task — the indexing continues in the background
+        # and the panel shows it via the normal status poll when reopened.
+        while not job_task.done():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            if event.get("done"):
+                break
+            if event.get("error"):
+                yield f"data: {_json.dumps({'type': 'error', 'message': event['error']})}\n\n"
+                break
+            yield f"data: {_json.dumps({'type': 'progress', **event})}\n\n"
+        # Drain whatever is left so the final progress isn't lost.
+        while not queue.empty():
+            try:
+                event = queue.get_nowait()
+            except Exception:
+                break
+            if event.get("progress") or event.get("stage"):
                 yield f"data: {_json.dumps({'type': 'progress', **event})}\n\n"
-        finally:
-            stop_flag["stop"] = True
-            if not task.done():
-                task.cancel()
+        yield f"data: {_json.dumps({'type': 'complete', 'doc_id': doc_id})}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
 

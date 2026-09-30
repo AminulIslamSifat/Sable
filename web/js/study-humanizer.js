@@ -31,6 +31,7 @@
   let phases = null;        // { llm, rule, model, persona, strength }
   let lastError = '';
   let advanced = false;     // advanced options panel open?
+  let standalone = false;   // rendered in the standalone view (agent/chat mode)?
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -346,13 +347,32 @@
       </div>`;
   }
 
-  /** Repaint the tab + sidebar without a full study.js render cycle. */
+  /** Repaint whichever host is showing the pane — the study tab or the
+   *  standalone view — without a full study.js render cycle. */
   function refresh() {
+    // ── Standalone (agent / chat mode) ──
+    if (standalone) {
+      const view = document.getElementById('humanizerView');
+      if (view) {
+        // Preserve focus + caret in the textarea across the repaint.
+        const ta = document.getElementById('hzInput');
+        const sel0 = ta ? ta.selectionStart : null;
+        const sel1 = ta ? ta.selectionEnd : null;
+        view.innerHTML = renderTab();
+        const next = document.getElementById('hzInput');
+        if (next && sel0 != null) {
+          next.focus();
+          try { next.setSelectionRange(sel0, sel1); } catch { /* noop */ }
+        }
+        if (window.lucide) window.lucide.createIcons();
+      }
+      return;
+    }
+    // ── Study-mode tab ──
     if (!(window.studyMode && window.studyMode.getTab() === 'humanizer')) return;
     const pane = document.querySelector('.hz-pane');
     const host = pane ? pane.parentElement : null;
     if (host) {
-      // Preserve focus + caret in the textarea across the repaint.
       const ta = document.getElementById('hzInput');
       const sel0 = ta ? ta.selectionStart : null;
       const sel1 = ta ? ta.selectionEnd : null;
@@ -365,6 +385,59 @@
     }
     if (window.lucide) window.lucide.createIcons();
     if (window.studyMode && window.studyMode.refreshSidebar) window.studyMode.refreshSidebar();
+  }
+
+  // ── Standalone view (agent / chat mode) ──────────────────────────────────
+  // Study mode owns the Humanizer as a tab. Everywhere else the rail button
+  // swaps the chat area for this full-width view, mirroring research/ocr.
+
+  function isStudyMode() {
+    return document.body.getAttribute('data-mode') === 'study';
+  }
+
+  function hideOtherViews() {
+    const chat = document.getElementById('chat');
+    if (chat) chat.classList.add('hidden');
+    const inputArea = document.getElementById('inputArea');
+    if (inputArea) inputArea.classList.add('hidden');
+    ['searchView', 'dashboardView', 'knowledgeView', 'researchView',
+     'imageView', 'promptgenView', 'calendarView', 'ocrView',
+     'studyView'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    });
+    // Reset the inline display style search-panel may have set.
+    const searchEl = document.getElementById('searchView');
+    if (searchEl) searchEl.style.display = '';
+  }
+
+  function showChat() {
+    const chat = document.getElementById('chat');
+    if (chat) chat.classList.remove('hidden');
+    const inputArea = document.getElementById('inputArea');
+    if (inputArea) inputArea.classList.remove('hidden');
+  }
+
+  function openHumanizerView() {
+    const view = document.getElementById('humanizerView');
+    if (!view) return;
+    hideOtherViews();
+    document.body.classList.add('humanizer-open');
+    standalone = true;
+    view.classList.remove('hidden');
+    // renderTab() shows a loading placeholder and kicks reload() when the
+    // options aren't fetched yet; its .then(refresh) then fills the real pane.
+    view.innerHTML = renderTab();
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function closeHumanizerView() {
+    if (!standalone) return;
+    standalone = false;
+    document.body.classList.remove('humanizer-open');
+    const view = document.getElementById('humanizerView');
+    if (view) view.classList.add('hidden');
+    showChat();
   }
 
   // ── Events ───────────────────────────────────────────────────────────────
@@ -425,6 +498,26 @@
     else if (a === 'clear') { input = ''; output = ''; stats = null; phases = null; lastError = ''; refresh(); }
     else if (a === 'advanced') { advanced = !advanced; refresh(); }
   });
+
+  // Rail button doubles as the entry point outside study mode. In study mode
+  // study.js owns the click (it switches to the Humanizer tab) — bail here so
+  // we never mount the standalone view on top of the study stage.
+  window.addEventListener('rail-switch', (e) => {
+    const target = e.detail && e.detail.target;
+    if (isStudyMode()) return;
+    if (target === 'humanizer') {
+      if (standalone) closeHumanizerView();
+      else openHumanizerView();
+    } else if (standalone) {
+      closeHumanizerView();
+    }
+  });
+
+  // If the user switches into study mode while the standalone view is open,
+  // tear it down — the study stage is about to take over the main area.
+  new MutationObserver(() => {
+    if (isStudyMode() && standalone) closeHumanizerView();
+  }).observe(document.body, { attributes: true, attributeFilter: ['data-mode'] });
 
   window.studyHumanizer = {
     renderTab,

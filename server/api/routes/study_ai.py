@@ -536,7 +536,7 @@ def build_study_turn(
     context = _build_context(
         meta, scope, page, selection, query=user_message, topic_scope=topic_scope
     )
-    blocks = [f'Document: "{meta.get("title", "")}"']
+    blocks = [f'Document: "{meta.get("title", "")}" (Page {page})']
     if context:
         blocks.append("Document context:\n---\n" + context + "\n---")
     if selection:
@@ -628,6 +628,7 @@ async def _stream(
     files: list[str] | None = None,
     ref_file_ids: list[str] | None = None,
     ref_files: list[dict[str, Any]] | None = None,
+    chat_id: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Yield normalized events ({type: answer|thinking|error}) for any model.
 
@@ -676,8 +677,13 @@ async def _stream(
     # Qwen's payload builder expects already-uploaded file objects here, not
     # local paths — an un-uploaded path is silently useless to the model.
     qwen_files = ref_files or None
+    # chat_id reuse: an AI OCR run sends many pages through here. Passing the
+    # same chat_id makes every page reuse ONE Qwen session instead of opening a
+    # fresh browser/chat per page — otherwise page 2+ stall on the browser
+    # governor's 120s acquire timeout and the whole run dies after page 1.
     async for ev in service.stream_events(
         qwen_message,
+        chat_id=chat_id,
         model=model or None,
         thinking_mode=thinking_mode or None,
         files=qwen_files,

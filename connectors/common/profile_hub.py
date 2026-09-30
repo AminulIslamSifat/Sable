@@ -52,7 +52,28 @@ _LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
     "--disable-gpu",
+    # A ghost tab is never the focused tab, so Chromium throttles its timers
+    # to 1s (then 1min once hidden >5min). That stretched the SPA's sentinel
+    # proof-of-work + fetch dispatch to 60-120s BEFORE the request even left
+    # the page — the "5 minute send" was almost entirely client-side throttling.
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
 ]
+
+
+async def _focus(page) -> None:
+    """Bring a ghost tab to the foreground.
+
+    Chromium throttles timer callbacks and fetch dispatch in backgrounded
+    tabs. Without this the hijacked ``requestSubmit()`` does not reach the
+    network for a minute or more. Best-effort — never fatal.
+    """
+    try:
+        await page.bring_to_front()
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------------
@@ -705,7 +726,12 @@ class ProfileHub:
                 _env = _browser_env_with_display()
                 if _env:
                     launch_kwargs["env"] = _env
-                else:
+                elif not (os.environ.get("DISPLAY")
+                          or os.environ.get("WAYLAND_DISPLAY")):
+                    # Only a genuine absence of a display is worth warning about.
+                    # _browser_env_with_display() also returns None when the
+                    # current env already has a usable DISPLAY (inherit case) —
+                    # that is the happy path, not a problem.
                     logger.warning("[hub:%s] no DISPLAY for headed launch",
                                    self.profile_dir.name)
             except Exception as exc:
@@ -756,6 +782,7 @@ class ProfileHub:
             try:
                 if not p.is_closed() and urlparse(p.url).netloc == want_host:
                     self._tabs.add(p)
+                    await _focus(p)
                     return p
             except Exception:
                 continue
@@ -766,6 +793,7 @@ class ProfileHub:
             # cookies). Too short and has_token() polls against an empty
             # localStorage; too long wastes startup. 3s is a safe middle ground.
             await page.wait_for_timeout(3000)
+            await _focus(page)
         except Exception:
             try:
                 await page.close()

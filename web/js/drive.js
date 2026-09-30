@@ -31,6 +31,8 @@
   let searchQuery = '';       // drive-wide search term
   let searchResults = null;   // null = not searched
   let searchBusy = false;
+  let searchOpen = false;     // is the search pane showing?
+  let searchScope = null;     // { id, name } — restrict to one source
   let addOpen = false;        // "add link" panel visibility
   let activeSource = null;    // currently opened source card
   let sourceItems = [];       // files inside the active source
@@ -115,9 +117,9 @@
       });
       return `<div class="drive-loading"><div class="drive-spinner"></div><p>Loading your Drive…</p></div>`;
     }
-    // A source is open → show its contents; otherwise show the card grid.
+    // Search wins over everything; then an open source; else the card grid.
+    if (searchOpen) return renderSearch();
     if (activeSource) return renderSourceView();
-    if (searchResults !== null || searchBusy || searchQuery) return renderSearch();
     return renderSources();
   }
 
@@ -225,6 +227,9 @@
                 : `<span>${esc(p.name)}</span>`
             ).join('')}
           </div>
+          <button class="drive-btn ghost" data-drive-action="search-in-source" title="Search this drive">
+            <i data-lucide="search" class="icon-lucide"></i>
+          </button>
           <button class="drive-btn ghost" data-drive-action="reload-source" title="Refresh">
             <i data-lucide="refresh-cw" class="icon-lucide"></i>
           </button>
@@ -370,40 +375,68 @@
 
   // -- Drive-wide search ---------------------------------------------------
 
+  function searchRowHtml(r) {
+    const icon = r.kind === 'folder' ? 'folder' : 'file-text';
+    const meta = esc(r.source_name) + (r.kind === 'file' && r.size ? ' · ' + fmtBytes(r.size) : '');
+    return [
+      '<div class="drive-row" data-drive-action="open-result"',
+      ' data-source="' + esc(r.source_id) + '" data-parent="' + esc(r.parent) + '"',
+      ' data-id="' + esc(r.id) + '" data-name="' + esc(r.name) + '" data-kind="' + esc(r.kind) + '">',
+      '<i data-lucide="' + icon + '" class="icon-lucide drive-row-icon"></i>',
+      '<div class="drive-row-main">',
+      '<div class="drive-row-name">' + esc(r.name) + '</div>',
+      '<div class="drive-row-meta">' + meta + '</div>',
+      '</div>',
+      '</div>',
+    ].join('');
+  }
+
   function renderSearch() {
     const q = searchQuery;
+    const scoped = searchScope;
     let body;
     if (searchBusy) {
-      body = '<div class="drive-loading"><div class="drive-spinner"></div><p>Searching all drives...</p></div>';
+      body = '<div class="drive-loading"><div class="drive-spinner"></div><p>Searching…</p></div>';
     } else if (searchResults && searchResults.length) {
-      const rows = searchResults.map((r) => {
-        const icon = r.kind === 'folder' ? 'folder' : 'file-text';
-        const meta = esc(r.source_name) + (r.kind === 'file' && r.size ? ' / ' + fmtBytes(r.size) : '');
-        return [
-          '<div class="drive-row" data-drive-action="open-result"',
-          ' data-source="' + esc(r.source_id) + '" data-parent="' + esc(r.parent) + '"',
-          ' data-id="' + esc(r.id) + '" data-name="' + esc(r.name) + '" data-kind="' + esc(r.kind) + '">',
-          '<i data-lucide="' + icon + '" class="icon-lucide drive-row-icon"></i>',
-          '<div class="drive-row-main">',
-          '<div class="drive-row-name">' + esc(r.name) + '</div>',
-          '<div class="drive-row-meta">' + meta + '</div>',
-          '</div>',
-          '</div>',
-        ].join('');
-      }).join('');
-      body = '<div class="drive-list">' + rows + '</div>';
+      if (scoped) {
+        // Scoped search: hits inside this drive first, then the rest.
+        const inScope = searchResults.filter((r) => r.source_id === scoped.id);
+        const others = searchResults.filter((r) => r.source_id !== scoped.id);
+        const blocks = [];
+        blocks.push(
+          '<div class="drive-result-group">'
+          + '<div class="drive-result-group-label">In ' + esc(scoped.name) + '</div>'
+          + (inScope.length
+              ? '<div class="drive-list">' + inScope.map(searchRowHtml).join('') + '</div>'
+              : '<div class="drive-result-none">Not available in this drive</div>')
+          + '</div>'
+        );
+        if (others.length) {
+          blocks.push(
+            '<div class="drive-result-group">'
+            + '<div class="drive-result-group-label">Other drives</div>'
+            + '<div class="drive-list">' + others.map(searchRowHtml).join('') + '</div>'
+            + '</div>'
+          );
+        }
+        body = blocks.join('');
+      } else {
+        body = '<div class="drive-list">' + searchResults.map(searchRowHtml).join('') + '</div>';
+      }
     } else if (searchResults) {
       body = '<div class="study-empty"><div class="study-empty-icon"><i data-lucide="search-x" class="icon-lucide"></i></div><h3>No matches</h3><p>Nothing matching that in any indexed drive.</p></div>';
     } else {
-      body = '<div class="study-empty"><div class="study-empty-icon"><i data-lucide="search" class="icon-lucide"></i></div><h3>Search all drives</h3><p>Type a file or folder name. It searches every indexed Drive source at once.</p></div>';
+      body = scoped
+        ? '<div class="study-empty"><div class="study-empty-icon"><i data-lucide="search" class="icon-lucide"></i></div><h3>Search this drive</h3><p>Results from <b>' + esc(scoped.name) + '</b> show first, then everything else you have indexed.</p></div>'
+        : '<div class="study-empty"><div class="study-empty-icon"><i data-lucide="search" class="icon-lucide"></i></div><h3>Search all drives</h3><p>Type a file or folder name. It searches every indexed Drive source at once.</p></div>';
     }
     const stats = searchResults ? (searchResults.length + ' result' + (searchResults.length === 1 ? '' : 's')) : '';
     return [
       '<div class="drive-search">',
       '<div class="drive-source-head">',
-      '<button class="drive-btn ghost" data-drive-action="close-search"><i data-lucide="arrow-left" class="icon-lucide"></i> Drive</button>',
+      '<button class="drive-btn ghost" data-drive-action="close-search"><i data-lucide="arrow-left" class="icon-lucide"></i> ' + (scoped ? 'Back' : 'Drive') + '</button>',
       '<div class="drive-searchbox"><i data-lucide="search" class="icon-lucide"></i>',
-      '<input id="driveSearchInput" type="search" placeholder="Search all indexed drives..." value="' + esc(q) + '" autocomplete="off" spellcheck="false"></div>',
+      '<input id="driveSearchInput" type="search" placeholder="' + (scoped ? 'Search in ' + esc(scoped.name) + '…' : 'Search all indexed drives…') + '" value="' + esc(q) + '" autocomplete="off" spellcheck="false"></div>',
       '</div>',
       '<div class="drive-search-stats">' + stats + '</div>',
       body,
@@ -576,6 +609,7 @@
   async function openSource(id) {
     const src = SOURCES.find((s) => s.id === id);
     if (!src) return;
+    searchOpen = false; searchScope = null;
     activeSource = src;
     sourcePath = [{ id: src.drive_id, name: src.name }];
     selected = new Set();
@@ -847,9 +881,16 @@
         return rerender();
       case 'add-link': return addLink();
       case 'toggle-search':
+        searchOpen = true; searchScope = null;
+        searchQuery = ''; searchResults = null;
+        return (function(){ rerender(); setTimeout(focusSearchInput, 0); })();
+      case 'search-in-source':
+        searchOpen = true;
+        searchScope = activeSource ? { id: activeSource.id, name: activeSource.name } : null;
         searchQuery = ''; searchResults = null;
         return (function(){ rerender(); setTimeout(focusSearchInput, 0); })();
       case 'close-search':
+        searchOpen = false; searchScope = null;
         searchQuery = ''; searchResults = null; searchBusy = false;
         return rerender();
       case 'open-result': return openSearchResult(el);
@@ -941,6 +982,12 @@
     handleAction,
     init,
     openFolder: openSourceFromLibrary,
+    // Open one Drive file straight in the viewer — used by the rail search so
+    // a hit there behaves the same as a hit inside the Drive tab.
+    openFile: (it) => {
+      if (window.studyMode && window.studyMode.setTab) window.studyMode.setTab('drive');
+      viewFile(it);
+    },
     ensureStatus: () => loadStatus(true),
   };
 

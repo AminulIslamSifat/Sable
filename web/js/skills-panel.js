@@ -1216,18 +1216,66 @@
           const badge = m.custom ? '<span style="color:var(--accent);font-size:9px;background:color-mix(in srgb, var(--accent) 15%, transparent);padding:1px 5px;border-radius:4px;margin-left:6px;">CUSTOM</span>' : '';
           info.innerHTML = `<b>${m.label}</b> <span style="color:var(--text);font-family:monospace;font-size:11px;">${m.id}</span> <span style="color:var(--text);font-size:10px;text-transform:uppercase;">${m.api_backend || 'local'}</span>${badge}`;
           topBar.appendChild(info);
-          // Expandable detail panel
+          // Expandable detail panel — editable capabilities
           const detail = document.createElement("div");
-          detail.style.cssText = "display:none;padding:6px 12px 10px;font-size:11px;color:var(--text);border-top:1px solid var(--border);";
+          detail.style.cssText = "display:none;padding:8px 12px 12px;font-size:11px;color:var(--text);border-top:1px solid var(--border);";
           const caps = m.capabilities || {};
-          const capIcons = [];
-          if (caps.image) capIcons.push("🖼️ Image");
-          if (caps.video) capIcons.push("🎬 Video");
-          if (caps.document) capIcons.push("📄 Document");
-          if (caps.audio) capIcons.push("🎧 Audio");
           const hasThinking = (m.thinking_modes || []).some(tm => tm.thinking_enabled);
-          const thinkingBadge = hasThinking ? ' · 🧠 Thinking' : '';
-          detail.innerHTML = `<span style="color:var(--text);font-weight:500;">Capabilities:</span> ${capIcons.length ? capIcons.join(" · ") : '<span style="opacity:0.6;">None</span>'}${thinkingBadge}`;
+
+          const chkStyle = "accent-color:var(--accent);margin-right:3px;cursor:pointer;";
+          const lblStyle = "display:inline-flex;align-items:center;margin-right:10px;cursor:pointer;font-size:11px;";
+          detail.innerHTML = `
+            <div style="font-weight:500;margin-bottom:6px;">Capabilities</div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px 0;margin-bottom:8px;">
+              <label style="${lblStyle}"><input type="checkbox" data-cap="image" ${caps.image ? 'checked' : ''} style="${chkStyle}"> 🖼️ Image</label>
+              <label style="${lblStyle}"><input type="checkbox" data-cap="video" ${caps.video ? 'checked' : ''} style="${chkStyle}"> 🎬 Video</label>
+              <label style="${lblStyle}"><input type="checkbox" data-cap="document" ${caps.document ? 'checked' : ''} style="${chkStyle}"> 📄 Document</label>
+              <label style="${lblStyle}"><input type="checkbox" data-cap="audio" ${caps.audio ? 'checked' : ''} style="${chkStyle}"> 🎧 Audio</label>
+              <label style="${lblStyle}"><input type="checkbox" data-cap="thinking" ${hasThinking ? 'checked' : ''} style="${chkStyle}"> 🧠 Thinking</label>
+            </div>
+            <button class="save-caps-btn" style="font-size:10px;padding:3px 10px;border-radius:4px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-weight:600;">Save Changes</button>
+            <span class="caps-status" style="margin-left:8px;font-size:10px;opacity:0.7;"></span>
+          `;
+
+          // Wire up save button
+          const saveBtn = detail.querySelector(".save-caps-btn");
+          const statusEl2 = detail.querySelector(".caps-status");
+          saveBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const payload = {
+              capabilities: {
+                image: detail.querySelector('[data-cap="image"]').checked,
+                video: detail.querySelector('[data-cap="video"]').checked,
+                document: detail.querySelector('[data-cap="document"]').checked,
+                audio: detail.querySelector('[data-cap="audio"]').checked,
+              },
+              supports_thinking: detail.querySelector('[data-cap="thinking"]').checked,
+            };
+            try {
+              saveBtn.disabled = true;
+              saveBtn.textContent = "Saving…";
+              const res = await fetch(`/api/settings/models/${encodeURIComponent(m.id)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || "Failed");
+              }
+              statusEl2.textContent = "✓ Saved";
+              statusEl2.style.color = "var(--accent)";
+              showToast(`${m.label} capabilities updated`, "success");
+              setTimeout(() => { statusEl2.textContent = ""; }, 3000);
+            } catch (err) {
+              statusEl2.textContent = "✕ " + err.message;
+              statusEl2.style.color = "var(--danger)";
+              showToast("Failed to update capabilities", "error");
+            } finally {
+              saveBtn.disabled = false;
+              saveBtn.textContent = "Save Changes";
+            }
+          });
           topBar.addEventListener("click", () => {
             const open = detail.style.display !== "none";
             detail.style.display = open ? "none" : "block";

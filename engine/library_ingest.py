@@ -78,6 +78,9 @@ _CONVERTIBLE_EXT = {
     ".txt", ".csv", ".md", ".epub", ".xlsx", ".xls",
 }
 _ACCEPTED_EXT = {_NATIVE_EXT, *_CONVERTIBLE_EXT}
+# Public alias — callers outside this module need to know whether an extension
+# must be routed through LibreOffice before it can be shown to pdf.js.
+CONVERTIBLE_EXT = frozenset(_CONVERTIBLE_EXT)
 _CONVERT_TIMEOUT = 120
 _META_VERSION = 1
 
@@ -278,6 +281,32 @@ def extract_pdf(raw: bytes) -> dict[str, Any]:
     raise ValueError("no extractable text (scanned/image-only PDF?)")
 
 
+def _pdf_page_count(raw: bytes) -> int:
+    """Page count only — for scanned PDFs with no text layer.
+
+    ``extract_pdf`` raises on those; the importer still needs to know how many
+    pages to queue for OCR, so this counts them without needing any text.
+    """
+    try:
+        import pymupdf  # type: ignore
+
+        doc = pymupdf.open(stream=raw, filetype="pdf")
+        try:
+            return int(doc.page_count)
+        finally:
+            doc.close()
+    except Exception:
+        pass
+    try:
+        import io
+
+        from pypdf import PdfReader  # type: ignore
+
+        return len(PdfReader(io.BytesIO(raw)).pages)
+    except Exception:
+        return 0
+
+
 def _write_json_atomic(target: Path, data: Any) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
@@ -324,7 +353,26 @@ def ingest_bytes(
         pdf_bytes = convert_to_pdf(raw, ext)
         converted = True
 
-    extracted = extract_pdf(pdf_bytes)
+    # A scanned / image-only PDF has NO text layer, and extract_pdf raises
+    # ValueError for exactly that. That is not a failure — it is the case OCR
+    # exists for. Ingest it with blank page text so the caller can queue an
+    # OCR pass, mirroring the upload route. Only a genuinely unreadable PDF
+    # (0 pages) is a real error.
+    try:
+        extracted = extract_pdf(pdf_bytes)
+    except ValueError:
+        pages = _pdf_page_count(pdf_bytes)
+        if pages <= 0:
+            raise ValueError("could not read PDF")
+        logger.info(
+            "no text layer in %s (%d pages) — ingesting for OCR", filename, pages
+        )
+        extracted = {
+            "pages": pages,
+            "page_text": [""] * pages,
+            "outline": [],
+            "meta_title": "",
+        }
 
     ensure_dirs()
     doc_id = uuid.uuid4().hex
@@ -371,6 +419,10 @@ def ingest_bytes(
         except Exception as exc:
             logger.debug("could not cache thumbnail: %s", exc)
 
+    # Honest flag: a scanned PDF was ingested with blank pages and needs OCR.
+    # Claiming has_text=True for it would tell the UI it's already searchable.
+    has_text = any((t or "").strip() for t in extracted["page_text"])
+
     return {
         "id": doc_id,
         "title": title,
@@ -381,7 +433,7 @@ def ingest_bytes(
         "converted": converted,
         "source_ext": meta["source_ext"],
         "highlights": 0,
-        "has_text": True,
+        "has_text": has_text,
         "group": meta["group"],
         "progress": meta["progress"],
     }
