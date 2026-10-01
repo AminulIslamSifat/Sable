@@ -292,9 +292,9 @@
         try {
           await cbFetch("/model", {
             method: "DELETE",
-            body: JSON.stringify({ path: btn.dataset.path }),
+            body: JSON.stringify({ path: btn.dataset.path, label: btn.dataset.name }),
           });
-          showToast("Deleted " + btn.dataset.name);
+          showToast("Deleted " + btn.dataset.name + " and all its data");
           refreshCookbook();
         } catch (e) {
           showToast("Delete failed: " + e.message, true);
@@ -589,7 +589,10 @@
         <div class="cb-model-settings-card" data-model-id="${m.id}">
           <div class="cb-ms-header">
             <span class="cb-ms-name">${m.label}</span>
-            <span class="cb-ms-status ${m.status}">${m.status}</span>
+            <span style="display:flex;align-items:center;gap:6px;">
+              <span class="cb-ms-status ${m.status}">${m.status}</span>
+              <button class="cb-ms-rm" data-model="${m.id}" data-label="${m.label}" title="Remove this model and all its data">✕</button>
+            </span>
           </div>
           <div class="cb-ms-body ${grayClass}">
             <label class="cb-ms-toggle">
@@ -702,6 +705,28 @@
             await cbFetch("/model-settings/" + modelId, { method: "PUT", body: JSON.stringify({ tools: currentTools }) });
             loadModelSettings();
           } catch (e) { showToast("Save failed: " + e.message, true); }
+        };
+      });
+
+      // Remove button — cascade purge (model + servers + registry + settings + logs)
+      container.querySelectorAll(".cb-ms-rm").forEach(btn => {
+        btn.onclick = async () => {
+          const modelId = btn.dataset.model;
+          const label = btn.dataset.label;
+          if (!confirm("Remove " + label + " completely? This deletes the weights, server history, registry entry, settings, and logs. Cannot be undone.")) return;
+          btn.disabled = true;
+          btn.textContent = "…";
+          try {
+            const res = await cbFetch("/model-by-id/" + encodeURIComponent(modelId), { method: "DELETE" });
+            const s = res.summary || {};
+            showToast("Removed " + label + " (" + (s.servers_removed || 0) + " servers, file: " + (s.file_deleted ? "yes" : "no") + ")");
+            loadModelSettings();
+            refreshCookbook();
+          } catch (e) {
+            showToast("Remove failed: " + e.message, true);
+            btn.disabled = false;
+            btn.textContent = "✕";
+          }
         };
       });
 

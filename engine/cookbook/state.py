@@ -128,9 +128,16 @@ class CookbookState:
         return [d for d in self.downloads if d.status == "downloading"]
 
     def cleanup_stale(self) -> None:
-        """Mark servers as stopped if their PID is no longer alive."""
+        """Self-healing prune.
+
+        1. Mark servers stopped if their PID is dead.
+        2. Drop server entries whose model file no longer exists on disk.
+        3. Dedupe: keep every running entry + only the most recent stopped
+           entry per model path, so serve history can never bloat the UI.
+        """
         import os
         changed = False
+
         for s in self.servers:
             if s.status == "running" and s.pid > 0:
                 try:
@@ -139,8 +146,63 @@ class CookbookState:
                     s.status = "stopped"
                     s.stopped_at = time.time()
                     changed = True
+
+        # 2. Purge entries whose backing file is gone (keep running ones).
+        alive = [s for s in self.servers if s.status == "running" or Path(s.model_path).exists()]
+        if len(alive) != len(self.servers):
+            self.servers = alive
+            changed = True
+
+        # 3. Dedupe stopped entries per model path (keep the newest).
+        seen: set[str] = set()
+        keep_ids: set[int] = set()
+        for s in sorted(self.servers, key=lambda x: x.started_at, reverse=True):
+            if s.status == "running":
+                keep_ids.add(id(s))
+            elif s.model_path not in seen:
+                seen.add(s.model_path)
+                keep_ids.add(id(s))
+        dropped = [s for s in self.servers if id(s) not in keep_ids]
+        ordered = [s for s in self.servers if id(s) in keep_ids]
+        if len(ordered) != len(self.servers):
+            self.servers = ordered
+            changed = True
+            # Don't leave orphaned logs behind for entries we just dropped.
+            for s in dropped:
+                lp = self.logs_dir / f"{s.id}.log"
+                try:
+                    if lp.exists():
+                        lp.unlink()
+                except OSError:
+                    pass
+
         if changed:
             self.save()
+
+    # ─── Cascade purge helpers ─────────────────────────────────────────────
+
+    def find_servers(self, *, model_path: str = "", model_label: str = "") -> list[ServeTask]:
+        """Return server entries matching a path and/or label."""
+        out: list[ServeTask] = []
+        for s in self.servers:
+            if model_path and s.model_path == model_path:
+                out.append(s)
+            elif model_label and s.model_label == model_label:
+                out.append(s)
+        return out
+
+    def remove_servers(self, *, model_path: str = "", model_label: str = "") -> int:
+        """Remove every server entry matching path/label. Returns count removed."""
+        before = len(self.servers)
+        self.servers = [
+            s for s in self.servers
+            if not ((model_path and s.model_path == model_path)
+                    or (model_label and s.model_label == model_label))
+        ]
+        removed = before - len(self.servers)
+        if removed:
+            self.save()
+        return removed
 
 
 _state: CookbookState | None = None
@@ -150,5 +212,7 @@ def get_state() -> CookbookState:
     global _state
     if _state is None:
         _state = CookbookState()
+        # Heal any stale state on first access so ghosts never reach the UI.
+        _state.cleanup_stale()
     return _state
 #

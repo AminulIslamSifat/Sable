@@ -447,6 +447,27 @@
   background: color-mix(in srgb, var(--muted) 12%, transparent);
   color: var(--muted);
 }
+.cb-ms-rm {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: 6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--danger);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.cb-ms-rm:hover {
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+.cb-ms-rm:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
 .cb-ms-body {
   display: flex;
   flex-direction: column;

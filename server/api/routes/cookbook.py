@@ -13,6 +13,7 @@ from engine.cookbook.downloader import DownloadManager, DownloadError
 from engine.cookbook.server import ServeManager, ServeError
 from engine.cookbook.presets import get_presets, get_preset_by_id
 from engine.cookbook.diagnose import diagnose_output
+from engine.cookbook.purge import purge_model
 from engine.cookbook.model_settings import (
     get_all_model_settings,
     get_model_settings,
@@ -314,33 +315,62 @@ async def list_cached_models() -> dict[str, Any]:
 
 @router.delete("/api/cookbook/model")
 async def delete_model_file(request: Request) -> dict[str, Any]:
-    """Delete a model GGUF file from disk."""
+    """Delete a model: weights + servers + registry + settings + logs."""
     body = await request.json()
     model_path = body.get("path", "")
-    if not model_path:
-        raise HTTPException(400, "Missing 'path'")
+    model_label = body.get("label", "")
+    if not model_path and not model_label:
+        raise HTTPException(400, "Missing 'path' or 'label'")
 
     from pathlib import Path as _Path
     from engine.cookbook.state import get_state
 
-    p = _Path(model_path)
-    # Safety: must be inside models_dir and must be a .gguf file
-    models_dir = get_state().models_dir
-    if not str(p.resolve()).startswith(str(models_dir.resolve())):
-        raise HTTPException(403, "Path is outside the models directory")
-    if not p.suffix == ".gguf":
-        raise HTTPException(400, "Can only delete .gguf files")
-    if not p.exists():
-        raise HTTPException(404, "File not found")
+    if model_path:
+        p = _Path(model_path)
+        models_dir = get_state().models_dir
+        # Safety: must be inside models_dir and must be a .gguf file
+        if not str(p.resolve()).startswith(str(models_dir.resolve())):
+            raise HTTPException(403, "Path is outside the models directory")
+        if p.suffix != ".gguf":
+            raise HTTPException(400, "Can only delete .gguf files")
 
-    p.unlink()
-    logger.info("Deleted model file: %s", model_path)
+    summary = purge_model(model_path=model_path, model_label=model_label)
+    logger.info("Purged model (path=%s label=%s): %s", model_path, model_label, summary)
+    return {"status": "ok", "deleted": model_path or model_label, "summary": summary}
 
-    # Also clean up model settings if any
-    model_id = "local/" + p.stem.lower().replace(" ", "-")
-    delete_model_settings(model_id)
 
-    return {"status": "ok", "deleted": model_path}
+@router.delete("/api/cookbook/model-by-id/{model_id:path}")
+async def delete_model_by_id(model_id: str) -> dict[str, Any]:
+    """Purge everything for a cookbook model identified by its UI id.
+
+    Handles the 'Remove' action on a model settings card. The id looks like
+    'local/qwen3.5-2b-q4_k_m' and maps to a server label + settings key.
+    """
+    if not model_id.startswith("local/"):
+        raise HTTPException(400, "Not a cookbook model id")
+    slug = model_id[len("local/"):]
+
+    # Recover the original label from either a server entry or the settings.
+    from engine.cookbook.state import get_state
+    state = get_state()
+    label = ""
+    path = ""
+    for s in state.servers:
+        if s.model_label.lower().replace(" ", "-") == slug:
+            label = s.model_label
+            path = s.model_path
+            break
+
+    summary = purge_model(model_path=path, model_label=label or slug)
+
+    # If no label was found (orphan settings), purge id-keyed data directly.
+    if not label:
+        delete_model_settings(model_id)
+        from engine.cookbook.purge import _unregister_custom
+        summary["custom_removed"] = _unregister_custom({model_id})
+
+    logger.info("Purged model by id '%s': %s", model_id, summary)
+    return {"status": "ok", "model_id": model_id, "summary": summary}
 
 
 # ─── Per-Model Instruction Settings ────────────────────────────────────────────
