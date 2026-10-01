@@ -332,14 +332,7 @@ class BaseScraperConnector:
     async def _capture(self, engine: BaseBrowserEngine) -> AsyncGenerator[dict[str, Any], None]:
         answer_q: asyncio.Queue[str] = asyncio.Queue()
         think_q: asyncio.Queue[str] = asyncio.Queue()
-        # Seed from the engine's PREVIOUS turn capture, not empty strings.
-        # This generator is recreated every turn; if state starts empty the
-        # first stale DOM read of the new turn passes the `!= state[...]` test
-        # and gets streamed as fresh thinking/answer (cross-turn bleed).
-        state = {
-            "last_answer": getattr(engine, "_last_response_text", "") or "",
-            "last_think": getattr(engine, "_last_thinking", "") or "",
-        }
+        state = {"last_answer": "", "last_think": ""}
 
         def _delta(full: str, prev: str) -> str:
             if full.startswith(prev):

@@ -778,11 +778,8 @@ class BaseBrowserEngine:
                 self._reset_sse_capture()
 
                 # Mark existing turns old so capture cleanly finds the new one.
-                # NOTE: div.ds-think-content MUST be included — otherwise the
-                # thoughts DOM fallback (.last) resolves to the PREVIOUS turn's
-                # thinking block and re-emits it as the current turn's reasoning.
                 await self.page.evaluate(
-                    "() => document.querySelectorAll('div.ds-message, div.ds-assistant-message-main-content, div.ds-think-content')"
+                    "() => document.querySelectorAll('div.ds-message, div.ds-assistant-message-main-content')"
                     ".forEach(el => el.dataset.ghostOld = 'true')"
                 )
 
@@ -951,11 +948,7 @@ class BaseBrowserEngine:
                 final = ""
             final = self._strip_ui(final)
 
-        # Only fall back to the DOM thoughts read when SSE produced NO reasoning
-        # at all. If SSE already streamed reasoning, the DOM read would append
-        # a stale (previous-turn) block on top of it.
-        final_thinking = ""
-        if thoughts_callback and self.show_thoughts and not net_reasoning:
+        if thoughts_callback and self.show_thoughts:
             try:
                 tsel = f"{thinking_sel}:not([data-ghost-old='true'])" if thinking_sel else ""
                 tloc = self.page.locator(tsel) if tsel else None
@@ -968,10 +961,6 @@ class BaseBrowserEngine:
         cleaned = self._clean_garbage(final)
         if live_display and cleaned:
             live_display(cleaned)
-        # Persist this turn's capture so the NEXT turn can suppress re-emitting
-        # it. Without this, self._last_thinking stays "" forever and the dedup
-        # guards in get_response() and scraper_connector._capture() are no-ops.
-        self._last_thinking = self._clean_thoughts_text(net_reasoning or final_thinking or "")
         self._last_response_text = cleaned
         return cleaned
 
