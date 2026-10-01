@@ -1782,108 +1782,75 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 return kw.capitalize() if kw != "msedge" else "Edge"
         return Path(path).stem
 
-    def _profile_has_mistral_web(entry: Path) -> bool:
-        """True if this profile holds a *logged-in* chat.mistral.ai session.
+    def _probe_profile_auth(entry: Path, kimi_store: dict) -> dict[str, bool]:
+        """Probe ONE profile for kimi / chatgpt / mistral_web logins in a single pass.
 
-        Mistral auth is an Ory Kratos ``ory_session_*`` cookie. Checks:
-        1. ``.mistral_web_auth.json`` snapshot (written by service.py on refresh)
-        2. Live SQLite query for ``ory_session_`` cookies (not raw binary grep,
-           which matches stale deleted rows)
+        Opens the Chromium Cookies SQLite DB at most ONCE per profile and runs
+        all three cookie queries on that one connection (previously three
+        separate connects per profile). Cheap on-disk snapshots are checked
+        first and short-circuit the DB open where they already prove a login:
+          * kimi    → ``.kimi_tokens.json`` store (loaded once per request)
+          * mistral → ``.mistral_web_auth.json`` cookie-jar snapshot
+          * chatgpt → no snapshot source, always needs the DB
         """
-        # Primary: disk snapshot from last refresh
+        result = {"kimi": False, "chatgpt": False, "mistral_web": False}
+
+        # --- Snapshot-first (no DB open) ---
         try:
-            if (entry / ".mistral_web_auth.json").is_file():
-                import json as _json
-                jar = _json.loads((entry / ".mistral_web_auth.json").read_text())
+            if kimi_store.get(entry.name):
+                result["kimi"] = True
+        except Exception:
+            pass
+        try:
+            snap = entry / ".mistral_web_auth.json"
+            if snap.is_file():
+                jar = json.loads(snap.read_text())
                 if any(k.startswith("ory_session_") and v for k, v in jar.items()):
-                    return True
+                    result["mistral_web"] = True
         except Exception:
             pass
 
-        # Fallback: live SQLite query (avoids stale byte matches)
+        # --- Single SQLite pass (only what snapshots couldn't answer) ---
+        ck = entry / "Default" / "Cookies"
+        if not ck.is_file():
+            return result
         try:
             import sqlite3
-            ck = entry / "Default" / "Cookies"
-            if ck.is_file():
-                conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
-                try:
+            conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
+            try:
+                if not result["chatgpt"]:
                     cur = conn.execute(
-                        "SELECT name FROM cookies WHERE host_key LIKE '%mistral%' "
-                        "AND name LIKE 'ory_session_%'"
+                        "SELECT 1 FROM cookies WHERE host_key LIKE '%chatgpt%' "
+                        "AND name LIKE '__Secure-next-auth.session-token%' LIMIT 1"
                     )
                     if cur.fetchone() is not None:
-                        return True
-                finally:
-                    conn.close()
-        except Exception:
-            pass
-        return False
-
-    def _profile_has_kimi(entry: Path) -> bool:
-        """True if this profile holds a kimi.ai login.
-
-        Checks two sources:
-        1. ``.kimi_tokens.json`` — the persisted token store written by the
-           ghost session whenever it finds a live JWT. This is the primary
-           and most reliable signal.
-        2. Chromium Cookies DB — fallback that queries actual live cookie
-           rows (not raw binary grep, which matches stale deleted data).
-        """
-        # Primary: check the persisted token store
-        try:
-            from connectors.kimi.ghost import TOKEN_STORE_PATH, _load_token_store
-            if TOKEN_STORE_PATH.exists():
-                store = _load_token_store()
-                # Match by account name (e.g. "browser-data-acc1")
-                acct_name = entry.name
-                if acct_name in store and store[acct_name]:
-                    return True
-        except Exception:
-            pass
-
-        # Fallback: query the actual SQLite cookies table for live kimi cookies
-        try:
-            import sqlite3
-            ck = entry / "Default" / "Cookies"
-            if ck.is_file():
-                conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
-                try:
+                        result["chatgpt"] = True
+                if not result["kimi"]:
                     cur = conn.execute(
-                        "SELECT name FROM cookies WHERE host_key LIKE '%kimi%' "
-                        "AND (name='access_token' OR name='refresh_token' OR name='kimi_session')"
+                        "SELECT 1 FROM cookies WHERE host_key LIKE '%kimi%' "
+                        "AND (name='access_token' OR name='refresh_token' OR name='kimi_session') LIMIT 1"
                     )
                     if cur.fetchone() is not None:
-                        return True
-                finally:
-                    conn.close()
-        except Exception:
-            pass
-        return False
-
-    def _profile_has_chatgpt(entry: Path) -> bool:
-        """True if this profile holds a chatgpt.com login.
-
-        ChatGPT auth is a ``__Secure-next-auth.session-token`` cookie (split
-        into ``.0``/``.1`` chunks). Query the live SQLite cookies table for it
-        (not a binary grep, which matches stale deleted rows).
-        """
-        try:
-            import sqlite3
-            ck = entry / "Default" / "Cookies"
-            if ck.is_file():
-                conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
-                try:
+                        result["kimi"] = True
+                if not result["mistral_web"]:
                     cur = conn.execute(
-                        "SELECT name FROM cookies WHERE host_key LIKE '%chatgpt%' "
-                        "AND name LIKE '__Secure-next-auth.session-token%'"
+                        "SELECT 1 FROM cookies WHERE host_key LIKE '%mistral%' "
+                        "AND name LIKE 'ory_session_%' LIMIT 1"
                     )
                     if cur.fetchone() is not None:
-                        return True
-                finally:
-                    conn.close()
+                        result["mistral_web"] = True
+            finally:
+                conn.close()
         except Exception:
             pass
-        return False
+        return result
+
+    # Load the kimi token store ONCE for the whole request (was re-read per profile).
+    try:
+        from connectors.kimi.ghost import _load_token_store as _load_kimi_store
+        _kimi_store = _load_kimi_store()
+    except Exception:
+        _kimi_store = {}
 
     def _scan_browser_accounts() -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
@@ -1909,15 +1876,16 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     isinstance(_mimo_jar, dict)
                     and _mimo_jar.get("xiaomichatbot_serviceToken")
                 )
-                _has_kimi = _profile_has_kimi(entry)
-                _has_chatgpt = _profile_has_chatgpt(entry)
-                _has_mistral_web = _profile_has_mistral_web(entry)
+                _auth = _probe_profile_auth(entry, _kimi_store)
+                _has_kimi = _auth["kimi"]
+                _has_chatgpt = _auth["chatgpt"]
+                _has_mistral_web = _auth["mistral_web"]
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
                     "label": acc_cfg.get(entry.name, {}).get("label", ""),
-                    "size_mb": _dir_size_mb(entry),
+                    "size_mb": None,
                     "has_waf": _has_waf,
                     "has_ds": _has_ds,
                     "has_zai": _has_zai,
@@ -1935,8 +1903,6 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
-
-    browser_accounts = await asyncio.to_thread(_scan_browser_accounts)
 
     def _scan_unregistered_browser_data() -> list[dict[str, Any]]:
         """Find browser data directories that don't match the acc{N} pattern."""
@@ -1969,20 +1935,21 @@ async def list_accounts_by_provider() -> dict[str, Any]:
             browser_available = True
             if browser_path and browser_path != "default":
                 browser_available = os.path.isfile(browser_path)
+            _auth = _probe_profile_auth(entry, _kimi_store)
             unregistered.append({
                 "name": entry.name,
                 "num": -1,
                 "email": entry.name.replace("-", " ").replace("_", " ").title(),
                 "label": acc_cfg.get(entry.name, {}).get("label", ""),
-                "size_mb": _dir_size_mb(entry),
+                "size_mb": None,
                 "has_waf": False,
                 "has_ds": False,
                 "has_zai": False,
                 "has_gemini": False,
                 "has_mimo": False,
-                "has_kimi": _profile_has_kimi(entry),
-                "has_chatgpt": _profile_has_chatgpt(entry),
-                "has_mistral_web": _profile_has_mistral_web(entry),
+                "has_kimi": _auth["kimi"],
+                "has_chatgpt": _auth["chatgpt"],
+                "has_mistral_web": _auth["mistral_web"],
                 "exhausted": False,
                 "captcha_blocked": False,
                 "browser_path": browser_path,
@@ -1994,7 +1961,11 @@ async def list_accounts_by_provider() -> dict[str, Any]:
         unregistered.sort(key=lambda a: a["name"])
         return unregistered
 
-    unregistered_browser_data = await asyncio.to_thread(_scan_unregistered_browser_data)
+    # Run both profile scans concurrently instead of back-to-back.
+    browser_accounts, unregistered_browser_data = await asyncio.gather(
+        asyncio.to_thread(_scan_browser_accounts),
+        asyncio.to_thread(_scan_unregistered_browser_data),
+    )
 
     from engine.config import get_provider_active_account as _get_active_for
 
@@ -2466,6 +2437,22 @@ async def available_browsers() -> dict[str, Any]:
     from engine.platform_paths import list_available_browsers
     browsers = await asyncio.to_thread(list_available_browsers)
     return {"browsers": browsers}
+
+
+@router.get("/api/settings/accounts/profile-size")
+async def profile_size(profile: str) -> dict[str, Any]:
+    """Lazily compute ONE profile's on-disk size in MB.
+
+    The accounts list payload intentionally ships ``size_mb=None`` so tab open
+    does not walk every file in every profile. The UI fetches this per visible
+    card instead, keeping the rglob off the critical path.
+    """
+    name = _validate_profile_name(profile)
+    target = _SYSTEM_DIR / name
+    if not target.is_dir():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    size = await asyncio.to_thread(_dir_size_mb, target)
+    return {"profile": name, "size_mb": size}
 
 
 @router.post("/api/settings/accounts/create")

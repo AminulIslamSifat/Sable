@@ -169,7 +169,7 @@ window.safeCopy = async function(text) {
       const isPinned = !!acc.pinned;
       const perProvider = _PER_PROVIDER_SWITCH.includes(providerId);
       const email = acc.label || acc.email || "unknown account";
-      const size = acc.size_mb ? acc.size_mb + " MB" : "";
+      const size = acc.size_mb ? acc.size_mb + " MB" : "…";
       // Available = this profile holds a token for the provider. Tokenless
       // profiles are still listed (below the available ones) and selectable.
       const avail = acc.provider_available !== false;
@@ -186,7 +186,7 @@ window.safeCopy = async function(text) {
           <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
             <span>${acc.name}</span>
-            ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
+            <span class="acc-size-wrap"><span style="opacity:0.4;">·</span><span class="acc-size" data-profile="${acc.name}">${size}</span></span>
             ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
             ${isPinned ? _badge('pinned') : ''}
             ${avail ? '' : _badge('no token', true)}
@@ -225,7 +225,7 @@ window.safeCopy = async function(text) {
     function _renderCombinedBrowserCard(entry) {
       const acc = entry.acc;
       const email = acc.label || acc.email || "unknown account";
-      const size = acc.size_mb ? acc.size_mb + " MB" : "";
+      const size = acc.size_mb ? acc.size_mb + " MB" : "…";
       const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
       const isActiveAnywhere = (entry.activeFor || []).length > 0;
       const borderColor = browserMissing ? 'var(--danger)' : isActiveAnywhere ? '#4ade80' : 'var(--border)';
@@ -239,7 +239,7 @@ window.safeCopy = async function(text) {
           <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
             <span>${acc.name}</span>
-            ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
+            <span class="acc-size-wrap"><span style="opacity:0.4;">·</span><span class="acc-size" data-profile="${acc.name}">${size}</span></span>
             ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
             ${acc.exhausted ? _badge('exhausted', true) : ''}
             ${acc.captcha_blocked ? _badge('captcha', true) : ''}
@@ -480,6 +480,45 @@ window.safeCopy = async function(text) {
       });
     }
 
+    // Profile sizes are NOT shipped in the accounts list payload (walking every
+    // file in every profile cost ~1s per tab open). Instead each card renders a
+    // placeholder and we fetch the size lazily, ONLY when the card scrolls into
+    // view. Results are cached per profile for the page session.
+    let _sizeObserver = null;
+    const _sizeCache = new Map();
+    function _hydrateSizes() {
+      if (!accountProfileCards) return;
+      if (_sizeObserver) { _sizeObserver.disconnect(); _sizeObserver = null; }
+      const targets = accountProfileCards.querySelectorAll(".acc-size[data-profile]");
+      if (!targets.length) return;
+      const paint = (el, txt) => {
+        if (txt) { el.textContent = txt; }
+        else {
+          const wrap = el.closest(".acc-size-wrap");
+          if (wrap) wrap.style.display = "none";
+        }
+      };
+      _sizeObserver = new IntersectionObserver((entries) => {
+        for (const ent of entries) {
+          if (!ent.isIntersecting) continue;
+          const el = ent.target;
+          _sizeObserver.unobserve(el);
+          const profile = el.dataset.profile;
+          if (!profile) continue;
+          if (_sizeCache.has(profile)) { paint(el, _sizeCache.get(profile)); continue; }
+          fetch(`/api/settings/accounts/profile-size?profile=${encodeURIComponent(profile)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+              const txt = d && d.size_mb != null ? d.size_mb + " MB" : "";
+              if (txt) _sizeCache.set(profile, txt);
+              paint(el, txt);
+            })
+            .catch(() => paint(el, ""));
+        }
+      }, { rootMargin: "200px 0px" });
+      targets.forEach((el) => _sizeObserver.observe(el));
+    }
+
     async function loadAccountProfiles() {
       if (!accountProfileCards) return;
       // Keep the scraper launch-mode card in sync with the server before we
@@ -684,6 +723,7 @@ window.safeCopy = async function(text) {
         _bindBrowserHandlers();
         _bindApiKeyHandlers();
         _bindCombinedProviderPills();
+        _hydrateSizes();
 
         // Bind Clear All History button
         const clearAllBtn = accountProfileCards.querySelector(".clear-all-history-btn");
