@@ -422,15 +422,22 @@ class GhostSession:
 
     async def _after_browser_ready(self) -> None:
         self._started_at = time.time()
-        cached = self._load_identity()
-        if cached:
-            self._identity = cached
-            logger.info("[ghost:%s] identity loaded from cache (%d headers, hif len %d)",
-                        self.account, len(cached), len(cached.get("x-hif-leim", "")))
-        else:
-            logger.info("[ghost:%s] no cached identity — sniffing via one UI send...",
-                        self.account)
+        # ALWAYS sniff fresh. x-hif-leim rotates and x-hif-dliq is per-device
+        # but was never captured by the old page.route sniffer. A stale cached
+        # signature replayed against a fresh token is the frozen-fingerprint
+        # mismatch that gets accounts silently banned. The sniff costs ONE UI
+        # send at session start (not per message) — cheap insurance.
+        try:
             await self._sniff_identity()
+        except Exception as exc:
+            cached = self._load_identity()
+            if cached:
+                self._identity = cached
+                logger.warning(
+                    "[ghost:%s] fresh sniff failed (%s) — falling back to "
+                    "cached identity (%d headers)", self.account, exc, len(cached))
+            else:
+                raise
 
     async def _launch(self) -> None:
         from playwright.async_api import async_playwright
@@ -564,20 +571,28 @@ class GhostSession:
         _save_identity_store(store)
 
     async def _sniff_identity(self) -> None:
-        """Drive a real UI send once, capture the full UI-only header set."""
+        """Drive a real UI send once and capture the FULL header set via CDP.
+
+        CDP `Network.requestWillBeSent` is used instead of `page.route` because
+        Playwright's route API does NOT surface `x-hif-dliq` — the SPA mints it
+        through a path route interception never sees. The old route-based
+        sniffer therefore cached an incomplete identity (leim but no dliq), and
+        replaying a partial signature is exactly what flagged the account.
+        """
         captured: list[dict] = []
-
-        async def on_route(route):
-            req = route.request
-            if "/api/v0/chat/completion" in req.url and req.method == "POST":
-                try:
-                    captured.append(dict(req.headers))
-                except Exception:
-                    pass
-            await route.continue_()
-
-        await self._page.route("**/api/v0/chat/completion", on_route)
+        cdp = await self._ctx.new_cdp_session(self._page)
         try:
+            await cdp.send("Network.enable")
+
+            def _on_req(params: dict) -> None:
+                req = params.get("request", {})
+                if ("/api/v0/chat/completion" in req.get("url", "")
+                        and req.get("method") == "POST"):
+                    captured.append(
+                        {(k or "").lower(): v for k, v in req.get("headers", {}).items()})
+
+            cdp.on("Network.requestWillBeSent", _on_req)
+
             sel = None
             for s in ('textarea:visible', '#chat-input', '[contenteditable="true"]'):
                 try:
@@ -595,23 +610,25 @@ class GhostSession:
             await self._page.wait_for_timeout(7000)
         finally:
             try:
-                await self._page.unroute("**/api/v0/chat/completion", on_route)
+                await cdp.detach()
             except Exception:
                 pass
 
         if not captured:
             raise RuntimeError("identity sniff failed — no completion POST captured")
-        ui_headers = {(k or "").lower(): v for k, v in captured[0].items()}
-        injected = {k: v for k, v in ui_headers.items() if k not in _SKIP_INJECT}
-        if "x-hif-leim" not in injected or "x-device-id" not in injected:
-            raise RuntimeError(
-                f"identity sniff incomplete — hif={'x-hif-leim' in injected} "
-                f"dev={'x-device-id' in injected}"
-            )
+        injected = {k: v for k, v in captured[0].items() if k not in _SKIP_INJECT}
+        missing = [h for h in ("x-hif-dliq", "x-hif-leim", "x-device-id")
+                   if h not in injected]
+        if missing:
+            raise RuntimeError(f"identity sniff incomplete — missing {missing}")
         self._identity = injected
         self._save_identity(injected)
-        logger.info("[ghost:%s] sniffed %d identity headers (hif len %d)",
-                    self.account, len(injected), len(injected.get("x-hif-leim", "")))
+        logger.info(
+            "[ghost:%s] sniffed %d identity headers (dliq=%d leim=%d dev=%s)",
+            self.account, len(injected),
+            len(injected.get("x-hif-dliq", "")),
+            len(injected.get("x-hif-leim", "")),
+            injected.get("x-device-id", "")[:8])
 
     # -- send ----------------------------------------------------------
 
@@ -671,6 +688,12 @@ class GhostSession:
                 "body": body,
                 "token": token,
                 "pow": pow_header,
+                # Inject the COMPLETE fresh identity sniffed from a real UI send
+                # this session (x-device-id, x-hif-dliq, x-hif-leim, x-client-*).
+                # A raw fetch() cannot mint these itself — they come from the
+                # SPA's request layer, which never runs for an out-of-band call.
+                # Omitting them (or replaying a stale partial set) is the
+                # fingerprint mismatch DeepSeek bans on.
                 "extraHeaders": self._identity,
                 "idleMs": int(idle_secs * 1000),
             }))

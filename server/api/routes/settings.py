@@ -1960,7 +1960,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
 
     from engine.config import get_provider_active_account as _get_active_for
 
-    def _browser_provider(pid: str, label: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    def _browser_provider(pid: str, label: str, accounts: list[dict[str, Any]], avail_key: str | None = None) -> dict[str, Any]:
         """Shape a browser-backed provider payload.
 
         Every provider owns its OWN active account — `active` is that provider's
@@ -1974,6 +1974,18 @@ async def list_accounts_by_provider() -> dict[str, Any]:
         """
         own_active = _get_active_for(pid)
         rows = [dict(a) for a in accounts]
+        # Flag whether this account holds a token for THIS provider, then sort
+        # available (token-holders) first. A tokenless profile is still shown
+        # and still selectable — you pick it, then refresh to mint a token.
+        for a in rows:
+            a["provider_available"] = bool(a.get(avail_key)) if avail_key else True
+
+        def _sort_key(a: dict[str, Any]) -> tuple:
+            num = a.get("num", -1)
+            num = num if isinstance(num, int) and num >= 0 else 9999
+            return (0 if a["provider_available"] else 1, num, a.get("name", ""))
+
+        rows.sort(key=_sort_key)
         names = {a["name"] for a in rows}
         active = own_active if own_active in names else None
         for a in rows:
@@ -1987,40 +1999,39 @@ async def list_accounts_by_provider() -> dict[str, Any]:
             "auto_switch_enabled": _auto_sw(pid),
         }
 
-    # Qwen: accounts that have WAF tokens
-    qwen_accounts = [a for a in browser_accounts if a["has_waf"]]
-    providers["qwen"] = _browser_provider("qwen", "Qwen", qwen_accounts)
+    # Every provider lists ALL browser profiles — token-holders first, then
+    # tokenless ones — so a brand-new profile can be selected before it has a
+    # token (select it, then refresh to mint one). Availability is flagged per
+    # provider via provider_available.
+    providers["qwen"] = _browser_provider("qwen", "Qwen", list(browser_accounts), avail_key="has_waf")
 
-    # z.ai (ZLM): browser-based, only accounts holding a z.ai token
-    zai_accounts = [a for a in browser_accounts if a.get("has_zai")]
-    providers["zai"] = _browser_provider("zai", "z.ai (GLM)", zai_accounts)
+    # z.ai (GLM)
+    providers["zai"] = _browser_provider("zai", "z.ai (GLM)", list(browser_accounts), avail_key="has_zai")
 
-    # Gemini (web): browser-based, only accounts holding a Google auth snapshot
-    gemini_accounts = [a for a in browser_accounts if a.get("has_gemini")]
-    providers["gemini_web"] = _browser_provider("gemini_web", "Gemini (Web)", gemini_accounts)
+    # Gemini (web)
+    providers["gemini_web"] = _browser_provider("gemini_web", "Gemini (Web)", list(browser_accounts), avail_key="has_gemini")
 
-    # MiMo Studio (Xiaomi): browser-based, only accounts holding a MiMo cookie snapshot
-    mimo_accounts = [a for a in browser_accounts if a.get("has_mimo")]
-    providers["mimo"] = _browser_provider("mimo", "MiMo (Xiaomi)", mimo_accounts)
+    # MiMo Studio (Xiaomi)
+    providers["mimo"] = _browser_provider("mimo", "MiMo (Xiaomi)", list(browser_accounts), avail_key="has_mimo")
 
     # Kimi (kimi.ai): browser-based. Lists every profile holding a kimi login —
     # both standard acc* profiles AND dedicated non-acc dirs (e.g.
     # browser-data-kimi), so the connector's own profile shows up too.
-    kimi_accounts = [a for a in browser_accounts if a.get("has_kimi")]
+    kimi_accounts = list(browser_accounts)
     kimi_accounts += [a for a in unregistered_browser_data if a.get("has_kimi")]
-    providers["kimi"] = _browser_provider("kimi", "Kimi", kimi_accounts)
+    providers["kimi"] = _browser_provider("kimi", "Kimi", kimi_accounts, avail_key="has_kimi")
 
     # ChatGPT (chatgpt.com): browser-based. Lists every profile holding a
     # chatgpt.com login — both standard acc* profiles AND dedicated non-acc dirs.
-    chatgpt_accounts = [a for a in browser_accounts if a.get("has_chatgpt")]
+    chatgpt_accounts = list(browser_accounts)
     chatgpt_accounts += [a for a in unregistered_browser_data if a.get("has_chatgpt")]
-    providers["chatgpt"] = _browser_provider("chatgpt", "ChatGPT", chatgpt_accounts)
+    providers["chatgpt"] = _browser_provider("chatgpt", "ChatGPT", chatgpt_accounts, avail_key="has_chatgpt")
 
     # Mistral (Web): browser-based. Lists every profile holding a chat.mistral.ai
     # session — both standard acc* profiles AND dedicated non-acc dirs.
-    mistral_web_accounts = [a for a in browser_accounts if a.get("has_mistral_web")]
+    mistral_web_accounts = list(browser_accounts)
     mistral_web_accounts += [a for a in unregistered_browser_data if a.get("has_mistral_web")]
-    providers["mistral_web"] = _browser_provider("mistral_web", "Mistral (Web)", mistral_web_accounts)
+    providers["mistral_web"] = _browser_provider("mistral_web", "Mistral (Web)", mistral_web_accounts, avail_key="has_mistral_web")
 
     # DeepSeek (scraper): headed-browser transport. It is its OWN browser
     # provider with its own active-account slot — separate from the DeepSeek
@@ -2028,7 +2039,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     # could hold a deepseek.com login).
     ds_scraper_accounts = list(browser_accounts)
     providers["deepseek_scraper"] = _browser_provider(
-        "deepseek_scraper", "DeepSeek (Scraper)", ds_scraper_accounts
+        "deepseek_scraper", "DeepSeek (Scraper)", ds_scraper_accounts, avail_key="has_ds"
     )
 
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
@@ -2053,19 +2064,23 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 "browser_data": _browser_tag,
             })
         _ds_active_idx = next((k["index"] for k in _ds_keys if k["active"]), None)
-        providers["deepseek"] = {
-            "type": "api_key",
-            "label": "DeepSeek",
-            "keys": _ds_keys,
-            "active_index": _ds_active_idx,
-            "available": bool(_ds_entries),
-            "auto_switch_enabled": _auto_sw("deepseek"),
-        }
+        # DeepSeek now offers browser-profile SELECTION (same shape as every
+        # other browser provider) so a tokenless profile can be chosen and then
+        # refreshed. The parsed JWT key list rides along for reference.
+        _ds_prov = _browser_provider(
+            "deepseek", "DeepSeek", list(browser_accounts), avail_key="has_ds")
+        _ds_prov["keys"] = _ds_keys
+        _ds_prov["active_index"] = _ds_active_idx
+        _ds_prov["available"] = bool(_ds_entries)
+        providers["deepseek"] = _ds_prov
     except Exception as exc:
         providers["deepseek"] = {
-            "type": "api_key",
+            "type": "browser",
             "label": "DeepSeek",
+            "accounts": [],
             "keys": [],
+            "active": None,
+            "pinned": None,
             "active_index": None,
             "available": False,
             "auto_switch_enabled": _auto_sw("deepseek"),

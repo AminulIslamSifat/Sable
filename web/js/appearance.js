@@ -102,19 +102,27 @@ window.safeCopy = async function(text) {
 
     // Every browser provider now owns its OWN active account — qwen included.
     // Mirrors _BROWSER_PROVIDERS_ALL in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
+    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek", "deepseek_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
-    function _renderBrowserCard(acc, active, providerId) {
+    function _renderBrowserCard(acc, active, providerId, token) {
       const isActive = acc.name === active;
       const isPinned = !!acc.pinned;
       const perProvider = _PER_PROVIDER_SWITCH.includes(providerId);
       const email = acc.label || acc.email || "unknown account";
       const size = acc.size_mb ? acc.size_mb + " MB" : "";
+      // Available = this profile holds a token for the provider. Tokenless
+      // profiles are still listed (below the available ones) and selectable.
+      const avail = acc.provider_available !== false;
       const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
       const borderColor = browserMissing ? 'var(--danger)' : isActive ? '#4ade80' : 'var(--border)';
       const hasBackup = acc.has_backup;
-      return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;">
+      // token = {masked, index} for providers whose browser data IS the token
+      // (e.g. DeepSeek JWTs). Rendered inline instead of a separate card.
+      const tokLine = token
+        ? `<div style="margin-top:5px;display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px;color:var(--text-dim);"><span style="opacity:0.6;">key</span><span style="color:var(--text);">${token.masked}</span></div>`
+        : '';
+      return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;${avail ? '' : 'opacity:0.72;'}">
         <div style="min-width:0;">
           <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
@@ -122,6 +130,7 @@ window.safeCopy = async function(text) {
             ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
             ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
             ${isPinned ? _badge('pinned') : ''}
+            ${avail ? '' : _badge('no token', true)}
             ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
             ${acc.has_waf ? _badge('qwen') : ''}
             ${acc.has_zai ? _badge('zai') : ''}
@@ -135,8 +144,10 @@ window.safeCopy = async function(text) {
             ${acc.captcha_blocked ? _badge('captcha', true) : ''}
             ${hasBackup ? _badge('backup') : ''}
           </div>
+          ${tokLine}
         </div>
         <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
+          ${token ? `<button class="icon-btn apikey-copy-btn" data-masked="${token.masked}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Copy Token</button>` : ''}
           <button class="icon-btn account-backup-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Backup</button>
           ${hasBackup ? `<button class="icon-btn account-restore-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Restore</button>` : ''}
           <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Rename</button>
@@ -494,7 +505,22 @@ window.safeCopy = async function(text) {
           if (!accMap.size) {
             html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No browser accounts found.</p>';
           } else {
-            for (const e of accMap.values()) html += _renderCombinedBrowserCard(e);
+            const _allEntries = Array.from(accMap.values());
+            const _anyTok = (e) => {
+              const a = e.acc || {};
+              return !!(a.has_waf || a.has_ds || a.has_zai || a.has_gemini || a.has_mimo || a.has_kimi || a.has_chatgpt || a.has_mistral_web);
+            };
+            const _withTok = _allEntries.filter(_anyTok);
+            const _noTok = _allEntries.filter(e => !_anyTok(e));
+            const _secHdr = (txt, n, warn) => `<div style="display:flex;align-items:center;gap:8px;margin:14px 0 6px 0;"><span style="font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${warn ? 'var(--danger)' : '#4ade80'};">${txt}</span><span style="font-size:10px;color:var(--text-dim);">${n}</span><div style="flex:1;height:1px;background:var(--border);"></div></div>`;
+            if (_withTok.length) {
+              html += _secHdr('Has token', _withTok.length, false);
+              for (const e of _withTok) html += _renderCombinedBrowserCard(e);
+            }
+            if (_noTok.length) {
+              html += _secHdr('No token · select then refresh', _noTok.length, true);
+              for (const e of _noTok) html += _renderCombinedBrowserCard(e);
+            }
           }
 
           if (apiProvs.length) {
@@ -531,11 +557,29 @@ window.safeCopy = async function(text) {
               html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
                 `Auto-Switch on Rate Limit / Captcha`,
                 `Automatically switch to another ${pd.label} account when blocked.`);
+              const _secHdr = (txt, n, warn) => `<div style="display:flex;align-items:center;gap:8px;margin:14px 0 6px 0;"><span style="font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${warn ? 'var(--danger)' : '#4ade80'};">${txt}</span><span style="font-size:10px;color:var(--text-dim);">${n}</span><div style="flex:1;height:1px;background:var(--border);"></div></div>`;
+              // Merge each parsed key into its browser card (DeepSeek JWTs are
+              // the browser data itself). Map keyed by the accN tag.
+              const _keys = pd.keys || [];
+              const _keyByAcct = {};
+              for (const k of _keys) {
+                if (k.browser_data) _keyByAcct[k.browser_data] = k;
+              }
+              const _tokFor = (acc) => _keyByAcct[acc.name.replace(/^browser-data-/, '')] || null;
               const accounts = pd.accounts || [];
+              const _avail = accounts.filter(a => a.provider_available !== false);
+              const _noTok = accounts.filter(a => a.provider_available === false);
               if (!accounts.length) {
-                html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No accounts with ' + pd.label + ' tokens found.</p>';
+                html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No browser profiles found.</p>';
               } else {
-                html += accounts.map(acc => _renderBrowserCard(acc, pd.active, pid)).join("");
+                if (_avail.length) {
+                  html += _secHdr('Available · has token', _avail.length, false);
+                  html += _avail.map(acc => _renderBrowserCard(acc, pd.active, pid, _tokFor(acc))).join("");
+                }
+                if (_noTok.length) {
+                  html += _secHdr('No token · select then refresh', _noTok.length, true);
+                  html += _noTok.map(acc => _renderBrowserCard(acc, pd.active, pid)).join("");
+                }
               }
             } else if (pd.type === "api_key") {
               html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
