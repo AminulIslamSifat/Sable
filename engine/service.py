@@ -1640,7 +1640,7 @@ class ChatService:
                                     if tool_results:
                                         yield {"type": "tool_result", "data": tool_results}
 
-                                    if phase in ("thinking_summary", "thinking"):
+                                    if phase in ("think", "thinking_summary", "thinking"):
                                         thoughts = extra.get("summary_thought", {}).get("content", [])
                                         if thoughts:
                                             # API sends cumulative array; only yield new paragraphs

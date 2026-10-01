@@ -186,7 +186,7 @@ async def stream_chat(
                         content = delta.get("content", "")
 
                         # Stream Thinking phase
-                        if phase in ("thinking_summary", "thinking"):
+                        if phase in ("think", "thinking_summary", "thinking"):
                             extra = delta.get("extra", {})
                             thoughts = extra.get("summary_thought", {}).get("content", [])
                             text = "".join(thoughts) if thoughts else content

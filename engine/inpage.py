@@ -680,7 +680,7 @@ async def ghost_stream_chat(
                 delta = choices[0].get("delta", {})
                 phase = delta.get("phase", "")
                 content = delta.get("content", "")
-                if phase in ("thinking", "thinking_summary"):
+                if phase in ("think", "thinking", "thinking_summary"):
                     extra = delta.get("extra", {})
                     th = extra.get("summary_thought", {}).get("content", [])
                     text = "".join(th) if th else content
@@ -744,7 +744,7 @@ def _parse_sse(d: dict, state: dict) -> list[dict]:
     delta = choices[0].get("delta", {})
     phase = delta.get("phase", "")
     content = delta.get("content", "")
-    if phase in ("thinking", "thinking_summary"):
+    if phase in ("think", "thinking", "thinking_summary"):
         extra = delta.get("extra", {})
         th = extra.get("summary_thought", {}).get("content", [])
         text = "".join(th) if th else content
