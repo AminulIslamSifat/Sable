@@ -350,7 +350,10 @@ class BaseBrowserEngine:
             except Exception:
                 pass
 
-        from engine.platform_paths import resolve_browser_for_profile, find_best_chrome, extra_browser_args
+        from engine.platform_paths import (
+            resolve_browser_for_profile, find_best_chrome, extra_browser_args,
+            get_account_ua_fingerprint,
+        )
         chrome_path = resolve_browser_for_profile(self.profile_name) or find_best_chrome()
         if not chrome_path:
             raise RuntimeError("No Chrome-compatible browser found")
@@ -368,6 +371,17 @@ class BaseBrowserEngine:
         ]
         if not self.viewer:
             cmd += ["--headless=new", "--window-size=1920,1080"]
+            # Headless Chromium advertises 'HeadlessChrome/<ver>' in its UA, and
+            # bot-aware CDNs (DeepSeek/CloudFront) 403 the request before the SPA
+            # ever loads. Launch with a headed UA derived from the profile's
+            # browser so both the request header AND navigator.userAgent look
+            # like a normal desktop Chrome. Mirrors engine/scraper/core.py.
+            try:
+                _ua, _ = get_account_ua_fingerprint(self.profile_name)
+                if _ua:
+                    cmd.append(f"--user-agent={_ua}")
+            except Exception as exc:
+                logger.warning("[%s] UA override failed: %s", self.spec.provider, exc)
 
         from engine.process_utils import popen_kwargs
         from engine import browser_governor
