@@ -259,6 +259,11 @@ class BaseBrowserEngine:
         self._last_response_text = ""
         self._sse_chunks: list[str] = []
         self._sse_done = asyncio.Event()
+        # Set by _on_sse_chunk, awaited by the capture loops. Without it the
+        # loops can only discover new chunks on their 0.3s poll tick, which is
+        # the single biggest source of perceived streaming lag versus a direct
+        # socket read (curl_cffi has no such floor).
+        self._sse_wake = asyncio.Event()
         self._sse_active_req_id: str | None = None
 
         self._prefix = re.sub(r"[^a-z0-9]", "", spec.provider.lower())[:6] or "scr"
@@ -279,6 +284,13 @@ class BaseBrowserEngine:
             return False
 
     async def _is_own_headed_session(self) -> bool:
+        """True if a live browser on our port is ours AND matches our launch mode.
+
+        The mode check matters in both directions: a headed engine must not
+        adopt a leftover headless browser (no window to drive), and a headless
+        engine must not adopt a leftover headed one. Without the second half,
+        headless mode killed and relaunched the browser on every single turn.
+        """
         if not await self.is_port_open():
             return False
         try:
@@ -289,9 +301,8 @@ class BaseBrowserEngine:
             remote_profile = data.get("userDataDir", "") or data.get("profile-path", "")
             if remote_profile and os.path.realpath(remote_profile) != os.path.realpath(self.user_data_dir):
                 return False
-            if "--headless" in (data.get("BrowserCommandLine", "") or ""):
-                return False
-            return True
+            remote_headless = "--headless" in (data.get("BrowserCommandLine", "") or "")
+            return remote_headless != bool(self.viewer)
         except Exception:
             return False
 
@@ -539,13 +550,35 @@ class BaseBrowserEngine:
     def _on_sse_chunk(self, chunk: str, req_id: str) -> None:
         self._sse_active_req_id = req_id
         self._sse_chunks.append(chunk)
+        # Wake the capture loop immediately — do not wait for its poll tick.
+        self._sse_wake.set()
 
     def _on_sse_done(self, req_id: str) -> None:
         self._sse_done.set()
+        self._sse_wake.set()
+
+    async def _wait_for_sse_activity(self, timeout: float = 0.3) -> None:
+        """Block until a chunk arrives, or *timeout* elapses.
+
+        Replaces a blind sleep in the capture loops so a delta is rendered the
+        moment the CDP binding fires instead of on the next poll tick. The
+        timeout stays as a floor because the stop button and the DOM fallback
+        still need periodic attention.
+        """
+        try:
+            await asyncio.wait_for(self._sse_wake.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        self._sse_wake.clear()
 
     def _reset_sse_capture(self) -> None:
-        self._sse_chunks.clear()
+        # REBIND, never .clear(). A capture task from a previous (stopped) turn
+        # may still hold a reference to the old list. Rebinding freezes that
+        # old list, so the orphan can only ever see its own turn's chunks and
+        # can never steal the NEXT turn's deltas.
+        self._sse_chunks = []
         self._sse_done.clear()
+        self._sse_wake.clear()
         self._sse_active_req_id = None
 
     def parse_sse_delta(self, raw_text: str) -> tuple[str, str]:
@@ -778,9 +811,16 @@ class BaseBrowserEngine:
                 self._reset_sse_capture()
 
                 # Mark existing turns old so capture cleanly finds the new one.
+                # The reasoning panels MUST be included: the capture reads them
+                # through `:not([data-ghost-old='true'])`, so an unmarked panel
+                # from a previous turn matches the filter, `.last` returns that
+                # stale text, and it is emitted as this turn's thinking.
+                _thoughts_sel = self.spec.sel("thoughts") or "div.ds-think-content"
                 await self.page.evaluate(
-                    "() => document.querySelectorAll('div.ds-message, div.ds-assistant-message-main-content')"
-                    ".forEach(el => el.dataset.ghostOld = 'true')"
+                    "(sel) => document.querySelectorAll("
+                    "'div.ds-message, div.ds-assistant-message-main-content, ' + sel)"
+                    ".forEach(el => el.dataset.ghostOld = 'true')",
+                    _thoughts_sel,
                 )
 
                 send_sel = self.spec.sel("send_btn")
@@ -842,6 +882,11 @@ class BaseBrowserEngine:
         That second effect is exactly the 'thinking mixed into the real message'
         symptom, most visible on the first turn where the gap is largest.
         """
+        # Pin the chunk list to THIS generation. send_msg() rebinds
+        # self._sse_chunks right before clicking Send; anything appended by an
+        # orphaned capture from a previous turn lands in the OLD list.
+        chunk_list = self._sse_chunks
+
         stop_sel = self.spec.sel("stop")
         thinking_sel = self.spec.sel("thoughts")
         response_sel = self.spec.sel("content")
@@ -864,7 +909,7 @@ class BaseBrowserEngine:
                 break
             if new_resp_sel and await self.page.locator(new_resp_sel).count() > 0:
                 break
-            if self._sse_chunks:
+            if chunk_list:
                 break
             if time.time() > deadline:
                 return ""
@@ -872,8 +917,8 @@ class BaseBrowserEngine:
 
         # Phase 2 — stream loop
         while stop_locator is not None and await stop_locator.is_visible():
-            while idx < len(self._sse_chunks):
-                content_delta, reasoning_delta = self.parse_sse_delta(self._sse_chunks[idx])
+            while idx < len(chunk_list):
+                content_delta, reasoning_delta = self.parse_sse_delta(chunk_list[idx])
                 idx += 1
                 if reasoning_delta:
                     net_reasoning += reasoning_delta
@@ -882,17 +927,29 @@ class BaseBrowserEngine:
                 if content_delta:
                     net_content += content_delta
                     if live_display:
-                        live_display(self._clean_garbage(net_content))
+                        # Cheap prefix strip only while streaming. _clean_garbage
+                        # runs four regex subs over the ENTIRE accumulated text,
+                        # so calling it per chunk made cost grow with answer
+                        # length (O(n^2) overall). _strip_ui is a couple of
+                        # startswith checks — enough to keep the "markdown /
+                        # Copy / Download" header out of the live view, with the
+                        # full clean applied once at the end.
+                        live_display(self._strip_ui(net_content))
 
             if thinking_sel and thoughts_callback and self.show_thoughts:
+                # Scoped to THIS turn's panel — see the ghost-old note in send_msg.
+                _think_new = f"{thinking_sel}:not([data-ghost-old='true'])"
                 try:
-                    stream = await self.page.locator(thinking_sel).last.inner_text() \
-                        if await self.page.locator(thinking_sel).count() > 0 else ""
+                    _tl = self.page.locator(_think_new)
+                    stream = await _tl.last.inner_text() if await _tl.count() > 0 else ""
                 except Exception:
                     stream = ""
                 if stream and stream != cached_thinking and stream != last_thinking:
                     cached_thinking = stream
-                    await thoughts_callback(self._clean_thoughts_text(stream))
+                    # Same reasoning as the answer path: cleaning the full
+                    # reasoning text on every tick is O(n^2). Raw while
+                    # streaming, cleaned once at the end.
+                    await thoughts_callback(stream)
 
             if not net_content and new_resp_sel:
                 try:
@@ -904,9 +961,9 @@ class BaseBrowserEngine:
                 if stream and stream != cached_response and stream != last_response:
                     cached_response = stream
                     if live_display:
-                        live_display(self._clean_garbage(stream))
+                        live_display(self._strip_ui(stream))
 
-            await asyncio.sleep(0.3)
+            await self._wait_for_sse_activity(0.3)
 
         # The stop button vanishing means the model finished *rendering*, but
         # the final XHR readyState=4 delta + done signal may still be in flight
@@ -920,12 +977,12 @@ class BaseBrowserEngine:
         # Drain trailing chunks (loop, not once — late chunks may still arrive).
         settle_deadline = time.time() + 1.5
         while True:
-            while idx < len(self._sse_chunks):
-                content_delta, reasoning_delta = self.parse_sse_delta(self._sse_chunks[idx])
+            while idx < len(chunk_list):
+                content_delta, reasoning_delta = self.parse_sse_delta(chunk_list[idx])
                 idx += 1
                 net_content += content_delta
                 net_reasoning += reasoning_delta
-            if idx >= len(self._sse_chunks) or time.time() > settle_deadline:
+            if idx >= len(chunk_list) or time.time() > settle_deadline:
                 break
             await asyncio.sleep(0.15)
 

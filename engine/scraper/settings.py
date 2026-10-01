@@ -67,9 +67,21 @@ def _load_settings() -> dict[str, Any]:
                 settings["engine_type"] = etype
                 break
 
-    # Hard requirement: scraper browser must be headed.
-    settings["headless"] = False
+    # Coerce to a real bool so a hand-edited JSON string ("true") can't leak
+    # through as truthy-text and silently invert the launch mode.
+    settings["headless"] = _as_bool(settings.get("headless"), False)
     return settings
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Lenient bool coercion for values coming from JSON or HTTP payloads."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_settings() -> dict[str, Any]:
@@ -79,6 +91,7 @@ def get_settings() -> dict[str, Any]:
     settings["engine_path"] = engine_path
     settings["engine_exists"] = Path(engine_path).exists()
     settings["engine_label"] = ENGINE_REGISTRY.get(engine_type, {}).get("label", engine_type)
+    settings["headless"] = _as_bool(settings.get("headless"), False)
     return settings
 
 
@@ -92,7 +105,7 @@ def list_engines() -> list[dict[str, str]]:
 
 def save_settings(settings: dict[str, Any]) -> None:
     clean = {key: settings.get(key, DEFAULT_SETTINGS[key]) for key in DEFAULT_SETTINGS}
-    clean["headless"] = False
+    clean["headless"] = _as_bool(clean.get("headless"), False)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(clean, f, indent=2, ensure_ascii=False)
 
@@ -113,8 +126,10 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
             pass
     if "show_thoughts" in payload:
         settings["show_thoughts"] = bool(payload.get("show_thoughts"))
+    # Headless is opt-in from the Account tab. Off (headed) stays the default
+    # so a first run is visible and debuggable.
+    if "headless" in payload:
+        settings["headless"] = _as_bool(payload.get("headless"), False)
 
-    # Never allow headless from the API/UI.
-    settings["headless"] = False
     save_settings(settings)
     return get_settings()

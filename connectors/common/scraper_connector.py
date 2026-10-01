@@ -8,16 +8,24 @@ fighting over a profile lock.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from connectors.common import browser_errors
+from connectors.common.browser_errors import BrowserError
 from connectors.common.browser_scraper import BaseBrowserEngine
 from engine.config import get_active_account, get_browser_data_dir
 
 logger = logging.getLogger("sable.scraper_connector")
+
+# How many times a turn may restart the browser before giving up. Three covers
+# the realistic transient cases (dead process, lost context, stalled send)
+# without hanging the chat on a genuinely broken profile.
+_RECOVERY_ATTEMPTS = 3
 
 
 def _chat_url_of(engine: BaseBrowserEngine) -> str | None:
@@ -164,6 +172,59 @@ class BaseScraperConnector:
         except Exception:
             pass
 
+    async def _recover_engine(self, scope: str, *, keep_chat_urls: bool = True) -> None:
+        """Tear down a wedged engine so the next _get_engine() rebuilds it.
+
+        This is the single restart primitive for every recoverable browser
+        failure. It (1) drops the engine from the cache, (2) runs its cleanup
+        which kills the browser process tree and releases the governor slot,
+        (3) purges any leftover process still holding the profile, and (4)
+        reclaims slots keyed to that profile.
+
+        Adopted (``::shared``) sub-engines ride the parent's Chromium, so their
+        cleanup only closes their own tab — the profile purge and slot reclaim
+        are skipped, otherwise we would murder the parent chat's browser.
+
+        ``_chat_urls`` is deliberately preserved so a capture-phase retry can
+        navigate back to the SAME upstream conversation instead of starting a
+        fresh chat and losing the in-flight answer.
+
+        Never raises: if recovery itself fails the caller's next attempt simply
+        hits the same error and the loop exhausts normally.
+        """
+        engine = self._engines.pop(scope, None)
+        adopted = getattr(engine, "_adopt_from", None) is not None if engine else False
+        profile_dir = getattr(engine, "user_data_dir", "") if engine else ""
+
+        if engine is not None:
+            try:
+                await engine.cleanup()
+            except Exception:
+                pass
+
+        if not adopted and profile_dir:
+            # Sweep stragglers: a half-dead Chromium still holding the profile
+            # would win the SingletonLock on relaunch and we would loop.
+            try:
+                from engine.process_utils import purge_profile_browsers
+                purge_profile_browsers(profile_dir)
+            except Exception:
+                pass
+            try:
+                from engine.browser_governor import release_slots_for_profile
+                release_slots_for_profile(profile_dir)
+            except Exception:
+                pass
+
+        if not keep_chat_urls:
+            for key in [k for k in self._chat_urls if k.startswith(scope + ":")]:
+                self._chat_urls.pop(key, None)
+
+        # Let the OS release the profile lock and the governor reap the slot
+        # before we immediately try to claim a new one.
+        await asyncio.sleep(1.5)
+        logger.info("[%s] engine %s torn down for recovery", self.backend_name, scope)
+
     @property
     def is_available(self) -> bool:
         try:
@@ -213,7 +274,17 @@ class BaseScraperConnector:
                 + "\n\n[USER MESSAGE]\n" + message
             )
 
-        try:
+        # Every recoverable browser failure (dead process, closed context,
+        # lost session, stalled send, empty capture) restarts the browser and
+        # retries. The turn is only ever SENT once — see _sent_upstream.
+        #
+        # _sent_upstream is the duplicate guard: once the message has reached
+        # the SPA, a retry must NOT send it again (the model would answer
+        # twice). Capture-phase failures therefore retry capture only, after
+        # navigating back to the same upstream conversation.
+        _sent_upstream = False
+        for _attempt in range(_RECOVERY_ATTEMPTS):
+          try:
             async with self._lock_for(scope):
                 engine = await self._get_engine(scope, account, browser_data_dir)
 
@@ -265,10 +336,27 @@ class BaseScraperConnector:
                     if expected_url:
                         ensure = getattr(engine, "ensure_chat_url", None)
                         if ensure is not None:
+                            ok = True
                             try:
-                                await ensure(expected_url)
+                                ok = await ensure(expected_url)
                             except Exception as exc:
+                                ok = False
                                 logger.warning("[%s] ensure_chat_url failed: %s", self.backend_name, exc)
+                            # The upstream chat is gone AND we landed on a login
+                            # wall: no restart fixes this, the account needs to
+                            # sign in again. Raise so the caller reports it as a
+                            # needs-user error instead of retrying forever.
+                            if ok is False:
+                                check = getattr(engine, "looks_logged_out", None)
+                                if callable(check) and check():
+                                    raise BrowserError(
+                                        browser_errors.NOT_LOGGED_IN,
+                                        f"browser profile is logged out (wanted {expected_url})",
+                                    )
+                                raise BrowserError(
+                                    browser_errors.SESSION_NOT_FOUND,
+                                    f"upstream chat session unavailable: {expected_url}",
+                                )
 
                 if thinking_mode in ("deepthink", "thinking", "fast"):
                     setter = getattr(engine, "set_thinking_mode", None)
@@ -299,14 +387,31 @@ class BaseScraperConnector:
                 except Exception as exc:
                     logger.debug("[%s] jitter skipped: %s", self.backend_name, exc)
 
-                sent = await engine.send_msg(message, raw=not inject_instructions)
-                if not sent:
-                    yield {"type": "error", "message": "Browser scraper could not send the message"}
-                    return
+                if not _sent_upstream:
+                    sent = await engine.send_msg(message, raw=not inject_instructions)
+                    if not sent:
+                        # A dead page or a stale composer is recoverable — raise
+                        # so the retry loop restarts the browser instead of
+                        # ending the turn on the spot.
+                        raise BrowserError(
+                            browser_errors.SEND_FAILED,
+                            "browser could not send the message",
+                        )
+                    _sent_upstream = True
 
+            _cap: dict[str, Any] = {}
             async with self._response_lock:
-                async for event in self._capture(engine):
+                async for event in self._capture(engine, _cap):
                     yield event
+
+            if _cap.get("empty"):
+                # The turn DID reach upstream but produced no text. Re-sending
+                # would duplicate the message, so _sent_upstream stays True and
+                # the retry only re-captures from the resumed conversation.
+                raise BrowserError(
+                    browser_errors.CAPTURE_EMPTY,
+                    "response stream produced no text",
+                )
 
             _done_url = _chat_url_of(engine)
             if _done_url and chat_id:
@@ -317,7 +422,8 @@ class BaseScraperConnector:
                 "parent_id": "scraper-" + uuid.uuid4().hex,
                 "chat_url": _done_url,
             }
-        except asyncio.CancelledError:
+            return
+          except asyncio.CancelledError:
             eng = self._engines.get(scope)
             if eng is not None:
                 try:
@@ -325,11 +431,43 @@ class BaseScraperConnector:
                 except Exception:
                     pass
             raise
-        except Exception as exc:
-            logger.exception("[%s] stream failed", self.backend_name)
-            yield {"type": "error", "message": type(exc).__name__ + ": " + str(exc)}
+          except Exception as exc:
+            code = browser_errors.classify(exc)
+            logger.warning(
+                "[%s] turn failed (attempt %d/%d, code=%s): %s",
+                self.backend_name, _attempt + 1, _RECOVERY_ATTEMPTS, code, exc,
+            )
+            last = _attempt + 1 >= _RECOVERY_ATTEMPTS
+            if last or code in browser_errors.NEEDS_USER or code not in browser_errors.RECOVERABLE:
+                if not (code in browser_errors.NEEDS_USER or code not in browser_errors.RECOVERABLE):
+                    logger.exception("[%s] stream failed after %d attempts", self.backend_name, _RECOVERY_ATTEMPTS)
+                yield {
+                    "type": "error",
+                    "message": f"{code}: {browser_errors.describe(code)}",
+                    "code": code,
+                    "needs_user": code in browser_errors.NEEDS_USER,
+                }
+                return
+            yield {
+                "type": "status",
+                "message": f"browser_recovering:{code}:attempt{_attempt + 2}",
+            }
+            # Preserve where the browser actually ended up. The SPA navigates to
+            # /a/chat/s/<id> the moment a response starts, so remembering it lets
+            # a capture-phase retry resume the SAME upstream conversation
+            # instead of opening a fresh chat and losing the answer.
+            _eng = self._engines.get(scope)
+            _u = _chat_url_of(_eng) if _eng is not None else None
+            if _u and chat_id:
+                self._chat_urls[self._url_key(scope, chat_id)] = _u
+            await self._recover_engine(scope)
+            continue
 
-    async def _capture(self, engine: BaseBrowserEngine) -> AsyncGenerator[dict[str, Any], None]:
+    async def _capture(
+        self,
+        engine: BaseBrowserEngine,
+        capture_out: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         answer_q: asyncio.Queue[str] = asyncio.Queue()
         think_q: asyncio.Queue[str] = asyncio.Queue()
         state = {"last_answer": "", "last_think": ""}
@@ -368,30 +506,57 @@ class BaseScraperConnector:
             engine.get_response(live_display=live_display, thoughts_callback=thoughts_callback)
         )
 
-        while not task.done():
-            yielded = False
+        # The capture task MUST die with this generator. If the frontend aborts
+        # the SSE stream (Stop button), this generator is closed at the `yield`
+        # below and the `while not task.done()` loop never resumes — leaving the
+        # task alive as an orphan. That orphan keeps polling the SPA and, worse,
+        # keeps draining engine._sse_chunks with a stale index, so the NEXT
+        # turn's chunks get split between the orphan and the real capture and
+        # the new answer comes back truncated or empty.
+        try:
+            while not task.done():
+                yielded = False
+                while not think_q.empty():
+                    yield {"type": "thinking", "text": think_q.get_nowait()}
+                    yielded = True
+                try:
+                    yield {"type": "answer", "text": await asyncio.wait_for(answer_q.get(), timeout=0.15)}
+                    yielded = True
+                except asyncio.TimeoutError:
+                    pass
+                if not yielded:
+                    await asyncio.sleep(0.05)
+
             while not think_q.empty():
                 yield {"type": "thinking", "text": think_q.get_nowait()}
-                yielded = True
-            try:
-                yield {"type": "answer", "text": await asyncio.wait_for(answer_q.get(), timeout=0.15)}
-                yielded = True
-            except asyncio.TimeoutError:
-                pass
-            if not yielded:
-                await asyncio.sleep(0.05)
+            while not answer_q.empty():
+                yield {"type": "answer", "text": answer_q.get_nowait()}
 
-        while not think_q.empty():
-            yield {"type": "thinking", "text": think_q.get_nowait()}
-        while not answer_q.empty():
-            yield {"type": "answer", "text": answer_q.get_nowait()}
+            answer = str(await task or "")
+        except (asyncio.CancelledError, GeneratorExit):
+            # Abort path: kill the in-flight capture so it stops touching the
+            # page and the chunk buffer. Best-effort — never mask the original
+            # exception.
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
 
-        answer = str(await task or "")
         tail = _delta(answer, state["last_answer"])
         if tail:
             yield {"type": "answer", "text": tail}
         elif answer and not state["last_answer"]:
             yield {"type": "answer", "text": answer}
+
+        # Report the final text so stream_chat can distinguish "the model
+        # replied nothing" from "we failed to capture what it said".
+        if capture_out is not None:
+            capture_out["answer"] = answer
+            capture_out["empty"] = not str(answer or "").strip()
 
     async def chat(self, message: str, **kwargs: Any) -> dict[str, Any]:
         thinking: list[str] = []

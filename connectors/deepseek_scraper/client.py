@@ -309,10 +309,22 @@ class DeepSeekScraperClient(BaseScraperConnector):
                 kill_existing=False,
                 adopt_from=adopt_from,
             )
+        # Headless is user-controlled from Settings → Account → DeepSeek
+        # (scraper). Default is headed (False) so a first run is visible.
+        from engine.scraper import get_settings as _get_scraper_settings
+        try:
+            _headless = bool(_get_scraper_settings().get("headless", False))
+        except Exception:
+            _headless = False
+        _show_thoughts = True
+        try:
+            _show_thoughts = bool(_get_scraper_settings().get("show_thoughts", True))
+        except Exception:
+            pass
         return DeepSeekScraperEngine(
             SPEC,
-            viewer=True,               # scraper must be headed
-            show_thoughts=True,
+            viewer=not _headless,      # False -> --headless=new in the launcher
+            show_thoughts=_show_thoughts,
             user_data_dir=user_data_dir,
             profile_name=account,
             kill_existing=True,        # kill prior browsers on this profile before opening

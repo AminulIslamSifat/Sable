@@ -147,10 +147,48 @@ async def update_scraper_settings_route(payload: dict[str, Any]) -> dict[str, An
     toggled_off = old_settings.get("enabled") and not settings.get("enabled")
     if engine_changed or toggled_off:
         await scraper_service.stop()
+
+    # Headless/headed change: the running browser keeps its launch flags, so
+    # the mode only takes effect on a fresh launch. Live scraper sessions that
+    # are held by connector engines are restarted for real; otherwise the user
+    # flips the toggle, sees nothing happen, and thinks it is broken.
+    mode_changed = bool(old_settings.get("headless", False)) != bool(settings.get("headless", False))
+    if mode_changed:
+        restarted = await _restart_scraper_connectors()
+        if restarted:
+            settings["restarted_engines"] = restarted
+
     if settings.get("enabled"):
         prelaunch_result = await scraper_service.prelaunch()
         settings["prelaunch"] = prelaunch_result
     return settings
+
+
+async def _restart_scraper_connectors() -> list[str]:
+    """Tear down every live scraper connector engine so the next turn relaunches.
+
+    A connector caches its engine per account; the engine owns the Chromium
+    process with the old launch flags. Releasing the cached engines is what
+    makes a headless/headed toggle actually take effect on a browser that is
+    already open. Returns the connectors that were reset.
+    """
+    reset: list[str] = []
+    try:
+        from connectors.deepseek_scraper.client import _clients as _ds_clients, _default_client as _ds_default
+    except Exception:
+        _ds_clients, _ds_default = {}, None
+
+    seen: set[int] = set()
+    for client in list(_ds_clients.values()) + ([_ds_default] if _ds_default else []):
+        if client is None or id(client) in seen:
+            continue
+        seen.add(id(client))
+        try:
+            await client.shutdown()
+            reset.append(getattr(client, "backend_name", "scraper"))
+        except Exception as exc:
+            logger.warning("scraper connector restart failed: %s", exc)
+    return reset
 
 @router.get("/api/settings/browser")
 async def get_browser_settings() -> dict[str, bool]:

@@ -51,6 +51,65 @@ window.safeCopy = async function(text) {
     // Track which provider is currently selected in the filter bar
     let _activeProviderFilter = localStorage.getItem("sable_provider_filter") || "all";
 
+    // Scraper launch mode for the DeepSeek (scraper) browser transport.
+    // Cached from /api/settings/scraper so the card can render without a
+    // second round-trip on every account refresh.
+    let _scraperHeadless = false;
+
+    async function loadScraperLaunchMode() {
+      try {
+        const res = await fetch("/api/settings/scraper");
+        if (!res.ok) return;
+        const data = await res.json();
+        _scraperHeadless = !!data.headless;
+      } catch (e) { /* keep last known value */ }
+    }
+    window.loadScraperLaunchMode = loadScraperLaunchMode;
+
+    // Headless/headed toggle for the deepseek_scraper connector. Changing it
+    // tears down any live scraper browsers server-side so the next turn
+    // relaunches with the new launch flags.
+    function _bindScraperHeadlessToggle(toggleId) {
+      const el = document.getElementById(toggleId);
+      if (!el) return;
+      el.addEventListener("change", async () => {
+        const headless = el.checked;
+        const label = el.closest("label");
+        const paint = (on) => {
+          if (!label) return;
+          const bg = label.children[1], knob = label.children[2];
+          if (bg) bg.style.background = on ? "var(--accent)" : "var(--border)";
+          if (knob) knob.style.left = on ? "18px" : "2px";
+        };
+        paint(headless);
+        el.disabled = true;
+        try {
+          const res = await fetch("/api/settings/scraper", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ headless }),
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const data = await res.json();
+          _scraperHeadless = !!data.headless;
+          const restarted = (data.restarted_engines || []).length;
+          showToast(
+            headless
+              ? "🕶️ DeepSeek (scraper) now runs headless" + (restarted ? " — browser restarted" : "")
+              : "🖥️ DeepSeek (scraper) now runs headed" + (restarted ? " — browser restarted" : ""),
+            "success"
+          );
+        } catch (e) {
+          showToast("Failed to change launch mode: " + e.message, "error");
+          el.checked = !headless;
+          paint(!headless);
+        } finally {
+          el.disabled = false;
+        }
+      });
+    }
+    window.bindScraperHeadlessToggle = _bindScraperHeadlessToggle;
+
     // Helper: render a toggle switch HTML
     function _renderToggle(id, enabled, labelText, descText) {
       return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
@@ -423,6 +482,9 @@ window.safeCopy = async function(text) {
 
     async function loadAccountProfiles() {
       if (!accountProfileCards) return;
+      // Keep the scraper launch-mode card in sync with the server before we
+      // render, so the toggle never shows a stale value after a settings POST.
+      await loadScraperLaunchMode();
       const filterBar = document.getElementById("providerFilterBar");
       accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>';
       try {
@@ -554,6 +616,11 @@ window.safeCopy = async function(text) {
             html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span>${clearAllBtn}</div>`;
 
             if (pd.type === "browser") {
+              if (pid === "deepseek_scraper") {
+                html += _renderToggle(`scraperHeadless_${pid}`, _scraperHeadless,
+                  `Run Headless (no browser window)`,
+                  `Launch the DeepSeek scraper browser without a visible window. Changing this restarts any open scraper browser.`);
+              }
               html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
                 `Auto-Switch on Rate Limit / Captcha`,
                 `Automatically switch to another ${pd.label} account when blocked.`);
@@ -610,6 +677,7 @@ window.safeCopy = async function(text) {
           for (const pid of showProvs) {
             _bindProviderToggle(`autoSwitch_${pid}`, pid);
           }
+          _bindScraperHeadlessToggle("scraperHeadless_deepseek_scraper");
         }
 
         // Bind browser account handlers + API key handlers + combined pills

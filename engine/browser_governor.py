@@ -629,6 +629,7 @@ async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT,
     priority = PRIORITY_CHAT if priority == PRIORITY_CHAT else PRIORITY_EPHEMERAL
     deadline = time.monotonic() + timeout
     warned = False
+    reclaim_attempts = 0
     while True:
         # Fast-fail: if every slot we hold is a chat browser there is nothing
         # to evict, so this claim can only ever wait. Surface the choice NOW
@@ -636,10 +637,22 @@ async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT,
         # timeout first. Applies to chat claims too — a chat cannot evict
         # another chat.
         if _cap_held_by_chat():
-            raise NoSlotAvailable(
-                f"all {MAX_BROWSERS} browser slots are held by live chat sessions",
-                slots=own_slot_snapshot(),
-            )
+            # Every slot we hold is a CHAT browser, so _try_claim() would never
+            # evict one. Before giving up, sweep for browsers that are actually
+            # gone: a slot whose pid died, or whose browser no longer answers on
+            # its profile. Those are reaped, which frees capacity without ever
+            # touching a live session. Retried up to the acquire timeout, since
+            # the holder may simply be mid-teardown.
+            if reclaim_attempts < 3 and _reclaim_own_dead_browsers():
+                reclaim_attempts += 1
+                continue
+            if time.monotonic() >= deadline:
+                raise NoSlotAvailable(
+                    f"all {MAX_BROWSERS} browser slots are held by live chat sessions",
+                    slots=own_slot_snapshot(),
+                )
+            await asyncio.sleep(0.5)
+            continue
         slot = _try_claim(owner, priority)
         if slot is not None:
             if slot.path is not None:
@@ -651,6 +664,11 @@ async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT,
             logger.info("browser limit reached (%d per Sable, all chat) — %s [%s] waiting for a free slot",
                         MAX_BROWSERS, owner, priority)
             warned = True
+        # Before declaring the cap full, try reclaiming our OWN slots whose
+        # browser is already dead. Bounded, so a healthy fleet never pays for it.
+        if reclaim_attempts < 3 and _reclaim_own_dead_browsers():
+            reclaim_attempts += 1
+            continue
         if time.monotonic() >= deadline:
             raise NoSlotAvailable(
                 f"no browser slot free after {timeout:.0f}s "
@@ -658,6 +676,76 @@ async def acquire(owner: str, *, timeout: float = ACQUIRE_TIMEOUT,
                 slots=own_slot_snapshot(),
             )
         await asyncio.sleep(0.5)
+
+
+def _reclaim_own_dead_browsers() -> bool:
+    """Free slots THIS process holds whose browser is already gone.
+
+    Only ever reaps a slot when there is positive evidence the browser is dead:
+    the pid is gone, or the profile has no live root browser process bound to
+    it. A slot with a live browser is left strictly alone — this function can
+    never kill a session the user is actively talking to.
+
+    Returns True if at least one slot was freed (caller should re-try the
+    claim immediately). Caller must NOT hold the slot lock.
+    """
+    try:
+        _SLOT_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return False
+
+    me = os.getpid()
+    freed = False
+    lock_path = _SLOT_DIR / ".lock"
+    try:
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                _prune_dead_locked()   # drops slots whose owner_pid is gone
+                for path, data in _own_slots_locked(me):
+                    bpid = int(data.get("browser_pid") or 0)
+                    if not bpid:
+                        # Claimed but never attached — a launch that failed
+                        # between claim and Popen. Safe to drop.
+                        path.unlink(missing_ok=True)
+                        freed = True
+                        continue
+                    if _pid_alive(bpid):
+                        # Pid is alive — but is it still OURS? A recycled pid or
+                        # a browser that closed its profile would otherwise pin
+                        # the slot forever.
+                        udd = data.get("user_data_dir")
+                        if udd:
+                            try:
+                                live = find_browser_pids(str(udd))
+                            except Exception:
+                                live = [bpid]
+                            if bpid not in live:
+                                logger.info(
+                                    "reclaiming slot %s — browser pid %d no longer "
+                                    "holds profile %s", path.name, bpid, udd,
+                                )
+                                _kill_tree(bpid)
+                                cg = _cgroup_base()
+                                if cg is not None:
+                                    _release_cgroup(str(cg / "sable-browsers" / f"browser-{bpid}"))
+                                path.unlink(missing_ok=True)
+                                freed = True
+                        continue
+                    # Pid is genuinely dead — reap it and free the slot.
+                    logger.info("reclaiming slot %s — browser pid %d is dead",
+                                path.name, bpid)
+                    cg = _cgroup_base()
+                    if cg is not None:
+                        _release_cgroup(str(cg / "sable-browsers" / f"browser-{bpid}"))
+                    path.unlink(missing_ok=True)
+                    freed = True
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except Exception as exc:
+        logger.debug("dead-browser reclaim skipped: %s", exc)
+        return False
+    return freed
 
 
 def _cap_held_by_chat() -> bool:

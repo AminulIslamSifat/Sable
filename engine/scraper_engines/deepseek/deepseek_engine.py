@@ -583,6 +583,39 @@ class GhostChat:
 
         # ponytail: DeepSeek unified — no model reapplication needed
 
+    # -- session / auth probing ------------------------------------------
+
+    def session_id_from_url(self, url: str) -> str | None:
+        """Extract the DeepSeek session id so two URLs can be compared.
+
+        chat.deepseek.com chat URLs look like /a/chat/s/<session_id>.
+        Comparing by id (not raw URL) means a trailing query string, a hash
+        fragment or a different host alias doesn't trigger a pointless
+        re-navigation. Returning None makes the base class fall back to an
+        exact URL comparison.
+        """
+        if not url:
+            return None
+        m = _SESSION_ID_RE.search(url)
+        return m.group(1) if m else None
+
+    def looks_logged_out(self) -> bool:
+        """Is the current tab sitting on DeepSeek's login wall?
+
+        Used by the connector's recovery loop to tell 'this chat is gone, a
+        restart will fix it' apart from 'this profile is signed out, no amount
+        of restarting will help'. URL-only, so it costs nothing.
+        """
+        try:
+            url = (getattr(self.page, "url", "") or "").lower()
+        except Exception:
+            return False
+        if not url or "chat.deepseek.com" not in url:
+            return False
+        if "/a/chat/s/" in url:
+            return False
+        return any(k in url for k in ("sign_in", "signin", "login", "/auth"))
+
     async def stop_generation(self) -> bool:
         try:
             btn = self.page.locator(PLATFORM["selectors"]["stop"]).first
@@ -742,9 +775,17 @@ class GhostChat:
                 # Reset network SSE capture for the new request
                 self._reset_sse_capture()
 
-                # Mark all existing messages as old so get_response can cleanly identify the new one
+                # Mark all existing turns as old so get_response can cleanly
+                # identify the new one. The THINK blocks MUST be included: the
+                # capture reads thinking through
+                # `div.ds-think-content:not([data-ghost-old='true'])`, so if
+                # previous turns' panels are left unmarked the :not() filter
+                # matches them, `.last` falls back to the PREVIOUS turn's
+                # reasoning, and that text is emitted as this turn's thinking.
                 await self.page.evaluate("""() => {
-                    document.querySelectorAll('div.ds-message, div.ds-assistant-message-main-content').forEach(el => {
+                    document.querySelectorAll(
+                        'div.ds-message, div.ds-assistant-message-main-content, div.ds-think-content'
+                    ).forEach(el => {
                         el.dataset.ghostOld = 'true';
                     });
                 }""")
@@ -1138,10 +1179,19 @@ class GhostChat:
         parses deltas for live display, then falls back to DOM for final text.
         """
         self._log_debug("deepseek_capture_started", mode="network+dom")
-        self._reset_sse_capture()
+
+        # DO NOT _reset_sse_capture() here. send_msg() already rebound
+        # self._sse_chunks immediately before clicking Send, and this method is
+        # invoked via asyncio.create_task — the gap is non-zero. Resetting here
+        # would (a) drop chunks that already arrived in that gap and (b) reset
+        # _sse_frag_type mid-stream, routing THINK deltas into the answer.
+        chunk_list = self._sse_chunks
 
         stop_sel = PLATFORM["selectors"].get("stop", "div[role='button']:has(path[d^='M2 4.88'])")
         thinking_sel = PLATFORM["selectors"].get("thoughts", "div.ds-think-content")
+        # Only THIS turn's reasoning panel: send_msg() tags every pre-existing
+        # panel with data-ghost-old before clicking Send.
+        thinking_new_sel = f"{thinking_sel}:not([data-ghost-old='true'])"
         response_sel = PLATFORM["selectors"].get("content", "div.ds-assistant-message-main-content")
 
         last_thinking = getattr(self, "_last_thinking", "")
@@ -1164,42 +1214,58 @@ class GhostChat:
             if await self.page.locator(new_response_sel).count() > 0:
                 break
             # Also check if SSE chunks started arriving (network may lead DOM)
-            if self._sse_chunks:
+            if chunk_list:
                 break
             if time.time() > wait_deadline:
                 console.print("[bold red]⏰ Timed out waiting for DeepSeek response (60s)[/bold red]")
-                return "", ""
+                # Must return a single str — get_response() is contractually
+                # str, and the caller does str(await task or ""). Returning a
+                # tuple here produced the literal text "('', '')" as the answer.
+                return ""
             await asyncio.sleep(0.3)
 
         # --- Phase 2: Stream loop — network-first, DOM fallback ---
         while await stop_locator.is_visible():
             # Process any new SSE chunks from network capture
-            while sse_chunk_index < len(self._sse_chunks):
-                raw_chunk = self._sse_chunks[sse_chunk_index]
+            while sse_chunk_index < len(chunk_list):
+                raw_chunk = chunk_list[sse_chunk_index]
                 sse_chunk_index += 1
                 content_delta, reasoning_delta = self._parse_sse_delta(raw_chunk)
 
                 if reasoning_delta:
                     net_reasoning_accum += reasoning_delta
                     if thoughts_callback and self.show_thoughts:
-                        await thoughts_callback(self._clean_thoughts_text(net_reasoning_accum))
+                        # Raw while streaming: _clean_thoughts_text rebuilds the
+                        # whole line list and runs regex over the FULL text, so
+                        # per-chunk cleaning is O(n^2). Applied once at the end.
+                        await thoughts_callback(net_reasoning_accum)
 
                 if content_delta:
                     net_content_accum += content_delta
                     if live_display:
-                        live_display(self._clean_garbage(net_content_accum))
+                        # _strip_ds (cheap prefix strip) while streaming instead
+                        # of _clean_garbage (four regex subs + a half-split
+                        # compare over the FULL accumulated text). The heavy
+                        # clean ran once per chunk, so cost grew with answer
+                        # length — that is what made long responses progressively
+                        # laggier than curl_cffi. Full clean happens once, below.
+                        live_display(self._strip_ds(net_content_accum))
 
-            # DOM fallback for thinking (network doesn't always carry reasoning)
+            # DOM fallback for thinking (network doesn't always carry reasoning).
+            # Scoped to THIS turn's panel — an unmarked `thinking_sel` with
+            # `.last` returns the previous turn's reasoning whenever the new
+            # turn has not rendered a panel yet, which is the leak.
             try:
-                thinking_stream = await self.page.locator(thinking_sel).last.inner_text() if await self.page.locator(thinking_sel).count() > 0 else ""
+                _tl = self.page.locator(thinking_new_sel)
+                thinking_stream = await _tl.last.inner_text() if await _tl.count() > 0 else ""
             except Exception:
                 thinking_stream = ""
 
             if thinking_stream != cached_thinking and thinking_stream != last_thinking:
                 cached_thinking = thinking_stream
                 if thoughts_callback and self.show_thoughts:
-                    cleaned_thoughts = self._clean_thoughts_text(thinking_stream)
-                    await thoughts_callback(cleaned_thoughts)
+                    # Raw while streaming (see the network path above).
+                    await thoughts_callback(thinking_stream)
 
             # DOM fallback for response if network hasn't delivered yet
             if not net_content_accum:
@@ -1212,13 +1278,16 @@ class GhostChat:
                 if response_stream != cached_response and response_stream != last_response_val:
                     cached_response = response_stream
                     if live_display:
-                        live_display(self._clean_garbage(response_stream))
+                        # _strip_ds already ran above; the final pass cleans the rest.
+                        live_display(response_stream)
 
-            await asyncio.sleep(0.3)
+            # Wake the instant a chunk lands instead of on the next 0.3s tick.
+            # This is the single biggest latency win over the poll loop.
+            await self._wait_for_sse_activity(0.3)
 
         # Drain any remaining SSE chunks after stop button disappears
-        while sse_chunk_index < len(self._sse_chunks):
-            raw_chunk = self._sse_chunks[sse_chunk_index]
+        while sse_chunk_index < len(chunk_list):
+            raw_chunk = chunk_list[sse_chunk_index]
             sse_chunk_index += 1
             content_delta, reasoning_delta = self._parse_sse_delta(raw_chunk)
             if content_delta:
@@ -1229,7 +1298,7 @@ class GhostChat:
         # --- Phase 3: Final capture — prefer network, fallback to DOM ---
         if net_content_accum:
             final_response = net_content_accum
-            self._log_debug("network_capture_success", chunks=len(self._sse_chunks), bytes=len(net_content_accum))
+            self._log_debug("network_capture_success", chunks=len(chunk_list), bytes=len(net_content_accum))
         else:
             # Full DOM fallback
             try:
@@ -1238,18 +1307,20 @@ class GhostChat:
             except Exception:
                 final_response = ""
             final_response = self._strip_ds(final_response)
-            self._log_debug("network_capture_empty_dom_fallback", chunks=len(self._sse_chunks))
+            self._log_debug("network_capture_empty_dom_fallback", chunks=len(chunk_list))
 
-        # Final thinking from DOM (most reliable for complete reasoning)
-        new_thinking_sel = f"{thinking_sel}:not([data-ghost-old='true'])"
+        # Final thinking from DOM (most reliable for complete reasoning).
+        # With the ghost-old tags now on think panels, a turn that produced no
+        # reasoning yields count 0 -> "" -> no callback, instead of re-emitting
+        # the previous turn's chain of thought.
         try:
-            loc = self.page.locator(new_thinking_sel)
+            loc = self.page.locator(thinking_new_sel)
             final_thinking = await loc.last.inner_text() if await loc.count() > 0 else ""
         except Exception:
             final_thinking = ""
 
-        # Trigger final callbacks
-        if thoughts_callback and self.show_thoughts and final_thinking:
+        # Trigger final callbacks — only when the text actually belongs to this turn.
+        if thoughts_callback and self.show_thoughts and final_thinking and final_thinking != last_thinking:
             await thoughts_callback(self._clean_thoughts_text(final_thinking))
         if live_display and final_response:
             live_display(self._clean_garbage(final_response))
