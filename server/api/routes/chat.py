@@ -1363,7 +1363,18 @@ async def chat(request: ChatRequest):
         result["memory_used"] = _memory_used
         return result
     async def _drain_sync_gen(gen):
-        """Run a sync generator in a thread pool, yield results back without blocking the event loop."""
+        """Run a sync generator in a thread pool, yield results back without blocking the event loop.
+
+        CANCELLATION-SAFE: the executor future is retained and cancelled in the
+        finally block. Without this, a client disconnect (Stop button) killed the
+        async reader while the worker thread kept iterating ``gen`` forever,
+        pushing into an orphaned queue — holding the upstream scraper/connector
+        locks and wedging the NEXT request at "processing" indefinitely.
+
+        On teardown we also close the sync generator so any ``finally`` inside it
+        (and the async producer it wraps) runs. A timeout on the queue read is a
+        last-resort backstop so a wedged producer can never hang the stream.
+        """
         queue: asyncio.Queue = asyncio.Queue()
         _sentinel = object()
 
@@ -1371,6 +1382,8 @@ async def chat(request: ChatRequest):
             try:
                 for item in gen:
                     queue.put_nowait(item)
+            except Exception as _run_exc:  # never let the thread die silently
+                logger.debug("_drain_sync_gen worker raised: %s", _run_exc)
             finally:
                 queue.put_nowait(_sentinel)
 
@@ -1381,12 +1394,57 @@ async def chat(request: ChatRequest):
         # Propagate ContextVars (chat_id etc.) into the executor thread — Python 3.14 doesn't do this automatically
         import contextvars as _cv
         _ctx = _cv.copy_context()
-        loop.run_in_executor(None, _ctx.run, _run)
-        while True:
-            item = await queue.get()
-            if item is _sentinel:
-                break
-            yield item
+        _fut = loop.run_in_executor(None, _ctx.run, _run)
+        try:
+            while True:
+                # Timeout is a backstop: a genuinely wedged producer (dead browser,
+                # stuck lock) would otherwise hang here forever. 300s is far beyond
+                # any real inter-chunk gap but short of "infinite".
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=300.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.error("_drain_sync_gen: producer stalled >300s — abandoning")
+                    break
+                if item is _sentinel:
+                    break
+                yield item
+        finally:
+            # Cancel the worker future, then try to close the sync generator so
+            # its (and the wrapped producer's) cleanup runs. Both are best-effort:
+            # the thread may be mid-iteration and close() may raise ValueError
+            # ("generator already executing"), which is harmless.
+            try:
+                _fut.cancel()
+            except Exception:
+                pass
+            try:
+                gen.close()
+            except (ValueError, RuntimeError, GeneratorExit):
+                pass
+            except Exception as _close_exc:
+                logger.debug("_drain_sync_gen gen.close() raised: %s", _close_exc)
+
+    async def _close_upstream_gen(gen) -> None:
+        """Close an async upstream generator (or its async iterator) safely.
+
+        Called before a retry REPLACES the in-flight upstream stream. Without it
+        the abandoned stream_events()/stream_chat() generator never runs its own
+        cancel/finally handler — leaving _response_lock / _lock held, so the next
+        retry (and the next user turn) deadlocks. Best-effort: a close racing an
+        in-flight __anext__ raises RuntimeError, which is harmless here.
+        """
+        if gen is None:
+            return
+        try:
+            _aclose = getattr(gen, "aclose", None)
+            if _aclose is not None:
+                await _aclose()
+            elif hasattr(gen, "close"):
+                gen.close()
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        except Exception as _exc:
+            logger.debug("_close_upstream_gen failed: %s", _exc)
 
     async def event_stream():
         nonlocal active_chat_id, _upstream_session_id
@@ -1448,6 +1506,10 @@ async def chat(request: ChatRequest):
         _turn_caps = TurnCapTracker()  # Per-turn caps on web searches and subagent spawns
         _round_tool_errors: dict[str, str] = {}  # tool_name → error_msg from previous round
         _all_tool_mem_used: list[dict[str, Any]] = []
+        # Bound before the loop so the cancel handler can always close whatever
+        # upstream generator is in flight (see except (CancelledError, GeneratorExit)).
+        _main_iter: Any = None
+        round_event_source: Any = None
         # Always send local chat_id to frontend (authoritative for new + existing chats)
         yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id})
         yield sse({"type": "status", "message": "processing"})
@@ -2114,6 +2176,7 @@ async def chat(request: ChatRequest):
                                         thinking_mode=request.thinking_mode,
                                         bdd=bdd,
                                     )
+                                    await _close_upstream_gen(_main_iter)
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
                                 _main_request_sent = False
@@ -2156,6 +2219,7 @@ async def chat(request: ChatRequest):
                                         thinking_mode=request.thinking_mode,
                                         bdd=bdd,
                                     )
+                                await _close_upstream_gen(_main_iter)
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
                                 _main_request_sent = False
@@ -2199,6 +2263,7 @@ async def chat(request: ChatRequest):
                                         thinking_mode=request.thinking_mode,
                                         bdd=bdd,
                                     )
+                                await _close_upstream_gen(_main_iter)
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
                                 _main_request_sent = False
@@ -2533,6 +2598,7 @@ async def chat(request: ChatRequest):
                                     thinking_mode=request.thinking_mode,
                                     bdd=bdd,
                                 )
+                                await _close_upstream_gen(_main_iter)
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
                                 _main_request_sent = False
@@ -3303,6 +3369,25 @@ async def chat(request: ChatRequest):
             # generator), and touch_chat() never ran — so the next user message
             # branched from a stale parent_id and the stopped tool loop was lost.
             logger.info("[event_stream] Client disconnected for chat %s — stopping upstream", active_chat_id)
+            # CRITICAL: close the in-flight upstream event generator. The async-for
+            # over round_event_source / _main_iter is abandoned on GeneratorExit —
+            # Python does NOT auto-close the async generator when we `raise` out of
+            # the awaiting frame. Without an explicit aclose(), the scraper's
+            # stream_events() never reaches its own cancel handler, so
+            # _response_lock / _lock stay held and the NEXT message deadlocks at
+            # "processing". Closing here lets stream_events' except-block fire
+            # _interrupt_generation() and release everything.
+            try:
+                _closer = _main_iter if _main_iter is not None else round_event_source
+                _aclose = getattr(_closer, "aclose", None)
+                if _aclose is not None:
+                    await _aclose()
+                elif hasattr(_closer, "close"):
+                    _closer.close()
+            except (asyncio.CancelledError, GeneratorExit):
+                pass
+            except Exception as _gen_close_exc:
+                logger.debug("[event_stream] upstream generator close on cancel failed: %s", _gen_close_exc)
             # Flush the in-flight round's tool events into skill_events BEFORE the
             # finally-block persist. Normally these are merged at end-of-round, but a
             # cancel mid-round skips that merge entirely — leaving the assistant

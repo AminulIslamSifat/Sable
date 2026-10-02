@@ -344,8 +344,24 @@ class ScraperEngine(ScraperLifecycle):
         if _accepts_arg(engine.get_response, "initial_count"):
             response_kwargs["initial_count"] = initial_count
 
+        # Acquire the response lock with a bounded wait. A previous turn that was
+        # cancelled mid-capture can (rarely) leave this held if its generator was
+        # never aclosed — in that case a bare `async with` deadlocks the NEXT
+        # message forever at "processing". Time out, force-replace the lock, and
+        # proceed instead of wedging.
         try:
-            async with self._response_lock:
+            await asyncio.wait_for(self._response_lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.error(
+                "Scraper response lock stuck >%ss — previous capture likely leaked it; force-resetting",
+                _LOCK_ACQUIRE_TIMEOUT,
+            )
+            # Rebuild the lock so the stale holder can no longer block anyone.
+            # The old holder (if it ever wakes) releases a lock nobody waits on.
+            self._response_lock = asyncio.Lock()
+            await self._response_lock.acquire()
+        try:
+            try:
                 scraper_state: dict[str, Any] = {}
                 async for event in self._stream_get_response(engine, response_kwargs, scraper_state):
                     yield event
@@ -361,6 +377,16 @@ class ScraperEngine(ScraperLifecycle):
                             "type": "status",
                             "message": "browser_scraper_empty_response",
                         }
+            finally:
+                # Always release the response lock — including on GeneratorExit /
+                # CancelledError. A bare `async with` released it on the exception
+                # path, but wrapping the acquire in wait_for means we hold it
+                # manually, so we MUST release it here or the next turn deadlocks.
+                if self._response_lock.locked():
+                    try:
+                        self._response_lock.release()
+                    except RuntimeError:
+                        pass
 
             new_parent = f"browser-{uuid.uuid4().hex}"
             chat_url_result = None

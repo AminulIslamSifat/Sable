@@ -615,6 +615,9 @@
     const _loadingChats = new Set();
 
     async function selectChat(chatId) {
+      // Picking a chat from the sidebar must ALWAYS bring the chat view to the
+      // front, regardless of which rail tab (settings/library/etc.) is active.
+      if (typeof window._sableFocusChatRail === "function") window._sableFocusChatRail();
       let meta = chatList.find(c => c.id === chatId);
 
       // If chat isn't in current chatList (e.g. search result from another project),

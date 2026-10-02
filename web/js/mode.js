@@ -636,6 +636,24 @@
     });
   }
 
+  /**
+   * Force the rail back to the Chat tab, no matter which rail tab is active.
+   * Reuses the real rail-button click so the active class AND the rail-switch
+   * event (which every non-chat panel listens to in order to close itself) fire.
+   * Called by selectChat / createChat so picking a chat or starting a new one
+   * always snaps you back to the chat view.
+   */
+  function focusChatRail() {
+    const rail = document.getElementById('activityRail');
+    if (!rail) return;
+    const chatBtn = rail.querySelector('.rail-btn[data-rail="chat"]');
+    if (!chatBtn) return;
+    // Only click when it isn't already the active tab — otherwise the button's
+    // own toggle logic would deselect it and fire a null target.
+    if (!chatBtn.classList.contains('active')) chatBtn.click();
+  }
+  window._sableFocusChatRail = focusChatRail;
+
   // ─── Rail Sidebar Toggle ───
 
   function setupRailSidebarToggle() {

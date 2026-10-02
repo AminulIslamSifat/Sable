@@ -2529,14 +2529,57 @@ async def create_account(payload: dict[str, Any] | None = None) -> dict[str, Any
 
 @router.delete("/api/settings/accounts/delete")
 async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
-    """Delete a browser-data profile directory (and its .bak if present)."""
+    """Delete a browser-data profile directory (and its .bak if present).
+
+    If the profile is currently pinned as the active account for one or more
+    providers, those providers are auto-switched to the next available account
+    FIRST (token-holders get priority), then the profile is deleted. No more
+    "Cannot delete an active profile" dead-end — deletion just works. Only a
+    provider with literally no alternative is unpinned (slot cleared).
+    """
     target_name = _validate_profile_name(payload.get("profile", ""))
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
-    # Block deleting a profile that is active for ANY provider.
-    if target_name in _active_account_names():
-        raise HTTPException(status_code=400, detail="Cannot delete an active profile. Switch first.")
+
+    # Which providers are pinned to this exact profile?
+    from engine.config import BROWSER_PROVIDERS, get_provider_active_account
+    blocking = [
+        p for p in BROWSER_PROVIDERS
+        if get_provider_active_account(p) == target_name
+    ]
+
+    switched: list[dict[str, str]] = []
+    if blocking:
+        # One scan gives every provider's account list with token flags, so we
+        # can pick a sensible replacement per provider.
+        catalog = await list_accounts_by_provider()
+        providers = catalog.get("providers", {})
+
+        def _pick_replacement(rows: list[dict[str, Any]]) -> str:
+            """Next best account: token-holders first, then lowest number."""
+            cands = [
+                a for a in rows
+                if a.get("name") != target_name and not a.get("exhausted")
+            ]
+            if not cands:
+                return ""  # no alternative → unpin this provider
+            cands.sort(key=lambda a: (
+                0 if a.get("provider_available") else 1,
+                a.get("num", 9999) if isinstance(a.get("num"), int) and a["num"] >= 0 else 9999,
+                a.get("name", ""),
+            ))
+            return cands[0]["name"]
+
+        for prov in blocking:
+            rows = (providers.get(prov) or {}).get("accounts", []) or []
+            repl = _pick_replacement(rows)
+            try:
+                # Reuse the real switch path → browser teardown + cache invalidation.
+                await switch_provider_account({"provider": prov, "profile": repl})
+                switched.append({"provider": prov, "to": repl or "(unpinned)"})
+            except Exception as exc:
+                logger.warning("auto-switch before delete failed for %s: %s", prov, exc)
 
     def _remove() -> None:
         shutil.rmtree(target_path)
@@ -2545,7 +2588,20 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
             shutil.rmtree(bak)
 
     await asyncio.to_thread(_remove)
-    return {"status": "ok", "deleted": target_name}
+
+    # Post-delete sweep: now that the dir is gone, any provider slot that still
+    # points at it (or auto-resolved to it) is force-cleared. get_next_available
+    # can no longer return it, so the slot lands on a real account or stays empty.
+    from engine.config import set_provider_active_account, _load_active_accounts
+    _store = _load_active_accounts()
+    for prov in BROWSER_PROVIDERS:
+        if _store.get(prov) == target_name or get_provider_active_account(prov) == target_name:
+            try:
+                set_provider_active_account(prov, "")
+            except Exception as exc:
+                logger.warning("post-delete unpin failed for %s: %s", prov, exc)
+
+    return {"status": "ok", "deleted": target_name, "switched": switched}
 
 
 @router.post("/api/settings/accounts/backup")

@@ -91,6 +91,9 @@
 
     async function createChat() {
       if (creating) return null;
+      // Starting a new chat must ALWAYS snap the view back to the chat tab,
+      // regardless of which rail tab is currently active.
+      if (typeof window._sableFocusChatRail === "function") window._sableFocusChatRail();
       setCreating(true);
       // Show loading overlay on current pane while creating new chat
       const loadingPane = activePane;

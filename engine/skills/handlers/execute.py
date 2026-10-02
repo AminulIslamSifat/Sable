@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from engine.platform_paths import home_dir, tmp_path, IS_WINDOWS
-from engine.process_utils import popen_kwargs
+from engine.process_utils import kill_process_tree, popen_kwargs
 from engine.skills.handlers.common import (
     DEFAULT_TIMEOUT,
     MAX_TIMEOUT,
@@ -131,7 +132,17 @@ def handle_execute_command(
         except Exception:
             pass
 
-    timer = threading.Timer(timeout, kill_process_group, args=(proc,))
+    # Timer fires a polite SIGTERM, then escalates to SIGKILL after a short
+    # grace period. The escalation matters: a child that traps SIGTERM and
+    # produces no output would otherwise leave the `for line in proc.stdout`
+    # read blocked forever (no output -> the in-loop deadline check never
+    # runs), and the generator would never yield a final result.
+    def _enforce_timeout() -> None:
+        kill_process_tree(proc.pid)                      # SIGTERM / taskkill graceful
+        time.sleep(2)                                    # grace period
+        kill_process_tree(proc.pid, sig=signal.SIGKILL)  # force kill, unstoppable
+
+    timer = threading.Timer(timeout, _enforce_timeout)
     timer.start()
     # Frontend/model protection: keep draining the subprocess pipe so the
     # child cannot block, but only emit a bounded amount of foreground output.
@@ -156,6 +167,15 @@ def handle_execute_command(
     try:
         if proc.stdout is not None:
             for line in proc.stdout:
+                # Hard deadline enforcement. The threading.Timer only *signals*
+                # the process group (SIGTERM) — a child that traps/ignores it,
+                # or holds the pipe open via a grandchild, would otherwise keep
+                # streaming output to the model long past the timeout. So we
+                # also check wall-clock here and SIGKILL, then stop reading.
+                if time.time() - started > timeout:
+                    kill_process_tree(proc.pid, sig=signal.SIGKILL)
+                    break
+
                 # Preserve editor command capture independently of UI output cap.
                 if editor_target is not None and editor_chars < _EDITOR_OUTPUT_CAP:
                     remaining_editor = _EDITOR_OUTPUT_CAP - editor_chars
