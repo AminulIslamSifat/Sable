@@ -78,10 +78,18 @@ class DeepSeekScraperEngine(BaseBrowserEngine):
         self._sse_seen_content = False
 
     def _route_delta(self, text: str) -> tuple[str, str]:
-        """Route a content delta to (answer, reasoning) based on fragment type."""
+        """Route a content delta to (answer, reasoning) based on fragment type.
+
+        Matching is substring + case-insensitive on purpose: DeepSeek has
+        shipped the reasoning fragment as ``THINK`` and (newer builds) as
+        ``thinking`` / ``reasoning``. An exact ``== "THINK"`` check silently
+        routed those reasoning deltas into the answer stream — the
+        'thinking rendered as the model response' symptom.
+        """
         if not text:
             return "", ""
-        if self._sse_frag_type == "THINK":
+        ftype = (self._sse_frag_type or "").upper()
+        if "THINK" in ftype or "REASON" in ftype:
             return "", text
         return text, ""
 
@@ -100,10 +108,26 @@ class DeepSeekScraperEngine(BaseBrowserEngine):
         p = obj.get("p")
         o = obj.get("o")
 
+        # Patch protocol: a standalone type-set op for the current fragment.
+        # DeepSeek occasionally announces the type before appending content; if
+        # this is dropped the following content deltas inherit the PREVIOUS
+        # fragment's type and reasoning leaks into the answer (or vice-versa).
+        if isinstance(p, str) and p.endswith("/type") and isinstance(v, str):
+            self._sse_frag_type = v
+            return "", ""
+
         # Patch protocol: fragments append — carries the fragment type + first text.
+        # MUST stay gated on ``o == "APPEND"`` and read only ``v[0]``.
+        # DeepSeek re-sends the WHOLE fragments array on SET/RESET/metadata
+        # ops; looping over every element (or accepting any op) re-emits all
+        # prior fragments on each event, which is the Nx content duplication.
         if p == "response/fragments" and o == "APPEND" and isinstance(v, list) and v:
             frag = v[0] if isinstance(v[0], dict) else {}
-            self._sse_frag_type = frag.get("type", "RESPONSE")
+            self._sse_frag_type = (
+                frag.get("type")
+                or frag.get("fragment_type")
+                or self._sse_frag_type
+            )
             return self._route_delta(frag.get("content", "") or "")
 
         # Patch protocol: incremental content on the current fragment.

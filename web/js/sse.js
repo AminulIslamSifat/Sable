@@ -1170,6 +1170,16 @@
       let currentThinkWrap = null;
       let currentThinkBody = null;
       let currentThinkSummary = null;
+      // Last thinking block of THIS round, kept so an early `answer` delta can
+      // not fork the reasoning into a second card. DeepSeek interleaves THINK
+      // and RESPONSE fragments, so the frontend's first `answer` event calls
+      // closeThinking() while reasoning is still arriving; without this the
+      // next `thinking` delta builds a duplicate card. Reset when a real new
+      // round starts (a tool/skill card appears) so t1,c1,t2,c2 is preserved.
+      let lastThinkWrap = null;
+      let lastThinkBody = null;
+      let lastThinkSummary = null;
+      let _thinkRoundDone = true;  // true => a new round may open a fresh block
 
       // ── Typewriter animation for thinking reveal ──
       // Shares the adaptive tuning of the main answer typewriter (_twNow →
@@ -1246,9 +1256,27 @@
       }
 
       function ensureThinkingBlock() {
+        // Already streaming into a block — nothing to do.
+        if (currentThinkWrap) return;
+        // SAME ROUND, block was only closed because an early `answer` delta
+        // arrived mid-reasoning. Reuse it instead of forking a second card.
+        // `_thinkRoundDone` is set true by addSkillStart()/nextSkillRound(),
+        // i.e. only when a tool card opens a genuinely new round — so the
+        // t1,c1,t2,c2 multi-round layout is untouched.
+        if (!_thinkRoundDone && lastThinkWrap && lastThinkWrap.isConnected) {
+          currentThinkWrap = lastThinkWrap;
+          currentThinkBody = lastThinkBody;
+          currentThinkSummary = lastThinkSummary;
+          const det = currentThinkWrap.querySelector("details");
+          if (det) det.open = true;
+          if (currentThinkSummary) {
+            currentThinkSummary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking…';
+            activateLucideIcons(currentThinkSummary);
+          }
+          return;
+        }
         // Create a fresh thinking block for the current round.
         // It will be placed just before the next skill command group or answer.
-        if (currentThinkWrap) return;
         // A new thinking block means a new round — the commands that follow it
         // must land in a fresh stack placed right after this block, not piled
         // into a previous round's stack. Gives the t1,c1,t2,c2 layout.
@@ -1264,6 +1292,11 @@
         currentThinkSummary = currentThinkWrap.querySelector("summary");
         turn.appendChild(currentThinkWrap);
         activateLucideIcons(currentThinkWrap);
+        // Remember it so a mid-round answer delta can reattach instead of fork.
+        lastThinkWrap = currentThinkWrap;
+        lastThinkBody = currentThinkBody;
+        lastThinkSummary = currentThinkSummary;
+        _thinkRoundDone = false;
       }
 
       function closeCurrentThinking() {
@@ -1272,9 +1305,21 @@
         if (currentThinkSummary) { currentThinkSummary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking'; activateLucideIcons(currentThinkSummary); }
         const det = currentThinkWrap.querySelector("details");
         if (det) det.open = false;
+        // Keep the closed block referenced so reasoning that resumes in the
+        // SAME round reuses it (see ensureThinkingBlock).
+        lastThinkWrap = currentThinkWrap;
+        lastThinkBody = currentThinkBody;
+        lastThinkSummary = currentThinkSummary;
         currentThinkWrap = null;
         currentThinkBody = null;
         currentThinkSummary = null;
+      }
+
+      // A tool/skill card marks the end of the current reasoning round: the
+      // NEXT thinking block must be a fresh card (t1,c1,t2,c2), never merged
+      // into the previous round's.
+      function markThinkRoundDone() {
+        _thinkRoundDone = true;
       }
 
       const skillCards = {};
@@ -1563,11 +1608,17 @@
           currentThinkSummary = currentThinkWrap.querySelector("summary");
           turn.appendChild(currentThinkWrap);
           activateLucideIcons(currentThinkWrap);
+          lastThinkWrap = currentThinkWrap;
+          lastThinkBody = currentThinkBody;
+          lastThinkSummary = currentThinkSummary;
+          _thinkRoundDone = false;
           _enqueueThink(text);
         },
         addSkillStart(evt) {
           hidePending();
           closeCurrentThinking();
+          // Tool card == new round boundary: next thinking gets its own block.
+          markThinkRoundDone();
           const group = ensureCommandGroup();
           group.style.display = "flex";
           const card = createSkillCard(evt);
@@ -1615,6 +1666,7 @@
           scrollBottom();
         },
         nextSkillRound() {
+          markThinkRoundDone();
           if (skillRounds[skillRounds.length - 1].length) skillRounds.push([]);
         },
         closeBurst() { _closeBurst(); },

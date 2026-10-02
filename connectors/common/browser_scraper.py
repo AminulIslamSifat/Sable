@@ -918,10 +918,16 @@ class BaseBrowserEngine:
 
         # Phase 1 — wait for generation to start
         deadline = time.time() + 60
+        new_think_sel = f"{thinking_sel}:not([data-ghost-old='true'])" if thinking_sel else ""
         while True:
             if stop_locator is not None and await stop_locator.is_visible():
                 break
             if new_resp_sel and await self.page.locator(new_resp_sel).count() > 0:
+                break
+            # Reasoning can render before any answer text; without this the
+            # loop sits on the 0.3s tick and the first thinking chunks are
+            # missed until the answer element appears.
+            if new_think_sel and await self.page.locator(new_think_sel).count() > 0:
                 break
             if chunk_list:
                 break
@@ -930,14 +936,27 @@ class BaseBrowserEngine:
             await asyncio.sleep(0.3)
 
         # Phase 2 — stream loop
+        # `streamed_reasoning` tracks whether ANY reasoning reached the callback
+        # this turn. It gates the DOM fallback + the final re-emit so the two
+        # sources (network SSE and the rendered panel) never interleave.
+        streamed_reasoning = False
         while stop_locator is not None and await stop_locator.is_visible():
             while idx < len(chunk_list):
                 content_delta, reasoning_delta = self.parse_sse_delta(chunk_list[idx])
                 idx += 1
                 if reasoning_delta:
                     net_reasoning += reasoning_delta
+                    streamed_reasoning = True
                     if thoughts_callback and self.show_thoughts:
-                        await thoughts_callback(self._clean_thoughts_text(net_reasoning))
+                        # RAW while streaming — never _clean_thoughts_text here.
+                        # That helper rebuilds the whole line list and re-joins
+                        # with blank lines, so its return value is NOT a
+                        # prefix-extension of the previous tick's value. The
+                        # connector converts each callback into a suffix delta by
+                        # common-prefix diff; a non-monotonic value makes that
+                        # diff return "" — chunks of thinking silently vanish and
+                        # the panel looks frozen. Cleaned once, at the end.
+                        await thoughts_callback(net_reasoning)
                 if content_delta:
                     net_content += content_delta
                     if live_display:
@@ -950,27 +969,22 @@ class BaseBrowserEngine:
                         # full clean applied once at the end.
                         live_display(self._strip_ui(net_content))
 
-            if thinking_sel and thoughts_callback and self.show_thoughts:
-                # Scoped to THIS turn's panel — see the ghost-old note in send_msg.
-                _think_new = f"{thinking_sel}:not([data-ghost-old='true'])"
-                try:
-                    _tl = self.page.locator(_think_new)
-                    stream = await _tl.last.inner_text() if await _tl.count() > 0 else ""
-                except Exception:
-                    stream = ""
+            # DOM reasoning fallback — ONLY while the network produced none.
+            # Interleaving both sources gives the connector two differently
+            # formatted copies of the same reasoning under one diff cursor.
+            if thinking_sel and thoughts_callback and self.show_thoughts and not streamed_reasoning:
+                stream = await self._read_thoughts_dom(thinking_sel)
                 if stream and stream != cached_thinking and stream != last_thinking:
                     cached_thinking = stream
-                    # Same reasoning as the answer path: cleaning the full
-                    # reasoning text on every tick is O(n^2). Raw while
-                    # streaming, cleaned once at the end.
+                    streamed_reasoning = True
                     await thoughts_callback(stream)
 
+            # DOM answer fallback — ONLY while the network produced none, and
+            # with the reasoning panel stripped out (it lives inside the
+            # assistant block; inner_text() used to return thought+answer glued
+            # together, which is how thinking showed up as the response).
             if not net_content and new_resp_sel:
-                try:
-                    stream = await self.page.locator(new_resp_sel).last.inner_text() \
-                        if await self.page.locator(new_resp_sel).count() > 0 else ""
-                except Exception:
-                    stream = ""
+                stream = await self._read_response_dom(response_sel)
                 stream = self._strip_ui(stream)
                 if stream and stream != cached_response and stream != last_response:
                     cached_response = stream
@@ -996,6 +1010,11 @@ class BaseBrowserEngine:
                 idx += 1
                 net_content += content_delta
                 net_reasoning += reasoning_delta
+                if reasoning_delta and thoughts_callback and self.show_thoughts:
+                    streamed_reasoning = True
+                    await thoughts_callback(net_reasoning)
+                if content_delta and live_display:
+                    live_display(self._strip_ui(net_content))
             if idx >= len(chunk_list) or time.time() > settle_deadline:
                 break
             await asyncio.sleep(0.15)
@@ -1019,12 +1038,15 @@ class BaseBrowserEngine:
                 final = ""
             final = self._strip_ui(final)
 
-        if thoughts_callback and self.show_thoughts:
+        # Final reasoning: only emit when NOTHING streamed this turn. Re-emitting
+        # the (reformatted) full text after a raw stream would arrive at the
+        # connector as a non-prefix value and either vanish or duplicate.
+        if thoughts_callback and self.show_thoughts and not streamed_reasoning:
             try:
-                tsel = f"{thinking_sel}:not([data-ghost-old='true'])" if thinking_sel else ""
-                tloc = self.page.locator(tsel) if tsel else None
-                final_thinking = await tloc.last.inner_text() if tloc and await tloc.count() > 0 else ""
-                if final_thinking:
+                final_thinking = await self._read_thoughts_dom(thinking_sel) if thinking_sel else ""
+                if not final_thinking:
+                    final_thinking = net_reasoning
+                if final_thinking and final_thinking != cached_thinking and final_thinking != last_thinking:
                     await thoughts_callback(self._clean_thoughts_text(final_thinking))
             except Exception:
                 pass
@@ -1032,10 +1054,69 @@ class BaseBrowserEngine:
         cleaned = self._clean_garbage(final)
         if live_display and cleaned:
             live_display(cleaned)
+        # Remember this turn's output so the NEXT turn's `!= last_thinking` /
+        # `!= last_response` guards have a real baseline. `_last_thinking` was
+        # initialised once and never updated, so a turn that produced no fresh
+        # reasoning fell straight through to `last_thinking == ""`, matched the
+        # previous turn's panel, and re-emitted it as this turn's thinking.
         self._last_response_text = cleaned
+        _prev_think = cached_thinking or net_reasoning
+        if _prev_think:
+            self._last_thinking = _prev_think
         return cleaned
 
     # -- text cleaning ---------------------------------------------------
+
+    async def _read_thoughts_dom(self, thinking_sel: str) -> str:
+        """Full reasoning text from THIS turn's panel.
+
+        Reads ``textContent`` (not ``inner_text``) so a collapsed or
+        height-clamped panel still yields the complete chain of thought instead
+        of the truncated on-screen preview.
+        """
+        if not thinking_sel:
+            return ""
+        sel = f"{thinking_sel}:not([data-ghost-old='true'])"
+        js = """(sel) => {
+            const els = document.querySelectorAll(sel);
+            if (!els.length) return '';
+            const el = els[els.length - 1];
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('button, .ds-icon-button').forEach(n => n.remove());
+            clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+            return (clone.textContent || '').trim();
+        }"""
+        try:
+            return await self.page.evaluate(js, sel) or ""
+        except Exception:
+            return ""
+
+    async def _read_response_dom(self, response_sel: str) -> str:
+        """Answer text from THIS turn's message block, reasoning panel removed.
+
+        The DeepSeek reasoning panel is nested inside the assistant message
+        block, so a naive ``inner_text()`` on the content element returns the
+        chain of thought glued to the answer — the 'thinking rendered as the
+        model response' symptom whenever the network path is empty.
+        """
+        if not response_sel:
+            return ""
+        sel = f"{response_sel}:not([data-ghost-old='true'])"
+        js = """(sel) => {
+            const els = document.querySelectorAll(sel);
+            if (!els.length) return '';
+            const el = els[els.length - 1];
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll(
+                '.ds-think-content, [class*="ds-think"], [class*="think-content"]'
+            ).forEach(n => n.remove());
+            clone.querySelectorAll('button, .ds-icon-button').forEach(n => n.remove());
+            return (clone.innerText || clone.textContent || '').trim();
+        }"""
+        try:
+            return await self.page.evaluate(js, sel) or ""
+        except Exception:
+            return ""
 
     def _strip_ui(self, text: str) -> str:
         text = re.sub(r"^text\n", "", text or "")
