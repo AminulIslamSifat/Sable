@@ -27,15 +27,18 @@ cap still holds and a warning is logged once.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
 import shutil
 import signal
+import tempfile
 import time
 import uuid
 from pathlib import Path
+
+from engine import filelock, process_utils
+from engine.platform_paths import IS_WINDOWS, pid_exists
 
 logger = logging.getLogger("sable.browser_governor")
 
@@ -56,7 +59,9 @@ ACQUIRE_TIMEOUT = float(os.environ.get("SABLE_BROWSER_SLOT_TIMEOUT", "120"))
 PRIORITY_CHAT = "chat"
 PRIORITY_EPHEMERAL = "ephemeral"
 
-_RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+# XDG_RUNTIME_DIR is the POSIX home for sockets/locks; on Windows (no XDG)
+# fall back to the platform temp dir rather than a bogus C:\tmp.
+_RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
 _SLOT_DIR = _RUNTIME / "sable-browser-slots"
 
 _cgroup_warned = False
@@ -67,15 +72,11 @@ _cgroup_warned = False
 def _pid_alive(pid: int) -> bool:
     if not pid or pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    # os.kill(pid, 0) is a POSIX-only liveness probe. On Windows any os.kill
+    # that is not CTRL_C/CTRL_BREAK *terminates* the target, so routing a
+    # liveness check through it would kill the very browser we're testing.
+    # pid_exists() uses /proc on POSIX and OpenProcess on Windows.
+    return pid_exists(pid)
 
 
 def _cmdline(pid: int) -> str:
@@ -136,6 +137,9 @@ def find_browser_pids(user_data_dir: str, *, roots_only: bool = True) -> list[in
     if not target:
         return []
 
+    if IS_WINDOWS:
+        return []  # no /proc to scan; slot table + pid liveness are the signals
+
     out: list[int] = []
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
@@ -159,18 +163,16 @@ def find_browser_pids(user_data_dir: str, *, roots_only: bool = True) -> list[in
 
 
 def _kill_tree(pid: int, *, sig: int = signal.SIGTERM) -> None:
-    try:
-        os.killpg(os.getpgid(pid), sig)
-    except Exception:
-        try:
-            os.kill(pid, sig)
-        except Exception:
-            pass
+    # process_utils owns cross-platform kill semantics: killpg on POSIX,
+    # taskkill /F /T on Windows. Never raises.
+    process_utils.kill_process_tree(pid, sig=sig)
 
 
 # ── cgroup v2 ──────────────────────────────────────────────────────────────
 
 def _cgroup_base() -> Path | None:
+    if IS_WINDOWS:
+        return None  # cgroup v2 is Linux-only; the governor degrades gracefully
     uid = os.getuid()
     cand = Path(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service")
     try:
@@ -352,7 +354,7 @@ def release_slots_for_profile(user_data_dir) -> int:
     try:
         _SLOT_DIR.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+            filelock.lock(lf)
             try:
                 for f in _SLOT_DIR.glob("slot-*.json"):
                     try:
@@ -370,7 +372,7 @@ def release_slots_for_profile(user_data_dir) -> int:
                     f.unlink(missing_ok=True)
                     removed += 1
             finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                filelock.unlock(lf)
     except Exception as exc:
         logger.warning("release_slots_for_profile failed (%s)", exc)
     if removed:
@@ -415,7 +417,7 @@ def _evict_slot_locked(path: Path, data: dict) -> bool:
     if bpid and _pid_alive(int(bpid)):
         logger.info("evicting idle browser pid %d (owner=%s)",
                     int(bpid), data.get("owner"))
-        _kill_tree(int(bpid), sig=signal.SIGKILL)
+        _kill_tree(int(bpid), sig=process_utils.SIGKILL)
     cg = _cgroup_base()
     if cg is not None and bpid:
         _release_cgroup(str(cg / "sable-browsers" / f"browser-{int(bpid)}"))
@@ -467,7 +469,7 @@ def touch(browser_pid: int) -> None:
     lock_path = _SLOT_DIR / ".lock"
     try:
         with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+            filelock.lock(lf)
             try:
                 for f in _SLOT_DIR.glob("slot-*.json"):
                     try:
@@ -483,7 +485,7 @@ def touch(browser_pid: int) -> None:
                         pass
                     return
             finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                filelock.unlock(lf)
     except Exception:
         pass
 
@@ -501,7 +503,7 @@ def _try_claim(owner: str, priority: str = PRIORITY_EPHEMERAL) -> "Slot | None":
     lock_path = _SLOT_DIR / ".lock"
     try:
         with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+            filelock.lock(lf)
             try:
                 _prune_dead_locked()
                 # Per-INSTANCE cap: only this process's slots count. A second
@@ -530,7 +532,7 @@ def _try_claim(owner: str, priority: str = PRIORITY_EPHEMERAL) -> "Slot | None":
                 }))
                 return Slot(slot_id, path, owner, priority)
             finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                filelock.unlock(lf)
     except Exception as exc:
         logger.warning("slot claim failed (%s) — launching unmanaged", exc)
         return Slot(f"unmanaged-{uuid.uuid4().hex[:8]}", None, owner, priority)
@@ -699,7 +701,7 @@ def _reclaim_own_dead_browsers() -> bool:
     lock_path = _SLOT_DIR / ".lock"
     try:
         with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+            filelock.lock(lf)
             try:
                 _prune_dead_locked()   # drops slots whose owner_pid is gone
                 for path, data in _own_slots_locked(me):
@@ -713,9 +715,11 @@ def _reclaim_own_dead_browsers() -> bool:
                     if _pid_alive(bpid):
                         # Pid is alive — but is it still OURS? A recycled pid or
                         # a browser that closed its profile would otherwise pin
-                        # the slot forever.
+                        # the slot forever. Proving that needs /proc scanning;
+                        # where it is unavailable (Windows) a live pid simply
+                        # keeps its slot rather than risk killing a live browser.
                         udd = data.get("user_data_dir")
-                        if udd:
+                        if udd and not IS_WINDOWS:
                             try:
                                 live = find_browser_pids(str(udd))
                             except Exception:
@@ -741,7 +745,7 @@ def _reclaim_own_dead_browsers() -> bool:
                     path.unlink(missing_ok=True)
                     freed = True
             finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                filelock.unlock(lf)
     except Exception as exc:
         logger.debug("dead-browser reclaim skipped: %s", exc)
         return False
@@ -820,7 +824,7 @@ def kill_slot(pid: int) -> bool:
     lock_path = _SLOT_DIR / ".lock"
     try:
         with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+            filelock.lock(lf)
             try:
                 for f in _SLOT_DIR.glob("slot-*.json"):
                     try:
@@ -832,11 +836,11 @@ def kill_slot(pid: int) -> bool:
                     _evict_slot_locked(f, data)
                     removed = True
             finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                filelock.unlock(lf)
     except Exception as exc:
         logger.warning("kill_slot(%d) failed: %s", pid, exc)
     if _pid_alive(pid):
-        _kill_tree(pid, sig=signal.SIGKILL)
+        _kill_tree(pid, sig=process_utils.SIGKILL)
     return removed or not _pid_alive(pid)
 
 
@@ -847,6 +851,12 @@ def reap_orphans() -> int:
     server dies mid-session and its browsers are re-parented to init, where
     nothing ever collects them again.
     """
+    if IS_WINDOWS:
+        # Orphan reaping identifies Sable's browsers by cgroup membership,
+        # which does not exist on Windows. Slot-liveness reclaim still runs
+        # via _reclaim_own_dead_browsers(); skip the /proc sweep entirely.
+        return 0
+
     _SLOT_DIR.mkdir(parents=True, exist_ok=True)
 
     tracked: set[int] = set()
@@ -910,7 +920,7 @@ def reap_orphans() -> int:
         except Exception:
             pass
         logger.info("reaping orphaned browser pid %d (ppid=%d)", pid, ppid)
-        _kill_tree(pid, sig=signal.SIGKILL)
+        _kill_tree(pid, sig=process_utils.SIGKILL)
         killed += 1
 
     return killed

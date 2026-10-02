@@ -11,7 +11,6 @@ meta/SRS stores. A rolling retention window keeps the file bounded.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import time
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from engine.config import LIBRARY_SESSIONS_PATH
+from engine.filelock import exclusive_lock
 
 logger = logging.getLogger("sable.study.sessions")
 
@@ -38,16 +38,8 @@ def _lock_path() -> Path:
 
 @contextmanager
 def _lock() -> Iterator[None]:
-    LIBRARY_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(_lock_path(), "w")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with exclusive_lock(_lock_path()):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 def _empty() -> dict[str, Any]:

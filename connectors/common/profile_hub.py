@@ -38,6 +38,9 @@ import json
 import logging
 import os
 import signal
+
+from engine import process_utils
+from engine.platform_paths import IS_WINDOWS, pid_exists
 import socket
 import time
 from pathlib import Path
@@ -94,13 +97,9 @@ def _lock_pid(profile: Path) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    # os.kill(pid, 0) is a POSIX-only probe; on Windows any os.kill except
+    # CTRL_C/CTRL_BREAK *terminates* the target. pid_exists() is cross-platform.
+    return pid_exists(pid)
 
 
 def _cmdline_tokens(pid: int) -> list[str]:
@@ -113,6 +112,8 @@ def _cmdline_tokens(pid: int) -> list[str]:
     negative. Normalize NULs to spaces and split on whitespace so both
     layouts parse identically.
     """
+    if IS_WINDOWS:
+        return []  # no /proc to read; cmdline-based ownership checks don't apply
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
@@ -322,10 +323,7 @@ async def _kill_profile_holders(profile_dir: Path,
     """
     victims = _profile_holder_pids(profile_dir)
     for vp in victims:
-        try:
-            os.kill(vp, signal.SIGTERM)
-        except OSError:
-            pass
+        process_utils.kill_process_tree(vp)
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
         if not any(_pid_alive(vp) for vp in victims):
@@ -333,10 +331,7 @@ async def _kill_profile_holders(profile_dir: Path,
         await asyncio.sleep(0.1)
     for vp in victims:
         if _pid_alive(vp):
-            try:
-                os.kill(vp, signal.SIGKILL)
-            except OSError:
-                pass
+            process_utils.kill_process_tree(vp, sig=process_utils.SIGKILL)
     await asyncio.sleep(0.2)
     _clear_singleton(profile_dir)
     # Free this profile's governor slots too. A killed browser whose slot was
@@ -634,20 +629,14 @@ class ProfileHub:
         """
         victims = _profile_holder_pids(self.profile_dir)
         for vp in victims:
-            try:
-                os.kill(vp, signal.SIGTERM)
-            except OSError:
-                pass
+            process_utils.kill_process_tree(vp)
         for _ in range(50):
             if not any(_pid_alive(vp) for vp in victims):
                 break
             await asyncio.sleep(0.1)
         for vp in victims:
             if _pid_alive(vp):
-                try:
-                    os.kill(vp, signal.SIGKILL)
-                except OSError:
-                    pass
+                process_utils.kill_process_tree(vp, sig=process_utils.SIGKILL)
         await asyncio.sleep(0.2)
         _clear_singleton(self.profile_dir)
         self._marker.unlink(missing_ok=True)
@@ -663,20 +652,14 @@ class ProfileHub:
     async def _reclaim(self) -> None:
         victims = _profile_helium_pids(self.profile_dir, self.helium_bin)
         for vp in victims:
-            try:
-                os.kill(vp, signal.SIGTERM)
-            except OSError:
-                pass
+            process_utils.kill_process_tree(vp)
         for _ in range(30):
             if not any(_pid_alive(vp) for vp in victims):
                 break
             await asyncio.sleep(0.1)
         for vp in victims:
             if _pid_alive(vp):
-                try:
-                    os.kill(vp, signal.SIGKILL)
-                except OSError:
-                    pass
+                process_utils.kill_process_tree(vp, sig=process_utils.SIGKILL)
         await asyncio.sleep(0.2)
         _clear_singleton(self.profile_dir)
         self._marker.unlink(missing_ok=True)

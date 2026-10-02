@@ -33,8 +33,10 @@ import uuid
 from pathlib import Path
 from typing import AsyncIterator
 
+from engine import process_utils
 from engine.config import NEW_CHAT_URL, URL, get_browser_data_dir, get_model_config
 from engine.payloads import build_body
+from engine.platform_paths import pid_exists
 
 logger = logging.getLogger("sable.inpage")
 
@@ -59,8 +61,7 @@ def _server_running() -> bool:
     pid_file = Path(__file__).resolve().parent.parent / ".sable_server.pid"
     try:
         pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)
-        return True
+        return pid_exists(pid)
     except Exception:
         return False
 
@@ -76,11 +77,10 @@ def _lock_pid(user_data_dir: str) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    # os.kill(pid, 0) is a POSIX-only liveness probe. On Windows any os.kill
+    # except CTRL_C/CTRL_BREAK *terminates* the target, so this check would
+    # kill the very process it is testing. pid_exists() is cross-platform.
+    return pid_exists(pid)
 
 
 # ---------------------------------------------------------------------------
@@ -333,17 +333,15 @@ class GhostEngine:
     async def _hard_cleanup(self) -> None:
         pid = _lock_pid(self.user_data_dir)
         if pid is not None and _pid_alive(pid):
-            import signal
-            try:
-                os.kill(pid, signal.SIGTERM)
-                for _ in range(10):
-                    await asyncio.sleep(0.3)
-                    if not _pid_alive(pid):
-                        break
-                else:
-                    os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+            # Cross-platform teardown: SIGTERM then SIGKILL on POSIX, taskkill
+            # /F /T on Windows. kill_process_tree never raises.
+            process_utils.kill_process_tree(pid)
+            for _ in range(10):
+                await asyncio.sleep(0.3)
+                if not _pid_alive(pid):
+                    break
+            if _pid_alive(pid):
+                process_utils.kill_process_tree(pid, sig=process_utils.SIGKILL)
         for p in (Path(self.user_data_dir) / "SingletonLock",
                   Path(self.user_data_dir) / ".ghost_engine.json"):
             try:

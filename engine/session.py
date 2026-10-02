@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
+from engine import process_utils
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
+from engine.platform_paths import pid_exists
 
 logger = logging.getLogger("sable.session")
 
@@ -289,10 +291,9 @@ class BrowserManager:
         as holding the profile lock. This is what caused the phantom
         "profile locked for no reason" warnings.
         """
-        try:
-            import signal
-            os.kill(pid, 0)  # raises OSError/ProcessLookupError if dead
-        except (OSError, ProcessLookupError):
+        # os.kill(pid, 0) is POSIX-only; on Windows it terminates the target.
+        # pid_exists() is the cross-platform liveness probe.
+        if not pid_exists(pid):
             return False
 
         # Linux: inspect /proc/<pid>/cmdline for a browser-ish executable.
@@ -456,25 +457,18 @@ class BrowserManager:
 
     async def _reclaim_profile(self) -> None:
         '''Kill every process holding this profile so we can launch our own.'''
-        import signal
         from connectors.common import profile_hub as _ph
         profile = Path(self.user_data_dir)
         victims = _ph._profile_holder_pids(profile)
         for pid in victims:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
+            process_utils.kill_process_tree(pid)
         for _ in range(30):
             if not any(_ph._pid_alive(p) for p in victims):
                 break
             await asyncio.sleep(0.1)
         for pid in victims:
             if _ph._pid_alive(pid):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+                process_utils.kill_process_tree(pid, sig=process_utils.SIGKILL)
         await asyncio.sleep(0.2)
         _ph._clear_singleton(profile)
         logger.debug("reclaimed %d process(es) on profile", len(victims))

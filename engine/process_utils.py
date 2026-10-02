@@ -19,6 +19,11 @@ import os
 
 IS_WINDOWS = sys.platform == "win32"
 
+# SIGKILL has no Windows equivalent. Callers that want a hard kill pass this;
+# on Windows it degrades to SIGTERM, which taskkill escalates to /F anyway
+# (see kill_process_tree).
+SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 # Windows process-creation flags
 _CREATE_NEW_PROCESS_GROUP = 0x00000200  # independent group for tree-kill
 _CREATE_NO_WINDOW = 0x08000000          # suppress the cmd.exe console popup
@@ -59,15 +64,15 @@ def kill_process_tree(
         return
 
     if IS_WINDOWS:
+        # taskkill /F /T is the only reliable way to kill a Windows process
+        # tree: without /F it merely posts WM_CLOSE, which browsers, daemons
+        # and console apps routinely ignore. Windows has no signal semantics,
+        # so the POSIX graceful-vs-force distinction does not apply here.
         try:
-            flag = "/F"  # force
-            if sig is not None and sig == signal.SIGTERM:
-                flag = ""  # graceful first on Windows
-            cmd = ["taskkill"]
-            if flag:
-                cmd.append(flag)
-            cmd.extend(["/T", "/PID", str(pid)])
-            subprocess.run(cmd, capture_output=True, timeout=timeout)
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True, timeout=timeout,
+            )
         except Exception:
             pass
         return

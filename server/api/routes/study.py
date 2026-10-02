@@ -12,7 +12,6 @@ frontend never has to re-parse the PDF to draw the sidebar.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import logging
 import math
@@ -26,6 +25,7 @@ from typing import Any, Callable, Iterator
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+from engine.filelock import exclusive_lock
 from engine.config import (
     LIBRARY_ACADEMICS_PATH,
     LIBRARY_EMBED_DIR,
@@ -410,15 +410,8 @@ def _meta_lock_path(doc_id: str) -> Path:
 def _meta_lock(doc_id: str) -> Iterator[None]:
     """Exclusive cross-process lock guarding a doc's read-modify-write cycle."""
     _ensure_dirs()
-    fh = open(_meta_lock_path(doc_id), "w")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with exclusive_lock(_meta_lock_path(doc_id)):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 def _update_meta(doc_id: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:

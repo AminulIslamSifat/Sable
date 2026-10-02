@@ -11,7 +11,6 @@ the read-modify-write cycle.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import re
 import time
@@ -19,6 +18,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
+
+from engine.filelock import exclusive_lock
 
 from engine.config import (
     LIBRARY_DIR,
@@ -88,29 +89,15 @@ def _ensure_dirs() -> None:
 @contextmanager
 def _meta_lock(doc_id: str) -> Iterator[None]:
     _ensure_dirs()
-    fh = open(_meta_lock_path(doc_id), "w")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with exclusive_lock(_meta_lock_path(doc_id)):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 @contextmanager
 def _note_lock() -> Iterator[None]:
     _ensure_dirs()
-    fh = open(_note_lock_path(), "w")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with exclusive_lock(_note_lock_path()):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 # ── Document meta ────────────────────────────────────────────────────────────

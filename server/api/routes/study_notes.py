@@ -16,7 +16,6 @@ passage remembers where it came from.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import re
@@ -25,6 +24,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+from engine.filelock import exclusive_lock
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -69,15 +70,8 @@ def _valid_id(note_id: str) -> bool:
 def _lock() -> Iterator[None]:
     """Exclusive cross-process lock guarding index read-modify-write cycles."""
     _ensure_dirs()
-    fh = open(_lock_path(), "w")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with exclusive_lock(_lock_path()):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 def _empty_index() -> dict[str, Any]:

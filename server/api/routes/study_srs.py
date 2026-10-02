@@ -13,7 +13,6 @@ An exclusive flock guards every read-modify-write of a deck card file, and
 writes go through a .tmp to replace() dance so a crash never leaves a
 half-written deck.
 '''
-import fcntl
 import json
 import logging
 import re
@@ -25,6 +24,7 @@ from typing import Any, Callable, Iterator
 
 from fastapi import APIRouter, HTTPException
 
+from engine.filelock import exclusive_lock
 from engine.config import LIBRARY_SRS_DIR
 
 router = APIRouter()
@@ -64,15 +64,8 @@ def _valid_id(value: str) -> bool:
 @contextmanager
 def _deck_lock(deck_id: str) -> Iterator[None]:
     _ensure_dirs()
-    fh = open(_lock_path(deck_id), 'w')
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with exclusive_lock(_lock_path(deck_id)):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 def _empty_index() -> dict:
