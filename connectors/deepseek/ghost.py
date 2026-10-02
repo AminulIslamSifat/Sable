@@ -43,6 +43,9 @@ import json
 import logging
 import os
 import signal
+
+from engine import process_utils
+from engine.platform_paths import pid_exists
 import socket
 import time
 from pathlib import Path
@@ -114,13 +117,9 @@ def _lock_pid(profile: Path) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    # os.kill(pid, 0) is POSIX-only and *terminates* the target on Windows.
+    # pid_exists() is the cross-platform liveness probe.
+    return pid_exists(pid)
 
 
 def _clear_singleton(profile: Path) -> None:
@@ -507,16 +506,13 @@ class GhostSession:
         if pid is not None and _pid_alive(pid):
             logger.warning("[ghost:%s] live orphan on profile (pid %d) — killing",
                            self.account, pid)
-            try:
-                os.kill(pid, signal.SIGTERM)
-                for _ in range(10):
-                    await asyncio.sleep(0.3)
-                    if not _pid_alive(pid):
-                        break
-                else:
-                    os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+            process_utils.kill_process_tree(pid)
+            for _ in range(10):
+                await asyncio.sleep(0.3)
+                if not _pid_alive(pid):
+                    break
+            if _pid_alive(pid):
+                process_utils.kill_process_tree(pid, sig=process_utils.SIGKILL)
         _clear_singleton(self.profile_dir)
         try:
             self._marker.unlink(missing_ok=True)

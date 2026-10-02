@@ -54,6 +54,8 @@ import signal
 import time
 from pathlib import Path
 
+from engine.platform_paths import pid_exists
+
 logger = logging.getLogger("sable.chatgpt_ghost")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
@@ -85,13 +87,9 @@ def _lock_pid(profile: Path) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    # os.kill(pid, 0) is POSIX-only and *terminates* the target on Windows.
+    # pid_exists() is the cross-platform liveness probe.
+    return pid_exists(pid)
 
 
 def _clear_singleton(profile: Path) -> None:

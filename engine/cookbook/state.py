@@ -9,6 +9,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
+from engine.platform_paths import pid_exists
+
 _STATE_FILE = Path(__file__).resolve().parent.parent.parent / "system" / "cookbook_state.json"
 _MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "system" / "models" / "llm"
 _LOGS_DIR = Path(__file__).resolve().parent.parent.parent / "system" / "cookbook_logs"
@@ -140,9 +142,7 @@ class CookbookState:
 
         for s in self.servers:
             if s.status == "running" and s.pid > 0:
-                try:
-                    os.kill(s.pid, 0)
-                except (ProcessLookupError, PermissionError):
+                if not pid_exists(s.pid):
                     s.status = "stopped"
                     s.stopped_at = time.time()
                     changed = True

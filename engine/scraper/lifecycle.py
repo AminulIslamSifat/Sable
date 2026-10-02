@@ -404,16 +404,14 @@ class ScraperLifecycle:
                 try:
                     from engine.process_utils import kill_process_tree
                     pid = chrome_proc.pid
-                    os.kill(pid, 0)  # check alive
-                    kill_process_tree(pid)  # cross-platform: SIGTERM on POSIX, taskkill on Windows
+                    # kill_process_tree is a no-op on an already-dead pid, so no
+                    # liveness probe is needed — and os.kill(pid, 0) would
+                    # terminate the target on Windows anyway.
+                    kill_process_tree(pid)  # SIGTERM on POSIX, taskkill on Windows
                     killed_pid = pid
                     await asyncio.sleep(3.0)
-                    try:
-                        os.kill(pid, 0)
-                        kill_process_tree(pid)  # escalate: already forceful on Windows
-                    except (ProcessLookupError, OSError):
-                        pass
-                except (ProcessLookupError, PermissionError, OSError):
+                    kill_process_tree(pid)  # escalate: already forceful on Windows
+                except OSError:
                     pass
 
         await self.stop(kill_browser=True)

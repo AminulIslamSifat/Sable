@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 from engine.cookbook.state import ServeTask, get_state
+from engine.platform_paths import pid_exists
 
 logger = logging.getLogger(__name__)
 
@@ -265,11 +266,7 @@ class ServeManager:
 
         alive = False
         if task.pid > 0:
-            try:
-                os.kill(task.pid, 0)
-                alive = True
-            except (ProcessLookupError, PermissionError):
-                alive = False
+            alive = pid_exists(task.pid)
 
         return {
             "id": task.id,

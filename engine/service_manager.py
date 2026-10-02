@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from engine.platform_paths import pid_exists
+
 IS_WINDOWS = sys.platform == "win32"
 _SERVICE_NAME = "sable.service"
 _PID_FILE = Path(__file__).resolve().parent.parent / ".sable_server.pid"
@@ -41,8 +43,7 @@ def _read_pid() -> int | None:
                 return pid
             return None
         else:
-            os.kill(pid, 0)
-            return pid
+            return pid if pid_exists(pid) else None
     except Exception:
         return None
 

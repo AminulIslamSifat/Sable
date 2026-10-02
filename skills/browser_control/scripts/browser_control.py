@@ -33,6 +33,7 @@ from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 
+from engine.platform_paths import pid_exists
 from engine.platform_paths import tmp_path as _tmp
 
 # IPC transport: Unix socket on POSIX, TCP loopback on Windows
@@ -830,11 +831,8 @@ def daemon_alive() -> bool:
     if not os.path.exists(PID_FILE):
         return False
     pid = int(Path(PID_FILE).read_text().strip())
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    # os.kill(pid, 0) is POSIX-only and terminates the target on Windows.
+    return pid_exists(pid)
 
 
 def main():

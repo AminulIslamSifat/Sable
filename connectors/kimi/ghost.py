@@ -63,6 +63,9 @@ import socket
 import time
 from pathlib import Path
 
+from engine import process_utils
+from engine.platform_paths import pid_exists
+
 logger = logging.getLogger("sable.kimi_ghost")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
@@ -237,13 +240,9 @@ def _lock_pid(profile: Path) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    # os.kill(pid, 0) is POSIX-only and *terminates* the target on Windows.
+    # pid_exists() is the cross-platform liveness probe.
+    return pid_exists(pid)
 
 
 def _clear_singleton(profile: Path) -> None:
@@ -620,20 +619,14 @@ class KimiGhostSession:
         """
         victims = _profile_helium_pids(self.profile_dir, self.helium_bin)
         for vp in victims:
-            try:
-                os.kill(vp, signal.SIGTERM)
-            except OSError:
-                pass
+            process_utils.kill_process_tree(vp)
         for _ in range(30):
             if not any(_pid_alive(vp) for vp in victims):
                 break
             await asyncio.sleep(0.1)
         for vp in victims:
             if _pid_alive(vp):
-                try:
-                    os.kill(vp, signal.SIGKILL)
-                except OSError:
-                    pass
+                process_utils.kill_process_tree(vp, sig=process_utils.SIGKILL)
         await asyncio.sleep(0.2)
         _clear_singleton(self.profile_dir)
         try:

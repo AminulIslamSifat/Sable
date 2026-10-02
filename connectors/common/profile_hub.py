@@ -37,7 +37,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 
 from engine import process_utils
 from engine.platform_paths import IS_WINDOWS, pid_exists
