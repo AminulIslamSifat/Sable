@@ -257,6 +257,11 @@ class BaseBrowserEngine:
 
         self._last_thinking = ""
         self._last_response_text = ""
+        # Did the last turn stream ANY reasoning? A thought-only turn (the
+        # model emits a chain of thought then stops with no answer text) is a
+        # live, healthy browser — the connector reads this to retry on the
+        # SAME browser instead of killing and relaunching it.
+        self._last_reasoning_seen = False
         self._sse_chunks: list[str] = []
         self._sse_done = asyncio.Event()
         # Set by _on_sse_chunk, awaited by the capture loops. Without it the
@@ -1041,11 +1046,11 @@ class BaseBrowserEngine:
         # Final reasoning: only emit when NOTHING streamed this turn. Re-emitting
         # the (reformatted) full text after a raw stream would arrive at the
         # connector as a non-prefix value and either vanish or duplicate.
+        dom_thinking = ""
         if thoughts_callback and self.show_thoughts and not streamed_reasoning:
             try:
-                final_thinking = await self._read_thoughts_dom(thinking_sel) if thinking_sel else ""
-                if not final_thinking:
-                    final_thinking = net_reasoning
+                dom_thinking = await self._read_thoughts_dom(thinking_sel) if thinking_sel else ""
+                final_thinking = dom_thinking or net_reasoning
                 if final_thinking and final_thinking != cached_thinking and final_thinking != last_thinking:
                     await thoughts_callback(self._clean_thoughts_text(final_thinking))
             except Exception:
@@ -1063,6 +1068,17 @@ class BaseBrowserEngine:
         _prev_think = cached_thinking or net_reasoning
         if _prev_think:
             self._last_thinking = _prev_think
+        # A reasoning-only turn is NOT a dead browser: the page streamed a
+        # chain of thought and simply produced no answer text. Flag it so the
+        # connector retries on this same live browser instead of tearing it
+        # down (kill + relaunch + re-navigate) for nothing.
+        #
+        # dom_thinking matters on a RE-CAPTURE: the SSE buffer was reset and
+        # the network produced nothing, yet this turn's reasoning panel is
+        # still in the DOM. Without folding it in, the flag flips back to False
+        # on the retry and the connector tears down the very browser it just
+        # decided to keep.
+        self._last_reasoning_seen = bool(_prev_think or dom_thinking)
         return cleaned
 
     # -- text cleaning ---------------------------------------------------

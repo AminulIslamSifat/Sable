@@ -28,6 +28,20 @@ logger = logging.getLogger("sable.scraper_connector")
 _RECOVERY_ATTEMPTS = 3
 
 
+class _ThoughtOnlyRetry(Exception):
+    """Internal signal: re-capture on the SAME browser, never tear it down.
+
+    A thought-only turn (the model streamed a full chain of thought and then
+    stopped with no answer text) is not a browser fault. The page is alive and
+    mid-conversation, and killing + relaunching it cannot conjure an answer
+    upstream never sent. This exception routes the retry to the no-teardown
+    path in ``stream_chat``.
+
+    Never escapes the module — ``stream_chat`` catches it before the generic
+    ``except Exception``.
+    """
+
+
 def _chat_url_of(engine: BaseBrowserEngine) -> str | None:
     """Best-effort current page URL for a browser engine."""
     page = getattr(engine, "page", None)
@@ -283,6 +297,15 @@ class BaseScraperConnector:
         # twice). Capture-phase failures therefore retry capture only, after
         # navigating back to the same upstream conversation.
         _sent_upstream = False
+        # Set by the _ThoughtOnlyRetry handler: the turn already reached
+        # upstream, so skip session-reset / re-navigation / file re-upload /
+        # jitter and go straight back to capturing on the SAME live browser.
+        # Re-navigating would RELOAD the page and wipe the completed turn's
+        # DOM; re-uploading would attach the files twice.
+        _capture_only = False
+        # Bound before the try so the _ThoughtOnlyRetry handler can reference it
+        # even if _get_engine() itself is what raised.
+        engine: BaseBrowserEngine | None = None
         for _attempt in range(_RECOVERY_ATTEMPTS):
           try:
             async with self._lock_for(scope):
@@ -298,7 +321,7 @@ class BaseScraperConnector:
                 # active_chat_id untouched and just send.
                 _shared_parent = _is_sub and not browser_data_dir and bool(_active) and not _active_is_sub
 
-                if chat_id and chat_id != _active:
+                if not _capture_only and chat_id and chat_id != _active:
                     if _shared_parent:
                         logger.warning(
                             "[%s] sub-chat %s on unscoped parent engine (active=%s) — "
@@ -331,7 +354,7 @@ class BaseScraperConnector:
                 # later rounds fall back to the URL remembered from the prior
                 # round's done event. On any session mismatch the engine
                 # navigates back to the expected chat BEFORE the send.
-                if chat_id:
+                if not _capture_only and chat_id:
                     expected_url = chat_url or self._chat_urls.get(self._url_key(scope, chat_id))
                     if expected_url:
                         ensure = getattr(engine, "ensure_chat_url", None)
@@ -358,7 +381,7 @@ class BaseScraperConnector:
                                     f"upstream chat session unavailable: {expected_url}",
                                 )
 
-                if thinking_mode in ("deepthink", "thinking", "fast"):
+                if not _capture_only and thinking_mode in ("deepthink", "thinking", "fast"):
                     setter = getattr(engine, "set_thinking_mode", None)
                     if setter is not None:
                         try:
@@ -366,13 +389,14 @@ class BaseScraperConnector:
                         except Exception as exc:
                             logger.warning("[%s] thinking toggle failed: %s", self.backend_name, exc)
 
-                for path in (files or []):
-                    try:
-                        ok = await engine.upload_file(path, has_msg=False)
-                        msg = "browser_file_attached:" + path if ok else "browser_file_attach_failed:" + path
-                        yield {"type": "status", "message": msg}
-                    except Exception as exc:
-                        yield {"type": "status", "message": "browser_file_attach_failed:" + str(exc)}
+                if not _capture_only:
+                    for path in (files or []):
+                        try:
+                            ok = await engine.upload_file(path, has_msg=False)
+                            msg = "browser_file_attached:" + path if ok else "browser_file_attach_failed:" + path
+                            yield {"type": "status", "message": msg}
+                        except Exception as exc:
+                            yield {"type": "status", "message": "browser_file_attach_failed:" + str(exc)}
 
                 # Anti-burst jitter (per-backend, configurable in Settings).
                 # Keyed by backend_name (e.g. deepseek_scraper) so the scraper is
@@ -380,14 +404,14 @@ class BaseScraperConnector:
                 # BEFORE sleeping so the UI shows it first.
                 try:
                     from connectors.common.jitter import jitter_for, sleep_jitter
-                    _jdelay = jitter_for(self.backend_name)
+                    _jdelay = 0 if _capture_only else jitter_for(self.backend_name)
                     if _jdelay:
                         yield {"type": "status", "message": f"{self.backend_name}_delay_{_jdelay:.1f}s"}
                         await sleep_jitter(_jdelay)
                 except Exception as exc:
                     logger.debug("[%s] jitter skipped: %s", self.backend_name, exc)
 
-                if not _sent_upstream:
+                if not _sent_upstream and not _capture_only:
                     sent = await engine.send_msg(message, raw=not inject_instructions)
                     if not sent:
                         # A dead page or a stale composer is recoverable — raise
@@ -408,6 +432,17 @@ class BaseScraperConnector:
                 # The turn DID reach upstream but produced no text. Re-sending
                 # would duplicate the message, so _sent_upstream stays True and
                 # the retry only re-captures from the resumed conversation.
+                #
+                # Thought-only turn: the model streamed a full chain of thought
+                # and then stopped with no answer text. The browser is alive,
+                # the page is exactly where we left it, and a relaunch cannot
+                # conjure an answer that upstream never sent — so flag the
+                # failure as NO-TEARDOWN and re-capture on this same engine.
+                if _cap.get("reasoning_seen"):
+                    # Do NOT tear the browser down — see _ThoughtOnlyRetry.
+                    raise _ThoughtOnlyRetry(
+                        "thought-only turn: reasoning streamed, no answer text",
+                    )
                 raise BrowserError(
                     browser_errors.CAPTURE_EMPTY,
                     "response stream produced no text",
@@ -423,6 +458,50 @@ class BaseScraperConnector:
                 "chat_url": _done_url,
             }
             return
+          except _ThoughtOnlyRetry as exc:
+            # Thought-only turn: reasoning streamed, no answer text. The
+            # browser is healthy and holds the live upstream conversation, so
+            # do NOT run _recover_engine (which kills the process tree and
+            # relaunches). Reset the SSE buffer so the re-capture does not
+            # replay this turn's stale chunks, then retry on the same engine.
+            logger.info(
+                "[%s] thought-only turn (attempt %d/%d) — re-capturing on the live browser: %s",
+                self.backend_name, _attempt + 1, _RECOVERY_ATTEMPTS, exc,
+            )
+            # Prefer the engine this turn actually used (still bound from the
+            # try block); fall back to the cache lookup.
+            _eng = engine if engine is not None else self._engines.get(scope)
+            if _eng is not None:
+                _reset = getattr(_eng, "_reset_sse_capture", None)
+                if callable(_reset):
+                    try:
+                        _reset()
+                    except Exception as _re:
+                        logger.debug("[%s] sse buffer reset failed: %s", self.backend_name, _re)
+            # Preserve the upstream URL so the re-capture resumes the SAME
+            # conversation instead of opening a fresh chat.
+            _u = _chat_url_of(_eng) if _eng is not None else None
+            if _u and chat_id:
+                self._chat_urls[self._url_key(scope, chat_id)] = _u
+            if _attempt + 1 >= _RECOVERY_ATTEMPTS:
+                yield {
+                    "type": "error",
+                    "message": f"{browser_errors.CAPTURE_EMPTY}: {browser_errors.describe(browser_errors.CAPTURE_EMPTY)}",
+                    "code": browser_errors.CAPTURE_EMPTY,
+                    "needs_user": False,
+                }
+                return
+            yield {
+                "type": "status",
+                "message": f"thought_only_recapture:attempt{_attempt + 2}",
+            }
+            # Next iteration must re-capture ONLY: skip session reset,
+            # navigation, file upload and jitter (all guarded on _capture_only).
+            _capture_only = True
+            # Brief settle so the SPA finishes painting the completed turn
+            # before we start reading the DOM again.
+            await asyncio.sleep(0.5)
+            continue
           except asyncio.CancelledError:
             eng = self._engines.get(scope)
             if eng is not None:
@@ -557,6 +636,10 @@ class BaseScraperConnector:
         if capture_out is not None:
             capture_out["answer"] = answer
             capture_out["empty"] = not str(answer or "").strip()
+            # A thought-only turn produced reasoning but no answer text. The
+            # browser is alive and mid-conversation — stream_chat must NOT kill
+            # it; it retries the capture on the same browser instead.
+            capture_out["reasoning_seen"] = bool(getattr(engine, "_last_reasoning_seen", False))
 
     async def chat(self, message: str, **kwargs: Any) -> dict[str, Any]:
         thinking: list[str] = []
