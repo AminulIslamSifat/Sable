@@ -463,6 +463,29 @@
     // addBotStreaming) and for replaying persisted skill_events when a chat's
     // history is reloaded (addHistoryMessage). Keeping one implementation
     // means history looks identical to what was shown live.
+    // Per-tool timeout budget (seconds) for the live card timer.
+    // The model can override per call via a `timeout` attr (execute_command,
+    // computer_use, spawn_agent, ...); otherwise this default table is used.
+    // 0 means "no known budget" — the timer still ticks, just without a cap.
+    const _TOOL_TIMEOUT_DEFAULTS = {
+      execute_command: 15,
+      computer_use: 30,
+      spawn_agent: 300,
+      generate_image: 180,
+      web_search: 15,
+      web_fetch: 30,
+      run_simulacra: 30,
+      view_file: 10,
+      grep: 15,
+      glob: 10,
+    };
+    function _toolTimeoutSec(name, attrs) {
+      const a = attrs || {};
+      const raw = a.timeout != null ? parseInt(a.timeout, 10) : NaN;
+      if (!isNaN(raw) && raw > 0) return raw;
+      return _TOOL_TIMEOUT_DEFAULTS[name] || 0;
+    }
+
     function createSkillCard(evt) {
       const card = document.createElement("div");
       card.className = "skill-card";
@@ -553,6 +576,28 @@
       const statusEl = document.createElement("span");
       statusEl.className = "skill-status";
       statusEl.textContent = "running…";
+
+      // ── Live elapsed/ timeout timer ──────────────────────────────────
+      // Ticks `elapsed / timeout` while the tool runs so long calls show real
+      // progress instead of a dead "running…". finishSkillCard freezes the
+      // final value and colours it green/red. Auto-stops after 30min as a
+      // leak guard for cards whose skill_end never arrives (page switch etc.).
+      const _tAttrs = (evt.data && (evt.data.attrs || evt.data)) || {};
+      const _timeoutSec = _toolTimeoutSec(name, _tAttrs);
+      card.dataset.timeoutSec = String(_timeoutSec);
+      const _t0 = performance.now();
+      const _tick = () => {
+        const secs = (performance.now() - _t0) / 1000;
+        if (secs > 1800) { clearInterval(card._tickId); card._tickId = null; return; }
+        if (_timeoutSec > 0) {
+          statusEl.textContent = `${secs.toFixed(1)}s / ${_timeoutSec}s`;
+          statusEl.style.color = secs > _timeoutSec ? "var(--danger)" : "";
+        } else {
+          statusEl.textContent = `${secs.toFixed(1)}s`;
+        }
+      };
+      _tick();
+      card._tickId = setInterval(_tick, 100);
 
       const toggleBtn = document.createElement("button");
       toggleBtn.className = "skill-toggle-btn";
@@ -655,7 +700,16 @@
     function finishSkillCard(card, evt) {
       const status = card.querySelector(".skill-status");
       const pre = card.querySelector(".skill-output");
-      status.textContent = (evt.ok ? "done · " : "failed · ") + (evt.duration_ms ?? 0) + "ms";
+      // Stop the live timer and freeze the final value. Shows the timeout
+      // budget when known (`done · 2.4s / 15s`), plain ms otherwise.
+      if (card._tickId) { clearInterval(card._tickId); card._tickId = null; }
+      const _toSec = parseFloat(card.dataset.timeoutSec || "0") || 0;
+      if (_toSec > 0) {
+        const _elapsedS = ((evt.duration_ms ?? 0) / 1000).toFixed(1);
+        status.textContent = (evt.ok ? "done · " : "failed · ") + `${_elapsedS}s / ${_toSec}s`;
+      } else {
+        status.textContent = (evt.ok ? "done · " : "failed · ") + (evt.duration_ms ?? 0) + "ms";
+      }
       status.style.color = evt.ok ? "var(--ok)" : "var(--danger)";
       // Show agent_id in the card name after spawn completes
       const result = evt.result || {};

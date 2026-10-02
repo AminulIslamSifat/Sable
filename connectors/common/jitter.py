@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,12 @@ _DEFAULT_PROVIDERS: dict[str, bool] = {
 }
 
 PROVIDERS = tuple(_DEFAULT_PROVIDERS.keys())
+
+# Per-provider monotonic timestamp of the last *projected* upstream send.
+# Backs the smart-skip logic: if enough wall-clock time has already passed since
+# the last send, the burst is broken by natural pacing (slow model, tool
+# execution, user stepped away) and artificial jitter would be pointless.
+_last_send_ts: dict[str, float] = {}
 
 
 def get_jitter_config() -> dict[str, Any]:
@@ -100,13 +107,38 @@ def get_jitter_config() -> dict[str, Any]:
 
 
 def jitter_for(provider: str) -> float:
-    """Return the delay (seconds) to apply for a provider, or 0.0 if disabled."""
+    """Return the anti-burst delay (seconds) for a provider, or 0.0 to skip.
+
+    Skips (returns 0.0) when jitter is disabled for the provider *or* when the
+    gap since the last upstream send already exceeds the average jitter window
+    ``(min + max) / 2``. In that case the burst has already been broken by
+    natural pacing — model generation, tool execution, or a user who stepped
+    away — so an artificial delay only slows the turn for nothing.
+
+    Each call records the *projected* send time (now + delay) so the next call
+    measures the true request-to-request interval, not the check-to-check gap.
+    """
     cfg = get_jitter_config()
     if not cfg["enabled"]:
         return 0.0
     if not cfg["providers"].get(provider, False):
         return 0.0
-    return random.uniform(cfg["min"], cfg["max"])
+
+    now = time.monotonic()
+    avg = (cfg["min"] + cfg["max"]) / 2.0
+    last = _last_send_ts.get(provider)
+
+    if last is not None and avg > 0 and (now - last) >= avg:
+        _last_send_ts[provider] = now  # nothing to throttle — mark and move on
+        logger.debug(
+            "[%s] jitter skipped: %.1fs since last send (avg window %.1fs)",
+            provider, now - last, avg,
+        )
+        return 0.0
+
+    delay = random.uniform(cfg["min"], cfg["max"])
+    _last_send_ts[provider] = now + delay  # projected send time
+    return delay
 
 
 async def sleep_jitter(delay: float) -> None:

@@ -53,7 +53,7 @@ _BARE_TOOL_RE = re.compile(
 # Also catches bare fragments like "action>" or "tool_call>" that result
 # from </ being consumed by partial-tag detection in a prior chunk.
 _ORPHAN_TAG_RE = re.compile(
-    r'(?:</?\s*(?:action|tool_calls?)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?)\s*>)',
+    r'(?:</?\s*(?:action|tool_calls?|invoke|parameter)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?)\s*>)',
     re.IGNORECASE,
 )
 
@@ -77,7 +77,15 @@ _KW = r'(?:tool_calls|invoke|parameter)'
 # from an optional </ or < prefix through the keyword and any trailing attrs/>, 
 # OR we match the bare pipe-DSML-pipe-keyword sequence with optional attrs.
 _ORPHAN_DSML_RE = re.compile(
-    rf'</?<?{_PO}DSML{_P}{_KW}(?:\s[^>]*)?>?',
+    rf'</?<?{_PO}DSML{_P}\s*{_KW}(?:\s[^>\n]*)?>?',
+    re.IGNORECASE,
+)
+
+# Dangling DSML marker: pipe-DSML-pipe prefix with NO keyword. The keyword
+# (and its angle brackets) may have been consumed by a prior strip pass, or
+# the model emitted a bare `</||DSML||`. Strips just the marker.
+_DANGLING_DSML_RE = re.compile(
+    rf'</?{_PO}DSML{_P}\s*>?',
     re.IGNORECASE,
 )
 
@@ -86,17 +94,24 @@ _ORPHAN_DSML_RE = re.compile(
 # Only strips the marker + XML-like attributes (name="...", string="..."),
 # NOT arbitrary trailing prose.
 _BARE_DSML_MARKER_RE = re.compile(
-    rf'{_PO}DSML{_P}{_KW}(?:\s+(?:name|string)\s*=\s*"[^"]*")*',
+    rf'{_PO}DSML{_P}\s*{_KW}(?:\s+(?:name|string)\s*=\s*"[^"]*")*',
     re.IGNORECASE,
 )
 
 
 def _strip_orphan_dsml(text: str) -> str:
-    """Two-pass DSML orphan stripper. Phase 1 removes tag-shaped fragments
-    (with angle brackets), phase 2 removes bare pipe-delimited markers that
-    lost their brackets during chunk splits."""
-    text = _ORPHAN_DSML_RE.sub("", text)
-    text = _BARE_DSML_MARKER_RE.sub("", text)
+    """Multi-pass DSML/XML orphan stripper.
+
+    Removes: tag-shaped fragments (with angle brackets), bare pipe-delimited
+    markers that lost their brackets during chunk splits, dangling DSML
+    prefixes whose keyword was consumed by an earlier pass, and bare XML tool
+    tags (``</invoke>``, ``<parameter ...>``) left behind when the outer
+    wrapper was parsed away.
+    """
+    text = _ORPHAN_DSML_RE.sub("", text)      # full  </||DSML||keyword> tags
+    text = _DANGLING_DSML_RE.sub("", text)    # bare  </||DSML||  remnants
+    text = _BARE_DSML_MARKER_RE.sub("", text)  # ||DSML||keyword (no brackets)
+    text = _ORPHAN_TAG_RE.sub("", text)       # bare  </invoke>, <parameter ...>
     return text
 
 
