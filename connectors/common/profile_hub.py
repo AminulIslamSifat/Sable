@@ -128,6 +128,10 @@ def _pid_is_our_helium(pid: int, profile_dir: Path, helium_bin: str) -> bool:
     match, so a foreign connector's browser sharing the profile is never
     mistaken for ours.
     """
+    # No binary to match against (e.g. a profile set to "default" -> Playwright
+    # bundled Chromium with no explicit path). Never claim a pid is ours.
+    if not helium_bin:
+        return False
     toks = _cmdline_tokens(pid)
     if not toks:
         return False

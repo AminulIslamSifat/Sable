@@ -42,7 +42,10 @@ Public API
 Settings (system/settings.json)
 -------------------------------
     chatgpt_use_ghost: bool  (default True)
-    helium_binary:     str   (default /opt/helium-browser-bin/helium)
+
+The browser binary is resolved per account from system/accounts.json
+(browser_path). If the profile has no saved path, Playwright's bundled
+Chromium is used.
 """
 from __future__ import annotations
 
@@ -59,7 +62,6 @@ from engine.platform_paths import pid_exists
 logger = logging.getLogger("sable.chatgpt_ghost")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
-DEFAULT_HELIUM = "/opt/helium-browser-bin/helium"
 CHATGPT_URL = "https://chatgpt.com/"
 
 # This ghost browser runs HEADED (ProfileHub.acquire(force_headed=True)).
@@ -385,8 +387,7 @@ class ChatGPTGhostSession:
         self._installed = False
 
     @classmethod
-    async def for_account(cls, account: str,
-                          helium_bin: str | None = None) -> "ChatGPTGhostSession":
+    async def for_account(cls, account: str) -> "ChatGPTGhostSession":
         """Return a running session for `account`, respawning if dead."""
         if cls._registry_lock is None:
             cls._registry_lock = asyncio.Lock()
@@ -396,7 +397,10 @@ class ChatGPTGhostSession:
                 return existing
             if existing is not None:
                 await existing.close()
-            bin_path = helium_bin or _read_helium_from_settings() or DEFAULT_HELIUM
+            from engine.platform_paths import resolve_browser_for_profile
+            # Honor the per-account browser set in accounts.json (Chrome/Helium/
+            # any Chromium). No saved path -> Playwright bundled Chromium.
+            bin_path = resolve_browser_for_profile(account)
             profile = _SYSTEM_DIR / account
             from connectors.common.profile_hub import (
                 ProfileHub as _PH, _kill_profile_holders as _kill,
@@ -659,11 +663,3 @@ def ghost_enabled() -> bool:
         return True
 
 
-def _read_helium_from_settings() -> str | None:
-    try:
-        path = _SYSTEM_DIR / "settings.json"
-        if path.is_file():
-            return json.loads(path.read_text(encoding="utf-8")).get("helium_binary")
-    except Exception:
-        pass
-    return None

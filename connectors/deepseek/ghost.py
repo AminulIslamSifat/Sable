@@ -34,7 +34,10 @@ Public API
 Settings (system/settings.json)
 -------------------------------
     deepseek_use_ghost: bool  (default True)
-    helium_binary: str        (default /opt/helium-browser-bin/helium)
+
+The browser binary is resolved per account from system/accounts.json
+(browser_path). If the profile has no saved path, Playwright's bundled
+Chromium is used.
 """
 from __future__ import annotations
 
@@ -54,7 +57,6 @@ logger = logging.getLogger("sable.deepseek_ghost")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 IDENTITY_STORE = _SYSTEM_DIR / ".deepseek_identity.json"
-DEFAULT_HELIUM = "/opt/helium-browser-bin/helium"
 IDENTITY_TTL_SEC = 24 * 3600
 
 # No "--ozone-platform=headless" here: this file's ghost browser runs HEADED
@@ -345,7 +347,7 @@ class GhostSession:
     # -- lifecycle -----------------------------------------------------
 
     @classmethod
-    async def for_account(cls, account: str, helium_bin: str | None = None) -> "GhostSession":
+    async def for_account(cls, account: str) -> "GhostSession":
         """Return a running session for `account`, respawning if dead."""
         if cls._registry_lock is None:
             cls._registry_lock = asyncio.Lock()
@@ -355,7 +357,10 @@ class GhostSession:
                 return existing
             if existing is not None:
                 await existing.close()
-            bin_path = helium_bin or _read_helium_from_settings() or DEFAULT_HELIUM
+            from engine.platform_paths import resolve_browser_for_profile
+            # Honor the per-account browser set in accounts.json (Chrome/Helium/
+            # any Chromium). No saved path -> Playwright bundled Chromium.
+            bin_path = resolve_browser_for_profile(account)
             profile = _SYSTEM_DIR / account
             # Kill-and-retry: a closed/externally-killed/stale browser context
             # makes start() blow up hard. On failure evict the hub, kill every
@@ -729,12 +734,4 @@ def ghost_enabled() -> bool:
         return True
 
 
-def _read_helium_from_settings() -> str | None:
-    try:
-        path = _SYSTEM_DIR / "settings.json"
-        if not path.is_file():
-            return None
-        s = json.loads(path.read_text(encoding="utf-8"))
-        return s.get("helium_binary") or None
-    except Exception:
-        return None
+

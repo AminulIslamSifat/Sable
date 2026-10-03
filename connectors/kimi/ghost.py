@@ -49,7 +49,10 @@ Public API
 Settings (system/settings.json)
 -------------------------------
     kimi_use_ghost: bool  (default True)
-    helium_binary:  str   (default /opt/helium-browser-bin/helium)
+
+The browser binary is resolved per account from system/accounts.json
+(browser_path). If the profile has no saved path, Playwright's bundled
+Chromium is used.
 """
 from __future__ import annotations
 
@@ -70,7 +73,6 @@ logger = logging.getLogger("sable.kimi_ghost")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".kimi_tokens.json"
-DEFAULT_HELIUM = "/opt/helium-browser-bin/helium"
 KIMI_URL = "https://www.kimi.ai/"
 CHAT_PATH = "/apiv2/kimi.gateway.chat.v1.ChatService/Chat"
 
@@ -262,6 +264,10 @@ def _pid_is_our_helium(pid: int, profile_dir: Path, helium_bin: str) -> bool:
     the binary basename AND the exact ``--user-data-dir`` to match, so a
     foreign connector's browser sharing the profile is never touched.
     """
+    # No binary to match against (e.g. a profile set to "default" -> Playwright
+    # bundled Chromium with no explicit path). Never claim a pid is ours.
+    if not helium_bin:
+        return False
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
@@ -410,7 +416,7 @@ class KimiGhostSession:
     # -- lifecycle -----------------------------------------------------
 
     @classmethod
-    async def for_account(cls, account: str, helium_bin: str | None = None,
+    async def for_account(cls, account: str,
                           headless: bool = False) -> "KimiGhostSession":
         """Return a running session for ``account``, respawning if dead.
 
@@ -434,7 +440,10 @@ class KimiGhostSession:
                 await existing.close()
             elif existing is not None:
                 await existing.close()
-            bin_path = helium_bin or _read_helium_from_settings() or DEFAULT_HELIUM
+            from engine.platform_paths import resolve_browser_for_profile
+            # Honor the per-account browser set in accounts.json (Chrome/Helium/
+            # any Chromium). No saved path -> Playwright bundled Chromium.
+            bin_path = resolve_browser_for_profile(account)
             profile = _SYSTEM_DIR / account
             # Kill-and-retry: a closed/externally-killed/stale browser context
             # makes start() blow up hard. On failure evict the hub, kill every
@@ -919,11 +928,4 @@ def kimi_ghost_enabled() -> bool:
         return True
 
 
-def _read_helium_from_settings() -> str | None:
-    try:
-        path = _SYSTEM_DIR / "settings.json"
-        if path.is_file():
-            return json.loads(path.read_text(encoding="utf-8")).get("helium_binary")
-    except Exception:
-        pass
-    return None
+
