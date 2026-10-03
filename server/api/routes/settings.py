@@ -713,15 +713,17 @@ async def set_jitter_settings(request: Request) -> dict[str, Any]:
 async def get_prompt_injection_settings() -> dict[str, Any]:
     """Return the per-provider prompt-injection toggle matrix."""
     from connectors.common.prompt_injection import (
-        get_injection_config, INJECTION_KEYS, KEY_LABELS, PROVIDERS, PROVIDER_LABELS,
+        get_injection_config, INJECTION_KEYS, KEY_LABELS, PROVIDERS, list_providers,
     )
     cfg = get_injection_config()
+    rows, labels = list_providers()
     return {
         "providers": cfg["providers"],
         "keys": list(INJECTION_KEYS),
         "key_labels": KEY_LABELS,
         "available_providers": list(PROVIDERS),
-        "provider_labels": PROVIDER_LABELS,
+        "provider_labels": labels,
+        "rows": rows,
     }
 
 
@@ -733,7 +735,8 @@ async def set_prompt_injection_settings(request: Request) -> dict[str, Any]:
     Only known providers/keys are accepted; unknown ones are ignored.
     """
     from connectors.common.prompt_injection import (
-        get_injection_config, INJECTION_KEYS, PROVIDERS, KEY_LABELS, PROVIDER_LABELS,
+        get_injection_config, INJECTION_KEYS, PROVIDERS, ENDPOINT_PREFIX,
+        KEY_LABELS, list_providers,
     )
     body = await request.json()
 
@@ -742,10 +745,15 @@ async def set_prompt_injection_settings(request: Request) -> dict[str, Any]:
 
     incoming = body.get("providers")
     if isinstance(incoming, dict):
-        for prov in PROVIDERS:
-            row = incoming.get(prov)
+        for prov, row in incoming.items():
+            # Accept static backends AND discovered ``ep:<url>`` endpoint keys;
+            # reject anything else so a typo can't silently create a dead row.
+            if prov not in PROVIDERS and not str(prov).startswith(ENDPOINT_PREFIX):
+                continue
             if not isinstance(row, dict):
                 continue
+            if prov not in providers:
+                providers[prov] = {}
             for k in INJECTION_KEYS:
                 if k in row:
                     providers[prov][k] = bool(row[k])
@@ -762,13 +770,15 @@ async def set_prompt_injection_settings(request: Request) -> dict[str, Any]:
     except Exception:
         pass
 
+    rows, labels = list_providers()
     return {
         "status": "ok",
         "providers": providers,
         "keys": list(INJECTION_KEYS),
         "key_labels": KEY_LABELS,
         "available_providers": list(PROVIDERS),
-        "provider_labels": PROVIDER_LABELS,
+        "provider_labels": labels,
+        "rows": rows,
     }
 
 

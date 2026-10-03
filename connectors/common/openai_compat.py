@@ -277,8 +277,19 @@ class OpenAICompatClient:
             if self._instruction_cache is not None:
                 return self._instruction_cache
             from connectors.common.instruction_builder import build_instructions
+            # Pass the endpoint-specific key when we have a base_url, so a
+            # user-configured ``ep:<url>`` row wins over the generic "native"
+            # backend. Falls back to "native" when unresolvable.
+            provider_key = "native"
+            try:
+                from connectors.common.prompt_injection import endpoint_key
+                _ep = endpoint_key(getattr(self, "BASE_URL", "") or "")
+                if _ep:
+                    provider_key = _ep
+            except Exception:
+                pass
             self._instruction_cache = build_instructions(
-                project_id=project_id, provider="native", layout_mode=layout_mode,
+                project_id=project_id, provider=provider_key, layout_mode=layout_mode,
             )
             return self._instruction_cache
         if mode == "minimal":

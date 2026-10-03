@@ -713,7 +713,7 @@
     let _piKeys = [];
     let _piKeyLabels = {};
     let _piProviderLabels = {};
-    let _piProviderOrder = [];
+    let _piRows = [];           // [{key,label,group,models,url}]
     let _piActive = "";         // currently selected provider
     let _piSwitches = [];       // checkbox elements for _piActive
 
@@ -750,6 +750,17 @@
       empty.style.display = "none";
 
       const row = _piProviders[_piActive] || {};
+
+      // If this provider is a custom endpoint covering several models, say so
+      // — otherwise it looks like the toggle only affects one of them.
+      const meta = _piRows.find((r) => r.key === _piActive);
+      if (meta && meta.models && meta.models.length) {
+        const info = document.createElement("div");
+        info.style.cssText = "font-size:10.5px;color:var(--text-dim);padding:4px 8px 6px;line-height:1.5;";
+        info.textContent = (meta.url ? meta.url + "\n" : "") + "Models: " + meta.models.join(", ");
+        info.style.whiteSpace = "pre-wrap";
+        box.appendChild(info);
+      }
 
       _PI_GROUPS.forEach((grp) => {
         const hdr = document.createElement("div");
@@ -800,12 +811,30 @@
       ph.value = "";
       ph.textContent = "Select provider…";
       sel.appendChild(ph);
-      _piProviderOrder.forEach((prov) => {
-        const o = document.createElement("option");
-        o.value = prov;
-        o.textContent = _piProviderLabels[prov] || prov;
-        sel.appendChild(o);
+
+      // Group rows into <optgroup>s so user-added endpoints are visually
+      // separate from built-in backends.
+      const groups = [];
+      const byName = {};
+      _piRows.forEach((r) => {
+        const g = r.group || "Backends";
+        if (!byName[g]) { byName[g] = []; groups.push(g); }
+        byName[g].push(r);
       });
+
+      groups.forEach((g) => {
+        const og = document.createElement("optgroup");
+        og.label = g;
+        byName[g].forEach((r) => {
+          const o = document.createElement("option");
+          o.value = r.key;
+          o.textContent = r.label || r.key;
+          if (r.url) o.title = r.url;
+          og.appendChild(o);
+        });
+        sel.appendChild(og);
+      });
+
       sel.value = keep || "";
     }
 
@@ -833,7 +862,7 @@
         _piKeys = d.keys || [];
         _piKeyLabels = d.key_labels || {};
         _piProviderLabels = d.provider_labels || {};
-        _piProviderOrder = d.available_providers || Object.keys(_piProviders);
+        _piRows = d.rows || (d.available_providers || []).map((k) => ({ key: k, label: _piProviderLabels[k] || k, group: "Backends" }));
         _piPopulateProviders();
         _piRender();
         const st = _piEls.status();
