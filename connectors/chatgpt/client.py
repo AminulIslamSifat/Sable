@@ -163,6 +163,10 @@ class ChatGPTClient:
         self._model_id = model_id or "chatgpt-gpt-5"
         self._conversation_ids: dict[str, str] = {}
         self._sessions: dict[str, list[dict[str, str]]] = {}
+        # Per-chat instruction version last injected upstream. Lets a persona /
+        # output-format / project change take effect on an EXISTING ChatGPT
+        # conversation instead of only on the first message of a fresh one.
+        self._chat_instr_ver: dict[str, int] = {}
         self._live_session: Any = None
 
     @property
@@ -229,17 +233,53 @@ class ChatGPTClient:
         # composer, and raises "not logged in?" if it never appears).
         upstream = self._conversation_ids.get(chat_id) if chat_id else None
         is_fresh = upstream is None
-        if is_fresh and inject_instructions:
-            _instr: str | None = None
-            if system_instruction:
-                _instr = system_instruction
-            else:
-                try:
-                    _instr = _load_instructions(project_id=project_id, layout_mode=layout_mode)
-                except Exception as exc:
-                    logger.warning("ChatGPT instruction build failed: %s", exc)
-            if _instr:
-                prompt = f"{_instr}\n\n{prompt}"
+        # Instruction injection. Two cases:
+        #   1. Fresh conversation -> always inject (primes the upstream thread).
+        #   2. Existing conversation whose instruction version changed (user
+        #      edited the persona / output format / project) -> RE-inject once.
+        #      Unlike the API providers, ChatGPT cannot receive a per-turn
+        #      system message (the ghost tab drives one composer submit), so
+        #      without this a persona change never reached a live chat — the
+        #      old persona stayed baked into the upstream thread forever.
+        # When a caller passes an explicit system_instruction (agent sub-chats)
+        # we never re-inject — that content is stable for the sub-chat.
+        if inject_instructions:
+            from connectors.common.instruction_builder import get_instruction_version
+            _ver = get_instruction_version()
+            _last_ver = self._chat_instr_ver.get(chat_id or "")
+            _need_inject = is_fresh or (
+                system_instruction is None
+                and chat_id is not None
+                and _last_ver is not None
+                and _last_ver != _ver
+            )
+            if _need_inject:
+                _instr: str | None = None
+                if system_instruction:
+                    _instr = system_instruction
+                else:
+                    try:
+                        _instr = _load_instructions(project_id=project_id, layout_mode=layout_mode)
+                    except Exception as exc:
+                        logger.warning("ChatGPT instruction build failed: %s", exc)
+                if _instr:
+                    # A re-inject into an existing thread gets a clear marker so
+                    # the model treats it as the updated directive, not a stray
+                    # user turn.
+                    if not is_fresh:
+                        logger.info(
+                            "ChatGPT instruction changed (v%s -> v%s) — "
+                            "re-injecting into existing chat %s",
+                            _last_ver, _ver, str(chat_id)[:8],
+                        )
+                        prompt = (
+                            f"[SYSTEM INSTRUCTION UPDATED — supersedes all earlier "
+                            f"instructions in this conversation]\n\n{_instr}\n\n{prompt}"
+                        )
+                    else:
+                        prompt = f"{_instr}\n\n{prompt}"
+                if chat_id is not None:
+                    self._chat_instr_ver[chat_id] = _ver
         history = self._sessions.get(chat_id, []) if chat_id else []
         if db_history and chat_id and not history:
             history = [

@@ -365,6 +365,7 @@ class ProfileHub:
                       headless: bool = True,
                       force_headed: bool = False,
                       kill_existing: bool = False,
+                      os_keyring: bool = False,
                       max_retries: int = 3) -> "ProfileHub":
         """Return the live hub for ``profile_dir``, launching it if needed.
 
@@ -399,7 +400,8 @@ class ProfileHub:
             last_exc: Exception | None = None
             for attempt in range(1, max_retries + 1):
                 hub = cls(Path(profile_dir), helium_bin, headless,
-                          force_headed=force_headed, kill_existing=kill_existing)
+                          force_headed=force_headed, kill_existing=kill_existing,
+                          os_keyring=os_keyring)
                 try:
                     await hub._ensure()
                     cls._hubs[key] = hub
@@ -465,7 +467,8 @@ class ProfileHub:
                 pass
 
     def __init__(self, profile_dir: Path, helium_bin: str, headless: bool,
-                 force_headed: bool = False, kill_existing: bool = False):
+                 force_headed: bool = False, kill_existing: bool = False,
+                 os_keyring: bool = False):
         self.profile_dir = profile_dir
         self.helium_bin = helium_bin
         # force_headed wins over the caller's headless flag: it means "I need
@@ -476,6 +479,11 @@ class ProfileHub:
         # --user-data-dir (the corruption cause) without forcing a headed
         # window. Independent of force_headed.
         self.kill_existing = kill_existing
+        # os_keyring: use the REAL OS keyring for cookie encryption instead of
+        # Playwright's forced mock keychain (`peanuts`). Required for a profile
+        # whose cookies were written by a raw-subprocess launch (the Settings
+        # opener). Default False so connectors that already work are unchanged.
+        self.os_keyring = os_keyring
         self.headless = False if force_headed else headless
         self._pw = None
         self._context = None
@@ -725,6 +733,19 @@ class ProfileHub:
             headless=self.headless,
             args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
         )
+        if self.os_keyring:
+            # ChatGPT-only: drop Playwright's forced cookie-encryption defaults
+            # so this profile uses the SAME keyring as the Settings → Account
+            # opener (raw subprocess, no password flags → real OS keyring).
+            # Playwright otherwise forces `--password-store=basic
+            # --use-mock-keychain` (`peanuts` key), and every cookie the user
+            # logged in with is undecryptable here → ChatGPT re-prompts
+            # verification on every ghost launch. `--use-mock-keychain` is a
+            # boolean switch, so it must be ignored, not overridden.
+            launch_kwargs["ignore_default_args"] = [
+                "--password-store=basic",
+                "--use-mock-keychain",
+            ]
         if not self.headless:
             try:
                 from engine.session import _browser_env_with_display

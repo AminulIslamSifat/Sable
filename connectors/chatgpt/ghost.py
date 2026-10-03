@@ -477,7 +477,12 @@ class ChatGPTGhostSession:
         # ghost must own the profile exclusively.
         self._hub = await ProfileHub.acquire(
             self.profile_dir, self.helium_bin, headless=_headless,
-            force_headed=not _headless, kill_existing=True)
+            force_headed=not _headless, kill_existing=True,
+            # ChatGPT-only: the Settings → Account opener writes cookies with
+            # the real OS keyring. Playwright's default mock keychain
+            # (`peanuts`) cannot read them, so ChatGPT asks to verify on every
+            # launch. os_keyring=True makes this profile use the OS keyring too.
+            os_keyring=True)
         _t1 = time.monotonic()
         self._ctx = self._hub.context
         self._page = await self._hub.new_tab(CHATGPT_URL)
@@ -612,42 +617,56 @@ class ChatGPTGhostSession:
             pass
         locator = self._page.locator("input#upload-files").first
         await locator.set_input_files(str(p), timeout=timeout_ms)
-        # Wait for the SPA to finish its upload and render the attachment chip.
-        # Poll for the file name text; fall back to a fixed settle time.
+        # Success = the SPA's /backend-api/files POST returned 2xx (captured by
+        # JS_UPLOAD_WATCH). The old check polled document.body.innerText for the
+        # filename, but attachment chips render an icon + truncated name and do
+        # NOT reliably put the raw filename in innerText — so a real, HTTP-200
+        # upload (verified live) was reported as a failure and the attachment
+        # was dropped from the send. HTTP status is the authoritative signal;
+        # the chip text is only a secondary confirmation.
         attached = False
+        up_status: int | None = None
+        up_body = ""
         deadline = time.time() + (timeout_ms / 1000.0)
         while time.time() < deadline:
             try:
-                found = await self._page.evaluate(
+                st = await self._page.evaluate("() => window.__upStatus")
+                if st and isinstance(st, dict) and st.get("status"):
+                    up_status = int(st.get("status") or 0)
+                    up_body = str(st.get("body") or "")
+                    if 200 <= up_status < 300:
+                        attached = True
+                        break
+                    # A non-2xx is terminal — no point polling to the deadline.
+                    break
+            except Exception:
+                pass
+            # Secondary signal: the composer chip text (best-effort only).
+            try:
+                if await self._page.evaluate(
                     "(name) => document.body.innerText.includes(name)", p.name
-                )
-                if found:
+                ):
                     attached = True
                     break
             except Exception:
                 pass
             await asyncio.sleep(0.5)
         # Give the SPA a moment to finalize the attachment record server-side.
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
 
         if attached:
-            logger.info("[chatgpt:%s] uploaded %s (ok)", self.account, p.name)
+            logger.info("[chatgpt:%s] uploaded %s (ok, status=%s)",
+                        self.account, p.name, up_status)
             return {"path": str(p), "name": p.name, "ok": True, "reason": None}
 
-        # Not attached — read the captured upload HTTP status to classify why.
-        reason = "upload_failed"
-        try:
-            st = await self._page.evaluate("() => window.__upStatus")
-            if st and isinstance(st, dict):
-                reason = self._classify_upload_failure(
-                    int(st.get("status") or 0), str(st.get("body") or "")
-                )
-            else:
-                reason = "timeout"
-        except Exception:
+        # Classify why it failed from the captured HTTP status/body.
+        if up_status is None:
             reason = "timeout"
+        else:
+            reason = self._classify_upload_failure(up_status, up_body)
         logger.warning(
-            "[chatgpt:%s] upload FAILED for %s (reason=%s)", self.account, p.name, reason
+            "[chatgpt:%s] upload FAILED for %s (status=%s reason=%s)",
+            self.account, p.name, up_status, reason,
         )
         return {"path": str(p), "name": p.name, "ok": False, "reason": reason}
 

@@ -1133,6 +1133,16 @@ async def chat(request: ChatRequest):
                 if "path" in f:
                     resolved_files.append({"path": f["path"]})
                 continue
+            # ChatGPT ghost: stage via the SPA's own composer (#upload-files).
+            # Keep the RAW local path — the connector uploads it through the
+            # ghost tab (session.upload_file). Without this branch the file
+            # fell through to the Qwen OSS upload, whose metadata has no
+            # 'path', so `files` never reached the connector and every
+            # attachment was silently dropped.
+            if _backend == "chatgpt":
+                if "path" in f:
+                    resolved_files.append({"path": f["path"]})
+                continue
             # Provider-specific upload: DeepSeek has its own endpoint
             if _backend == "deepseek":
                 if "path" in f:
