@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path as _Path
 from typing import Any
 
 from connectors.common.instruction_builder import get_tool_format
@@ -61,16 +62,6 @@ def _resolve_active_account() -> str:
     """ChatGPT's OWN active browser account (independent of every other provider)."""
     from engine.config import get_active_account
     return get_active_account("chatgpt")
-
-
-def _provider_account() -> str | None:
-    """Optional per-provider account override from settings.provider_accounts."""
-    try:
-        from engine.config import _SYSTEM
-        s = json.loads((_SYSTEM / "settings.json").read_text(encoding="utf-8"))
-        return (s.get("provider_accounts") or {}).get("chatgpt")
-    except Exception:
-        return None
 
 
 def _chatgpt_ghost_enabled() -> bool:
@@ -176,7 +167,7 @@ class ChatGPTClient:
 
     @property
     def account(self) -> str:
-        acct = self._account or _provider_account() or _resolve_active_account()
+        acct = self._account or _resolve_active_account()
         self.ctx.account = acct
         return acct
 
@@ -206,6 +197,7 @@ class ChatGPTClient:
         thinking_mode: str | None = None,
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
+        files: list[str] | None = None,
         inject_instructions: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -268,6 +260,44 @@ class ChatGPTClient:
         }
         try:
             self._live_session = session
+            # Fresh conversation: navigate to a blank chat FIRST. This must
+            # precede uploads — the navigation reloads the page and would wipe
+            # any attachments staged before it. Continuing chats skip this so
+            # the page stays on the ongoing conversation.
+            if is_fresh:
+                try:
+                    await session.prepare_new_chat()
+                except Exception as _nav:
+                    logger.warning("ChatGPT fresh-chat navigation failed: %s", _nav)
+            # Stage any attached files in the composer BEFORE the send. The SPA
+            # uploads each one through its own /backend-api/files path and
+            # builds messages[0].metadata.attachments; the hijack preserves
+            # that metadata while swapping the text. Uploads must happen on the
+            # same page/tab that will submit, so do it here, not earlier.
+            if files:
+                for _f in files:
+                    try:
+                        _info = await session.upload_file(_f)
+                    except Exception as _up:
+                        logger.warning("ChatGPT file upload raised for %s: %s", _f, _up)
+                        _info = {"name": _Path(_f).name, "ok": False, "reason": "upload_failed"}
+                    if _info.get("ok"):
+                        yield {
+                            "type": "status",
+                            "message": f"browser_file_attached:{_info.get('name', _f)}",
+                        }
+                    else:
+                        # Upload failed (rate limit / too large / auth / …).
+                        # Emit a classified status and KEEP GOING — the turn
+                        # proceeds without the attachment rather than aborting.
+                        yield {
+                            "type": "status",
+                            "message": (
+                                f"browser_file_attach_failed:"
+                                f"{_info.get('reason', 'upload_failed')}:"
+                                f"{_info.get('name', _f)}"
+                            ),
+                        }
             resp = await session.open_stream(prompt, idle_secs=_IDLE_TIMEOUT_SECS)
             async with resp as r:
                 if r.status_code != 200:

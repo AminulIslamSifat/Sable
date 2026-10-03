@@ -55,6 +55,9 @@ window.safeCopy = async function(text) {
     // Cached from /api/settings/scraper so the card can render without a
     // second round-trip on every account refresh.
     let _scraperHeadless = false;
+    // ChatGPT ghost-tab launch mode (Settings → Account → ChatGPT). Separate
+    // from the scraper flag because ChatGPT uses its own browser transport.
+    let _chatgptHeadless = false;
 
     async function loadScraperLaunchMode() {
       try {
@@ -62,9 +65,54 @@ window.safeCopy = async function(text) {
         if (!res.ok) return;
         const data = await res.json();
         _scraperHeadless = !!data.headless;
+        _chatgptHeadless = !!data.chatgpt_headless;
       } catch (e) { /* keep last known value */ }
     }
     window.loadScraperLaunchMode = loadScraperLaunchMode;
+
+    // Headless/headed toggle for the ChatGPT ghost-tab connector. Changing it
+    // closes any live ChatGPT ghost sessions server-side so the next turn
+    // relaunches with the new launch flag.
+    function _bindChatgptHeadlessToggle(toggleId) {
+      const el = document.getElementById(toggleId);
+      if (!el) return;
+      el.addEventListener("change", async () => {
+        const headless = el.checked;
+        const label = el.closest("label");
+        const paint = (on) => {
+          if (!label) return;
+          const bg = label.children[1], knob = label.children[2];
+          if (bg) bg.style.background = on ? "var(--accent)" : "var(--border)";
+          if (knob) knob.style.left = on ? "18px" : "2px";
+        };
+        paint(headless);
+        el.disabled = true;
+        try {
+          const res = await fetch("/api/settings/scraper", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chatgpt_headless: headless }),
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const data = await res.json();
+          _chatgptHeadless = !!data.chatgpt_headless;
+          const restarted = (data.restarted_engines || []).length;
+          showToast(
+            headless
+              ? "🕶️ ChatGPT now runs headless" + (restarted ? " — browser restarted" : "")
+              : "🖥️ ChatGPT now runs headed" + (restarted ? " — browser restarted" : ""),
+            "success"
+          );
+        } catch (e) {
+          showToast("Failed to change ChatGPT launch mode: " + e.message, "error");
+          el.checked = !headless;
+          paint(!headless);
+        } finally {
+          el.disabled = false;
+        }
+      });
+    }
+    window.bindChatgptHeadlessToggle = _bindChatgptHeadlessToggle;
 
     // Headless/headed toggle for the deepseek_scraper connector. Changing it
     // tears down any live scraper browsers server-side so the next turn
@@ -660,6 +708,11 @@ window.safeCopy = async function(text) {
                   `Run Headless (no browser window)`,
                   `Launch the DeepSeek scraper browser without a visible window. Changing this restarts any open scraper browser.`);
               }
+              if (pid === "chatgpt") {
+                html += _renderToggle(`chatgptHeadless_${pid}`, _chatgptHeadless,
+                  `Run Headless (no browser window)`,
+                  `Launch the ChatGPT browser without a visible window. Changing this restarts any open ChatGPT browser.`);
+              }
               html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
                 `Auto-Switch on Rate Limit / Captcha`,
                 `Automatically switch to another ${pd.label} account when blocked.`);
@@ -717,6 +770,7 @@ window.safeCopy = async function(text) {
             _bindProviderToggle(`autoSwitch_${pid}`, pid);
           }
           _bindScraperHeadlessToggle("scraperHeadless_deepseek_scraper");
+          _bindChatgptHeadlessToggle("chatgptHeadless_chatgpt");
         }
 
         // Bind browser account handlers + API key handlers + combined pills

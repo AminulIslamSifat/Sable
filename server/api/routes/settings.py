@@ -158,6 +158,15 @@ async def update_scraper_settings_route(payload: dict[str, Any]) -> dict[str, An
         if restarted:
             settings["restarted_engines"] = restarted
 
+    # ChatGPT ghost-tab launch mode: a separate browser transport with its own
+    # flag. Toggling it tears down the live ChatGPT ghost sessions so the next
+    # turn relaunches with the new head/headless flag.
+    cg_mode_changed = bool(old_settings.get("chatgpt_headless", False)) != bool(settings.get("chatgpt_headless", False))
+    if cg_mode_changed:
+        cg_restarted = await _restart_chatgpt_ghost_sessions()
+        if cg_restarted:
+            settings["restarted_engines"] = list(settings.get("restarted_engines", [])) + cg_restarted
+
     if settings.get("enabled"):
         prelaunch_result = await scraper_service.prelaunch()
         settings["prelaunch"] = prelaunch_result
@@ -189,6 +198,26 @@ async def _restart_scraper_connectors() -> list[str]:
         except Exception as exc:
             logger.warning("scraper connector restart failed: %s", exc)
     return reset
+
+
+async def _restart_chatgpt_ghost_sessions() -> list[str]:
+    """Close every live ChatGPT ghost session so the next turn relaunches.
+
+    The ghost caches one session per account; the session owns the Chromium
+    process with the old head/headless launch flag. Closing the registry is
+    what makes the ChatGPT headless toggle take effect on an open browser.
+    """
+    try:
+        from connectors.chatgpt.ghost import ChatGPTGhostSession
+    except Exception as exc:
+        logger.warning("chatgpt ghost restart import failed: %s", exc)
+        return []
+    try:
+        await ChatGPTGhostSession.close_all()
+        return ["chatgpt"]
+    except Exception as exc:
+        logger.warning("chatgpt ghost restart failed: %s", exc)
+        return []
 
 @router.get("/api/settings/browser")
 async def get_browser_settings() -> dict[str, bool]:

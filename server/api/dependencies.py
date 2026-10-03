@@ -21,9 +21,9 @@ get_mimo_client().set_cookie_provider(service.get_mimo_cookies)
 get_mistral_web_client().set_cookie_provider(service.get_mistral_web_cookies)
 
 # Wire account resolvers so error messages include [provider | account] context.
-# The resolver is provider-aware: a per-provider pin in settings.json
-# (provider_accounts) wins over the global active account, matching what
-# service._browser_for_provider() actually routes to.
+# The resolver is provider-aware: a provider's own active-account slot wins
+# over the global active account, matching what service._browser_for_provider()
+# actually routes to.
 def _provider_account(provider: str) -> str:
     """Resolve the account a provider is really using (pin wins over global)."""
     pinned = get_provider_account(provider)

@@ -40,8 +40,8 @@ class ErrorContext:
 
         Resolved lazily at error-time rather than pushed by every caller.
         When ``provider`` is given the callable is invoked as ``fn(provider)``
-        so it can honour per-provider pins (``settings.json``
-        ``provider_accounts``) instead of reporting the global active account.
+        so it can honour the provider's own active-account slot instead of
+        reporting the global active account.
         """
         self._account_fn = fn
         self._provider_key = provider

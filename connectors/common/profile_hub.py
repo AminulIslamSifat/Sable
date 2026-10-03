@@ -6,7 +6,7 @@ Kimi, DeepSeek, Gemini-web, etc. each need a real browser page so the SPA mints
 per-request auth/shield tokens (localStorage bearer JWT, WAF cookies). The naive
 design gives each connector its own ``--user-data-dir``, but Chromium allows
 only ONE browser process per profile dir (SingletonLock). When Sable's
-``provider_accounts`` points several connectors at the SAME profile:
+Several connectors are pinned to the SAME profile via the per-provider store:
 
   * each ghost launches its own Helium on that dir -> the loser dies on the lock;
   * each ghost only adopts its OWN marker (``.kimi_ghost.json`` vs

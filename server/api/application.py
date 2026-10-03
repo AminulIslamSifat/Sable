@@ -367,6 +367,10 @@ async def auth_middleware(request: Request, call_next):
         # Authorization header. The grid appends ?token= so the request still
         # authenticates (same pattern as oauth/start above).
         or path.endswith("/thumb")
+        # Generated cover PDFs are fetched by a plain <a download> / window
+        # navigation, which likewise cannot carry a Bearer header. Same
+        # read-only-GET tradeoff as /thumb above.
+        or path.startswith("/api/study/cover/file/")
     ):
         authorized = request.query_params.get("token", "") == _auth_mod.AUTH_TOKEN
     if not authorized:

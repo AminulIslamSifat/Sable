@@ -3077,6 +3077,33 @@ function handleBackendStatusEvent(evt, container) {
     parsedIcon = "timer";
   }
 
+  // Parse file-attach status: browser_file_attached:<name> or
+  // browser_file_attach_failed:<reason>:<name>. The failure variant is
+  // highlighted as an error card; the turn still proceeds WITHOUT the file.
+  let attachError = false;
+  const attachOk = msg.match(/^browser_file_attached:(.+)$/);
+  const attachFail = msg.match(/^browser_file_attach_failed:([^:]+):(.+)$/);
+  if (attachOk) {
+    parsedLabel = `Attached: ${attachOk[1]}`;
+    parsedIcon = "paperclip";
+  } else if (attachFail) {
+    const reason = attachFail[1];
+    const fname = attachFail[2];
+    const reasonText = {
+      rate_limited:       "rate limited by ChatGPT — try again shortly",
+      file_too_large:     "file too large for ChatGPT",
+      not_authorized:     "session not authorized — re-login",
+      network_error:      "network error during upload",
+      timeout:            "upload timed out",
+      upload_failed:      "upload failed",
+    }[reason] || (reason.startsWith("server_error") ? "ChatGPT server error"
+              : reason.startsWith("upload_rejected") ? "ChatGPT rejected the upload"
+              : reason.replace(/_/g, " "));
+    parsedLabel = `Couldn't attach ${fname} — ${reasonText}. Sending without it.`;
+    parsedIcon = "triangle-alert";
+    attachError = true;
+  }
+
   const mapped = _BACKEND_STATUS_MAP[msg];
   const label = parsedLabel || (mapped ? mapped.label : msg.replace(/_/g, " "));
   const icon = parsedLabel ? parsedIcon : (mapped ? mapped.icon : "info");
@@ -3118,6 +3145,10 @@ function handleBackendStatusEvent(evt, container) {
   // Add new row
   const row = document.createElement("div");
   row.className = "bs-step bs-step-active";
+  if (attachError) {
+    row.classList.add("bs-step-error");
+    row.style.color = "var(--danger, #f87171)";
+  }
   row.innerHTML = `<span class="bs-step-icon">${_backendStatusIcon(icon)}</span><span class="bs-step-label">${label}</span>`;
   stepsEl.appendChild(row);
 

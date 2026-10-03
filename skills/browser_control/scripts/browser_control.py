@@ -432,6 +432,31 @@ class BrowserDaemon:
         await self.page.keyboard.press(key)
         return {"pressed": key}
 
+    async def cmd_upload(self, selector: str, *files: str,
+                         timeout: int = 10000) -> dict:
+        """Set file(s) on an <input type=file>.
+
+        JS cannot fake a file input (browsers block it), so this is the ONLY
+        way to attach a real file through the daemon. `selector` targets the
+        file input (e.g. #upload-files); `files` are one or more paths.
+        """
+        if not files:
+            return {"error": "no file paths given"}
+        # Verify all paths exist up front — Playwright's error is opaque.
+        missing = [f for f in files if not Path(f).exists()]
+        if missing:
+            return {"error": f"file(s) not found: {missing}"}
+        locator = self.page.locator(selector).first
+        await locator.set_input_files(list(files), timeout=timeout)
+        accept = await locator.get_attribute("accept") or ""
+        multiple = await locator.get_attribute("multiple")
+        return {
+            "uploaded_to": selector,
+            "files": list(files),
+            "accept": accept,
+            "multiple": multiple is not None,
+        }
+
     async def cmd_hover(self, selector: str) -> dict:
         await self.page.hover(selector, timeout=10000)
         return {"hovered": selector}

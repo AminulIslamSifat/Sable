@@ -35,6 +35,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -66,10 +69,14 @@ def _empty() -> dict[str, Any]:
         'university': {'name': '', 'motto': '', 'department': ''},
         'courses': [],
         'course': {'no': '', 'title': ''},
-        'student': {'name': '', 'roll': '', 'section': '', 'session': ''},
+        'student': {'name': '', 'roll': '', 'section': '', 'session': '',
+                    'department': ''},
         'teacher_profile': {'designation': '', 'dept': ''},
-        'doc': {'kind': 'Assignment', 'number': '01'},
+        'doc': {'kind': 'Assignment', 'number': '01', 'topic': ''},
         'dates': {'given': '', 'due': ''},
+        # Which cover template to render. 'classic' is the navy-band design;
+        # 'elegant' is the cream/navy-banner design.
+        'design': 'classic',
     }
 
 
@@ -80,9 +87,14 @@ def _lock() -> Iterator[None]:
         yield
 
 
+_DESIGNS = ('classic', 'elegant')
+
+
 def _normalise(data: dict[str, Any]) -> dict[str, Any]:
     '''Deduplicate every roster and coerce the singletons. Idempotent.'''
     out = _empty()
+    design = clean(data.get('design')).lower()
+    out['design'] = design if design in _DESIGNS else 'classic'
 
     seen_uni: set[str] = set()
     for raw in (data.get('universities') or [])[:_MAX_ROSTER]:
@@ -138,6 +150,10 @@ def _normalise(data: dict[str, Any]) -> dict[str, Any]:
         out['doc']['kind'] = 'Assignment'
     if not out['doc']['number']:
         out['doc']['number'] = '01'
+    # A student's department defaults to the institution's, so the elegant
+    # template has something sensible to print without asking twice.
+    if not out['student'].get('department'):
+        out['student']['department'] = out['university'].get('department', '')
     return out
 
 
@@ -215,6 +231,11 @@ def _merge(cur: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
                     'due': clean(dates_in.get('due')) or rec['last_dates'].get('due', ''),
                 }
 
+    # design: a straight overwrite, not a roster
+    design_in = clean(payload.get('design')).lower()
+    if design_in in _DESIGNS:
+        data['design'] = design_in
+
     # singletons: a blank never erases a stored value
     for slot in _SLOTS:
         incoming = payload.get(slot)
@@ -291,23 +312,188 @@ def _slug(value: str, fallback: str = 'x') -> str:
     return s[:40] or fallback
 
 
-def _render_pdf(doc: dict[str, Any], out_path: Path) -> None:
-    '''Render the cover HTML to PDF with Playwright Chromium.'''
+# Single ordered priority list. Whichever candidate is found FIRST is the
+# renderer. Rendered as `kind` -> how to drive it:
+#
+#   'chrome'  - Chromium CLI  (--headless=new --print-to-pdf)
+#   'edge'    - Chromium CLI  (same flags, Edge-branded build)
+#   'playwright' - Playwright driver; no CLI binary needed
+#   'firefox' - detected only; its CLI has no --print-to-pdf, so it is
+#               listed last and reported as unsupported rather than used
+#
+# PRIORITY (highest first): chrome > edge > playwright > firefox
+_RENDER_PRIORITY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ('chrome', (
+        'google-chrome-stable', 'google-chrome', 'chromium',
+        'chromium-browser', 'chrome', 'brave-browser', 'brave', 'vivaldi',
+    )),
+    ('edge', (
+        'microsoft-edge-stable', 'microsoft-edge',
+        'microsoft-edge-beta', 'microsoft-edge-dev',
+    )),
+    ('playwright', ()),
+    ('firefox', ('firefox', 'firefox-esr', 'firefox-developer-edition')),
+)
+
+
+def _find_chrome() -> str | None:
+    '''First Chromium-family CLI available, or None.
+
+    WHY A BROWSER AT ALL: the cover is an HTML/CSS document. Only a browser
+    engine lays out @page, mm units, flexbox, gradients and webfonts the way
+    the template expects, so the browser IS the renderer. The only real
+    question is WHICH browser - and it should be one that is already on the
+    machine, not a second ~150MB Playwright download.
+    '''
+    for kind, names in _RENDER_PRIORITY:
+        if kind not in ('chrome', 'edge'):
+            continue
+        for name in names:
+            found = shutil.which(name)
+            if found:
+                return found
+    return None
+
+
+def _find_firefox() -> str | None:
+    '''Locate Firefox, for a clear "found but cannot print" error message.'''
+    for name in ('firefox', 'firefox-esr', 'firefox-developer-edition'):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _browser_candidates() -> list[tuple[str, str]]:
+    '''Every renderer this machine can offer, in priority order.
+
+    Returns (kind, path) where path is '' for 'playwright' (it has no CLI
+    binary - the driver locates the browser itself). Firefox is included so
+    it can be reported as "found but unsupported" rather than silently
+    dropped. This is the single source of truth for both the render loop and
+    any diagnostics.
+    '''
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for kind, names in _RENDER_PRIORITY:
+        if kind == 'playwright':
+            out.append(('playwright', ''))
+            continue
+        for name in names:
+            found = shutil.which(name)
+            if found and found not in seen:
+                seen.add(found)
+                out.append((kind, found))
+    return out
+
+
+def _render_with_chrome(chrome: str, html_path: Path, out_path: Path) -> None:
+    '''Print HTML to PDF by shelling out to the system Chrome.
+
+    --user-data-dir is LOAD-BEARING. Without an isolated profile, an already
+    running Chrome instance swallows the invocation (opens a tab in the user's
+    session and exits) and no PDF is ever written. A throwaway profile also
+    keeps the real session, history and cookies untouched.
+    '''
+    with tempfile.TemporaryDirectory(prefix='sable-cover-') as profile:
+        cmd = [
+            chrome,
+            '--headless=new',
+            '--disable-gpu',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--hide-scrollbars',
+            '--no-pdf-header-footer',
+            '--virtual-time-budget=8000',
+            '--run-all-compositor-stages-before-draw',
+            '--user-data-dir=%s' % profile,
+            '--print-to-pdf=%s' % out_path,
+            html_path.as_uri(),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        try:
+            size = out_path.stat().st_size
+        except OSError:
+            size = 0
+        if size == 0:
+            tail = ((proc.stderr or '') + (proc.stdout or ''))[-500:]
+            raise RuntimeError('chrome produced no pdf (exit %s): %s'
+                               % (proc.returncode, tail.strip()))
+
+
+def _render_with_playwright(html_path: Path, out_path: Path) -> None:
+    '''Fallback renderer.
+
+    Tries Playwright's system-Chrome channel first, so this path still works
+    on a machine where the bundled chromium_headless_shell was never
+    downloaded - which is exactly the failure this fixes.
+    '''
     from playwright.sync_api import sync_playwright
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_html = out_path.with_suffix('.html')
-    tmp_html.write_text(build_cover_html(doc, _teacher_for(doc)), encoding='utf-8')
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
+    with sync_playwright() as p:
+        browser = None
+        errors: list[str] = []
+        for opts in ({'channel': 'chrome'}, {'channel': 'chromium'}, {}):
+            try:
+                browser = p.chromium.launch(**opts)
+                break
+            except Exception as exc:
+                errors.append('%s -> %s' % (opts or 'bundled', exc))
+        if browser is None:
+            raise RuntimeError('no usable browser: ' + ' | '.join(errors))
+        try:
             page = browser.new_page(viewport={'width': 794, 'height': 1123})
-            page.goto(tmp_html.as_uri(), wait_until='load')
+            page.goto(html_path.as_uri(), wait_until='load')
             page.wait_for_timeout(400)
             page.pdf(path=str(out_path), format='A4', print_background=True,
                      prefer_css_page_size=True,
                      margin={'top': '0', 'bottom': '0', 'left': '0', 'right': '0'})
+        finally:
             browser.close()
+
+
+def _render_pdf(doc: dict[str, Any], out_path: Path) -> None:
+    '''Render the cover HTML to PDF.
+
+    System Chrome first (already installed, no extra download), Playwright as
+    a fallback. Either way the HTML template stays the single source of truth.
+    '''
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_html = out_path.with_suffix('.html')
+    tmp_html.write_text(
+        build_cover_html(doc, _teacher_for(doc), doc.get('design') or 'classic'),
+        encoding='utf-8',
+    )
+    try:
+        # Walk the priority list: chrome > edge > playwright > firefox.
+        # Firefox is detection-only and is skipped here on purpose.
+        errors: list[str] = []
+        firefox_hint = ''
+        for kind, path in _browser_candidates():
+            if kind == 'firefox':
+                firefox_hint = (' Firefox was found at %s but its CLI only '
+                                'supports --screenshot, not --print-to-pdf - '
+                                'it cannot make PDFs.' % path)
+                continue
+            try:
+                if kind == 'playwright':
+                    _render_with_playwright(tmp_html, out_path)
+                    logger.info('cover rendered via playwright (%s)',
+                                'after chrome/edge unavailable')
+                else:
+                    _render_with_chrome(path, tmp_html, out_path)
+                    logger.info('cover rendered via %s (%s)', path, kind)
+                return
+            except Exception as exc:
+                logger.warning('%s render failed via %s: %s',
+                               kind, path or 'driver', exc)
+                errors.append('%s%s -> %s'
+                              % (kind, ' ' + path if path else '', exc))
+
+        raise RuntimeError(
+            'no browser could render a PDF. Tried: %s.%s'
+            % ('; '.join(errors) or 'none found', firefox_hint)
+        )
     finally:
         try:
             tmp_html.unlink()
@@ -332,6 +518,7 @@ def cover_generate(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         _slug(course.get('no')),
         _slug(doc.get('kind')),
         _slug(doc.get('number')),
+        _slug(doc.get('design') or 'classic'),
         stamp,
     ) if p) + '.pdf'
     out_path = LIBRARY_COVER_DIR / name

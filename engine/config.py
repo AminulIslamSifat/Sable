@@ -185,12 +185,10 @@ def _save_active_accounts(store: dict[str, str]) -> None:
 
 
 def _ensure_active_accounts_migrated() -> None:
-    """Seed the per-provider store from legacy state on first run (once).
+    """Seed the per-provider store from the legacy global on first run (once).
 
-    Sources, in order of increasing precedence:
-      1. `system/.active_account` — seeds EVERY provider slot (old global).
-      2. `settings.json → provider_accounts` — explicit per-provider pins win.
-    If neither exists, slots are left empty and auto-assigned lazily on read.
+    `system/.active_account` (the old global) seeds EVERY provider slot. If it
+    is missing, slots are left empty and auto-assigned lazily on read.
     """
     global _ACTIVE_ACCOUNTS_MIGRATED
     if _ACTIVE_ACCOUNTS_MIGRATED:
@@ -200,7 +198,7 @@ def _ensure_active_accounts_migrated() -> None:
         return
 
     store: dict[str, str] = {}
-    # 1) legacy global → seed all provider slots
+    # Seed every provider slot from the legacy global active-account file.
     try:
         legacy = _ACTIVE_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
     except OSError:
@@ -208,19 +206,6 @@ def _ensure_active_accounts_migrated() -> None:
     if legacy:
         for _p in BROWSER_PROVIDERS:
             store[_p] = legacy
-    # 2) explicit pins override
-    try:
-        import json as _json
-        sp = _SYSTEM / "settings.json"
-        if sp.is_file():
-            data = _json.loads(sp.read_text(encoding="utf-8"))
-            pins = data.get("provider_accounts")
-            if isinstance(pins, dict):
-                for prov, acct in pins.items():
-                    if isinstance(acct, str) and acct.strip():
-                        store[str(prov)] = acct.strip()
-    except Exception:
-        pass
 
     if store:
         _save_active_accounts(store)
@@ -1326,12 +1311,11 @@ def get_max_tool_output_chars() -> int:
 
 
 # ── Per-provider account pinning ────────────────────────────────────────────
-# settings.json: "provider_accounts": {"gemini": "browser-data-acc4", "zai": null}
+# Every provider owns an independent slot in system/.active_accounts.json.
 # A provider mapped to an account name always uses that profile's browser.
-# null / absent → follow the global active account (shared behavior).
 
-# A provider may be referenced by a friendly name; the first key that exists
-# in settings wins. Lets users write "gemini" while the backend is "gemini_web".
+# A provider may be referenced by a friendly name; the first alias that exists
+# in the store wins. Lets callers write "gemini" while the backend is "gemini_web".
 _PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "gemini_web": ("gemini_web", "gemini"),
     "zai": ("zai",),

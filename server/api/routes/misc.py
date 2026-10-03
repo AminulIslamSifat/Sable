@@ -484,16 +484,27 @@ def revert_file(payload: RevertRequest) -> dict[str, str]:
     return {"status": "ok"}
 
 # Cache index.html in memory to avoid disk I/O on every request.
-# Invalidated automatically on server restart (which is when code changes happen).
+#
+# The cache is keyed on the file's mtime, NOT just "is it loaded yet". A bare
+# one-shot cache means editing index.html leaves the server serving the old
+# bytes until a full restart — so adding a <script> tag silently does nothing
+# and the feature looks broken. A stat() per request is far cheaper than the
+# restart it saves.
 _INDEX_CACHE: str | None = None
+_INDEX_CACHE_MTIME: float = -1.0
 
 def _get_index_html() -> str:
-    global _INDEX_CACHE
-    if _INDEX_CACHE is None:
+    global _INDEX_CACHE, _INDEX_CACHE_MTIME
+    try:
+        mtime = INDEX_FILE.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if _INDEX_CACHE is None or mtime != _INDEX_CACHE_MTIME:
         if INDEX_FILE.exists():
             _INDEX_CACHE = INDEX_FILE.read_text(encoding="utf-8")
         else:
             _INDEX_CACHE = "<html><body><h1>Sable</h1><p>index.html not found.</p></body></html>"
+        _INDEX_CACHE_MTIME = mtime
     return _INDEX_CACHE
 
 @router.get("/", response_class=HTMLResponse)

@@ -675,8 +675,8 @@ class ChatService:
     async def get_zai_page(self):
         """Return a Playwright page on chat.z.ai from the z.ai browser context.
 
-        Uses the provider's pinned account if set (provider_accounts.zai),
-        otherwise the shared default browser. Chromium allows one process per
+        Uses the provider's own active account if set, otherwise the shared
+        default browser. Chromium allows one process per
         profile, so the connector must not launch its own.
         """
         browser = self._browser_for_provider("zai")

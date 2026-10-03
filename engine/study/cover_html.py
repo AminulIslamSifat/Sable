@@ -69,7 +69,10 @@ body{font-family:'Inter','DejaVu Sans',sans-serif;color:#1A2230;
 .corner.bl{bottom:6.4mm;left:6.4mm;border-right:0;border-top:0;}
 .corner.br{bottom:6.4mm;right:6.4mm;border-left:0;border-top:0;}
 .header{position:relative;overflow:hidden;color:#fff;padding:14mm 16mm 12mm;
-  background:linear-gradient(135deg,#0A1A2F 0%,#122A4C 55%,#1B3A6B 100%);}
+  background:#0A1A2F;
+  background-image:
+    radial-gradient(circle at 12% -10%,#204a86 0%,rgba(32,74,134,0) 62%),
+    radial-gradient(circle at 100% 120%,#122A4C 0%,rgba(18,42,76,0) 65%);}
 .header::after{content:'';position:absolute;left:0;right:0;bottom:0;height:1.6mm;
   background:linear-gradient(90deg,#C9A227 0%,#E8C766 50%,#C9A227 100%);}
 .header .glow{position:absolute;right:-30mm;top:-55mm;width:95mm;height:95mm;
@@ -138,8 +141,8 @@ body{font-family:'Inter','DejaVu Sans',sans-serif;color:#1A2230;
 # -- template ---------------------------------------------------------------
 
 
-def build_cover_html(data: dict[str, Any], teacher_name: str = '') -> str:
-    '''Render the composer state to a standalone HTML document.'''
+def build_classic_html(data: dict[str, Any], teacher_name: str = '') -> str:
+    '''The classic template: navy gradient band, gold frame, two-column cards.'''
     uni = data.get('university') or {}
     course = data.get('course') or {}
     student = data.get('student') or {}
@@ -210,3 +213,19 @@ def build_cover_html(data: dict[str, Any], teacher_name: str = '') -> str:
         '</div></body></html>',
     ]
     return ''.join(parts)
+
+
+def build_cover_html(data: dict[str, Any], teacher_name: str = '',
+                     design: str = 'classic') -> str:
+    '''Dispatch to a cover template by name.
+
+    Kept as the single public entry point so callers never have to know which
+    template modules exist. An unknown name falls back to the classic design
+    rather than raising — a bad value in the store must not break rendering.
+    '''
+    if (design or '').strip().lower() == 'elegant':
+        # Imported lazily: the elegant module imports helpers from this one, so
+        # a top-level import would be circular.
+        from engine.study.cover_html_elegant import build_elegant_html
+        return build_elegant_html(data, teacher_name)
+    return build_classic_html(data, teacher_name)

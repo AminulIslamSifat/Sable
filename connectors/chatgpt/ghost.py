@@ -144,21 +144,34 @@ JS_HIJACK_INSTALL = r"""
       }
     } catch (e) {}
 
-    // Rewrite ONLY the messages[]; keep every SPA-minted header/cookie.
+    // Rewrite ONLY the message text; keep every SPA-minted header/cookie AND
+    // preserve the SPA-built metadata (attachments live in
+    // messages[0].metadata.attachments — replacing messages[] wholesale
+    // silently dropped every attached file).
     let newOpts = opts;
     try {
       if (window.__ghostPrompt != null) {
         const b = JSON.parse(opts.body);
-        b.messages = [{
-          id: crypto.randomUUID(),
-          author: { role: 'user' },
-          create_time: Date.now() / 1000,
-          content: { content_type: 'text', parts: [window.__ghostPrompt] },
-          metadata: {
-            serialization_metadata: { custom_symbol_offsets: [] },
-            submission_mode: 'manual_send',
-          },
-        }];
+        const msgs = Array.isArray(b.messages) ? b.messages : [];
+        if (msgs.length && msgs[0].content) {
+          // Keep the SPA's message object (id, metadata.attachments, …) and
+          // swap ONLY the text parts to our prompt.
+          msgs[0].content.content_type = 'text';
+          msgs[0].content.parts = [window.__ghostPrompt];
+          b.messages = [msgs[0]];
+        } else {
+          // No SPA message to preserve — synthesize a minimal one (no attach).
+          b.messages = [{
+            id: crypto.randomUUID(),
+            author: { role: 'user' },
+            create_time: Date.now() / 1000,
+            content: { content_type: 'text', parts: [window.__ghostPrompt] },
+            metadata: {
+              serialization_metadata: { custom_symbol_offsets: [] },
+              submission_mode: 'manual_send',
+            },
+          }];
+        }
         newOpts = Object.assign({}, opts, { body: JSON.stringify(b) });
       }
     } catch (e) { /* fall through with original body */ }
@@ -447,10 +460,19 @@ class ChatGPTGhostSession:
         if not self.profile_dir.exists():
             raise RuntimeError(f"profile dir missing: {self.profile_dir}")
         from connectors.common.profile_hub import ProfileHub
+        # Launch mode is user-controlled from Settings → Account → ChatGPT
+        # (headless on/off). Default headed so a first run is visible. When
+        # headless, we launch WITHOUT force_headed and with headless=True.
+        _headless = False
+        try:
+            from engine.scraper import get_settings as _get_scraper_settings
+            _headless = bool(_get_scraper_settings().get("chatgpt_headless", False))
+        except Exception:
+            _headless = False
         _t0 = time.monotonic()
         self._hub = await ProfileHub.acquire(
-            self.profile_dir, self.helium_bin, headless=False,
-            force_headed=True)
+            self.profile_dir, self.helium_bin, headless=_headless,
+            force_headed=not _headless)
         _t1 = time.monotonic()
         self._ctx = self._hub.context
         self._page = await self._hub.new_tab(CHATGPT_URL)
@@ -487,6 +509,142 @@ class ChatGPTGhostSession:
         self._ctx = None
         self._hub = None
         self._installed = False
+
+    async def prepare_new_chat(self) -> None:
+        """Navigate the ghost page to a fresh, blank ChatGPT conversation.
+
+        MUST be called BEFORE upload_file(): the navigation reloads the page
+        and would wipe any composer attachments staged earlier. The page is
+        created once in start() and never navigated, so without this the SPA
+        keeps appending to whatever thread is open. Navigation also wipes the
+        in-page fetch hook, so we force a reinstall afterwards.
+        """
+        if self._page is None or self._page.is_closed():
+            raise RuntimeError("chatgpt ghost page closed")
+        try:
+            await self._page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=20000)
+            await self._page.wait_for_selector("#prompt-textarea", timeout=20000)
+            await self._install_hijack()
+        except Exception as exc:
+            logger.warning("[chatgpt:%s] fresh-chat navigation failed: %s",
+                           self.account, exc)
+
+    # Records the HTTP status of the SPA's /backend-api/files upload so a
+    # failure can be classified (rate limit vs too-large vs auth vs generic)
+    # and surfaced to the UI instead of vanishing. Installed once per page.
+    JS_UPLOAD_WATCH = r"""
+    () => {
+      if (window.__upWatch) return 'already';
+      window.__upWatch = true;
+      window.__upStatus = null;
+      const of = window.fetch;
+      window.fetch = async function(...args) {
+        const u = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+        if (u.includes('/backend-api/files') && !u.includes('process_upload')) {
+          try {
+            const res = await of.apply(this, args);
+            let body = '';
+            try { body = (await res.clone().text()).slice(0, 500); } catch (e) {}
+            window.__upStatus = { status: res.status, body };
+            return res;
+          } catch (e) {
+            window.__upStatus = { status: 0, body: 'network: ' + String(e) };
+            throw e;
+          }
+        }
+        return of.apply(this, args);
+      };
+      return 'installed';
+    }
+    """
+
+    @staticmethod
+    def _classify_upload_failure(status: int, body: str) -> str:
+        """Map an upload HTTP status/body to a short UI-friendly reason code."""
+        b = (body or "").lower()
+        if status == 429 or "rate limit" in b or "too many" in b:
+            return "rate_limited"
+        if status == 413 or "too large" in b or "maximum" in b:
+            return "file_too_large"
+        if status in (401, 403) or "unauthorized" in b or "forbidden" in b:
+            return "not_authorized"
+        if status == 0:
+            return "network_error"
+        if status and status >= 500:
+            return f"server_error_{status}"
+        if status and status >= 400:
+            return f"upload_rejected_{status}"
+        return "upload_failed"
+
+    async def upload_file(self, path: str, timeout_ms: int = 30000) -> dict[str, Any]:
+        """Stage a file in the ChatGPT composer via the hidden #upload-files input.
+
+        The SPA uploads it and, on the next submit, builds
+        ``messages[0].metadata.attachments[]`` itself. We therefore do NOT
+        hand-roll the /backend-api/files dance — we set the input and let the
+        SPA run its own upload path (prepare token, Azure PUT, process), which
+        is the only flow the server accepts. The hijack's message rewrite is
+        adjusted to PRESERVE metadata.attachments so the SPA-built attachment
+        survives our prompt swap.
+
+        Returns {path, name, ok, reason}. On failure `ok` is False and `reason`
+        is a short code (rate_limited / file_too_large / not_authorized /
+        network_error / server_error_<n> / upload_rejected_<n> / upload_failed /
+        timeout). The caller surfaces `reason` to the UI and CONTINUES the send
+        without the attachment — a failed upload must never abort the turn.
+        """
+        from pathlib import Path as _Path
+        p = _Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"chatgpt upload: no such file: {p}")
+        if self._page is None or self._page.is_closed():
+            raise RuntimeError("chatgpt ghost page closed")
+        # Install the upload-status watcher (idempotent) and reset it.
+        try:
+            await self._page.evaluate(self.JS_UPLOAD_WATCH)
+            await self._page.evaluate("() => { window.__upStatus = null; }")
+        except Exception:
+            pass
+        locator = self._page.locator("input#upload-files").first
+        await locator.set_input_files(str(p), timeout=timeout_ms)
+        # Wait for the SPA to finish its upload and render the attachment chip.
+        # Poll for the file name text; fall back to a fixed settle time.
+        attached = False
+        deadline = time.time() + (timeout_ms / 1000.0)
+        while time.time() < deadline:
+            try:
+                found = await self._page.evaluate(
+                    "(name) => document.body.innerText.includes(name)", p.name
+                )
+                if found:
+                    attached = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        # Give the SPA a moment to finalize the attachment record server-side.
+        await asyncio.sleep(1.5)
+
+        if attached:
+            logger.info("[chatgpt:%s] uploaded %s (ok)", self.account, p.name)
+            return {"path": str(p), "name": p.name, "ok": True, "reason": None}
+
+        # Not attached — read the captured upload HTTP status to classify why.
+        reason = "upload_failed"
+        try:
+            st = await self._page.evaluate("() => window.__upStatus")
+            if st and isinstance(st, dict):
+                reason = self._classify_upload_failure(
+                    int(st.get("status") or 0), str(st.get("body") or "")
+                )
+            else:
+                reason = "timeout"
+        except Exception:
+            reason = "timeout"
+        logger.warning(
+            "[chatgpt:%s] upload FAILED for %s (reason=%s)", self.account, p.name, reason
+        )
+        return {"path": str(p), "name": p.name, "ok": False, "reason": reason}
 
     async def is_healthy(self) -> bool:
         if self._page is None or self._ctx is None:

@@ -1867,6 +1867,11 @@ async def chat(request: ChatRequest):
                     # Experimental scraper: engine uploads these via Playwright
                     elif _api_backend == "deepseek_scraper" and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+                    # ChatGPT ghost: the connector stages files via the SPA's
+                    # #upload-files input (set_input_files) and lets the SPA
+                    # build messages[0].metadata.attachments itself.
+                    elif _api_backend == "chatgpt" and round_index == 0 and resolved_files:
+                        _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
                     # Inject skill-produced images (from get_file) if model supports vision
                     _extra_ref_ids: list[str] = []
                     if _pending_skill_images:

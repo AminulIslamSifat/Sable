@@ -52,7 +52,7 @@
   // 'search' and 'stats' moved out: search is the rail search panel
   // (study-aware), stats is a dashboard card. 'academics' was removed too —
   // topics are created and managed from the library's "All documents" view.
-  const TABS = ['library', 'indexing', 'rooms', 'drive', 'notes', 'decks', 'humanizer'];
+  const TABS = ['library', 'indexing', 'rooms', 'drive', 'notes', 'decks', 'humanizer', 'cover'];
 
   // ─── Rendering ───
 
@@ -1142,6 +1142,7 @@
     notes: () => (window.studyNotes ? window.studyNotes.renderTab() : ''),
     decks: () => (window.studySRS ? window.studySRS.renderTab() : ''),
     humanizer: () => (window.studyHumanizer ? window.studyHumanizer.renderTab() : ''),
+    cover: () => (window.studyCover ? window.studyCover.renderTab() : ''),
   };
 
   function setTab(tab) {
@@ -1184,6 +1185,16 @@
         if (activeTab === 'humanizer') refreshTab();
       }).catch(() => {});
     }
+
+    // Cover page: fetch the remembered rosters once, then bind its inputs.
+    // bind() runs after every paint because the form is rebuilt each render.
+    if (tab === 'cover' && window.studyCover) {
+      if (!window.studyCover.isLoaded() && !window.studyCover.isLoading()) {
+        window.studyCover.reload().catch(() => {});
+      } else {
+        window.studyCover.bind();
+      }
+    }
   }
 
   /**
@@ -1219,6 +1230,8 @@
     paintPreservingFocus(content, (RENDERERS[activeTab] || (() => ''))());
     if (window.lucide) window.lucide.createIcons();
     renderSidebar(activeTab);
+    // Rebuilt DOM means the cover form's listeners are gone; rebind them.
+    if (activeTab === 'cover' && window.studyCover) window.studyCover.bind();
   }
 
   // ─── Contextual sidebar ───
@@ -1300,6 +1313,8 @@
       html = window.studySRS ? window.studySRS.renderSidebar() : '';
     } else if (tab === 'humanizer') {
       html = window.studyHumanizer ? window.studyHumanizer.renderSidebar() : '';
+    } else if (tab === 'cover') {
+      html = window.studyCover ? window.studyCover.renderSidebar() : '';
     }
 
     // Focus-preserving: a library/index refresh firing mid-typing must not
@@ -1552,6 +1567,7 @@
   function handleContentClick(e) {
     // Feature tabs own their own actions. Each handler returns true when it
     // consumed the click, so delegation order matters but stays declarative.
+    if (activeTab === 'cover' && window.studyCover && window.studyCover.handleClick(e)) return;
     if (window.studyRooms && window.studyRooms.handleClick(e)) return;
     if (window.studySRS && window.studySRS.handleClick(e)) return;
 

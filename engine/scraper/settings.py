@@ -37,6 +37,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "port": 9333,
     "headless": False,
     "show_thoughts": True,
+    # ChatGPT's ghost-tab browser is a SEPARATE transport from the scraper
+    # engine, so it gets its own launch-mode flag. Default headed so a first
+    # run is visible / debuggable.
+    "chatgpt_headless": False,
 }
 
 
@@ -70,6 +74,7 @@ def _load_settings() -> dict[str, Any]:
     # Coerce to a real bool so a hand-edited JSON string ("true") can't leak
     # through as truthy-text and silently invert the launch mode.
     settings["headless"] = _as_bool(settings.get("headless"), False)
+    settings["chatgpt_headless"] = _as_bool(settings.get("chatgpt_headless"), False)
     return settings
 
 
@@ -92,6 +97,7 @@ def get_settings() -> dict[str, Any]:
     settings["engine_exists"] = Path(engine_path).exists()
     settings["engine_label"] = ENGINE_REGISTRY.get(engine_type, {}).get("label", engine_type)
     settings["headless"] = _as_bool(settings.get("headless"), False)
+    settings["chatgpt_headless"] = _as_bool(settings.get("chatgpt_headless"), False)
     return settings
 
 
@@ -106,6 +112,7 @@ def list_engines() -> list[dict[str, str]]:
 def save_settings(settings: dict[str, Any]) -> None:
     clean = {key: settings.get(key, DEFAULT_SETTINGS[key]) for key in DEFAULT_SETTINGS}
     clean["headless"] = _as_bool(clean.get("headless"), False)
+    clean["chatgpt_headless"] = _as_bool(clean.get("chatgpt_headless"), False)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(clean, f, indent=2, ensure_ascii=False)
 
@@ -130,6 +137,9 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
     # so a first run is visible and debuggable.
     if "headless" in payload:
         settings["headless"] = _as_bool(payload.get("headless"), False)
+    # ChatGPT ghost-tab launch mode — independent of the scraper engine.
+    if "chatgpt_headless" in payload:
+        settings["chatgpt_headless"] = _as_bool(payload.get("chatgpt_headless"), False)
 
     save_settings(settings)
     return get_settings()

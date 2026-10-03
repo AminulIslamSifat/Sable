@@ -75,16 +75,6 @@ def _resolve_active_account() -> str:
     return get_active_account("kimi")
 
 
-def _provider_account() -> str | None:
-    """Optional per-provider account override from settings.provider_accounts."""
-    try:
-        from engine.config import _SYSTEM
-        s = json.loads((_SYSTEM / "settings.json").read_text(encoding="utf-8"))
-        return (s.get("provider_accounts") or {}).get("kimi")
-    except Exception:
-        return None
-
-
 def _kimi_ghost_enabled() -> bool:
     try:
         from connectors.kimi import ghost as _g
@@ -330,7 +320,7 @@ class KimiClient:
 
     @property
     def account(self) -> str:
-        acct = self._account or _provider_account() or _resolve_active_account()
+        acct = self._account or _resolve_active_account()
         self.ctx.account = acct
         return acct
 

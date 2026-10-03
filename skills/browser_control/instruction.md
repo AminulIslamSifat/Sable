@@ -100,6 +100,7 @@ cd PROJECT_ROOT && uv run python skills/browser_control/scripts/browser_control.
 | "open [url]" / "go to [site]" / "navigate" | Use `open` |
 | "click [selector]" / "tap [element]" on a webpage | Use `click` |
 | "type [text] into [field]" on a webpage | Use `type` |
+| "upload [file]" / "attach [file]" to a page | Use `upload` (JS cannot fake file inputs) |
 | "screenshot" / "capture the page" | Use `screenshot` |
 | "what is on the page" / "get the HTML" / "dump the DOM" | Use `dump` or `source` |
 | "extract [data]" / "scrape [elements]" | Use `extract` |
@@ -200,6 +201,7 @@ Then verify: `status`. If daemon is not running, ALL commands fail.
 | `select SELECTOR VALUE` | CSS selector, option value | Select dropdown option. |
 | `hover SELECTOR` | CSS selector | Hover over element. |
 | `press KEY` | key name (`Enter`, `Tab`, `Control+Enter`, etc) | Press keyboard key. |
+| `upload SELECTOR FILE...` | CSS selector of an `<input type=file>`, one or more file paths | Attach real file(s) to a file input. The ONLY way to upload — JS cannot fake a file input. |
 | `eval JS` | JS string, `b64:ENCODED`, or `--file /path.js` | Execute JS in page context. |
 
 ### eval Input Modes

@@ -65,6 +65,7 @@
   <link rel="stylesheet" href="/static/css/study-reader.css?v=16">
   <link rel="stylesheet" href="/static/css/study-features.css?v=2">
   <link rel="stylesheet" href="/static/css/study-rooms.css?v=1">
+  <link rel="stylesheet" href="/static/css/study-cover.css?v=1">
   <link rel="stylesheet" href="/static/css/dialog.css?v=1">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
@@ -658,6 +659,7 @@
           <button class="study-tab" data-study-tab="notes"><i data-lucide="notebook-pen" class="icon-lucide"></i> Notes</button>
           <button class="study-tab" data-study-tab="decks"><i data-lucide="layers" class="icon-lucide"></i> Decks</button>
           <button class="study-tab" data-study-tab="humanizer"><i data-lucide="wand-sparkles" class="icon-lucide"></i> Humanizer</button>
+          <button class="study-tab" data-study-tab="cover"><i data-lucide="file-badge" class="icon-lucide"></i> Cover Page</button>
         </div>
         <div class="study-header-actions">
           <div id="studyTimerHost"></div>
@@ -2377,6 +2379,7 @@
   <script src="/static/js/study-rooms.js?v=2"></script>
   <!-- Humanizer tab: LLM rewrite + rule pass via /api/study/humanize -->
   <script src="/static/js/study-humanizer.js?v=4"></script>
+  <script src="/static/js/study-cover.js?v=1"></script>
   <!-- Resumable OCR + AI indexing (must load before study.js — cards use its badge) -->
   <script src="/static/js/library-index.js?v=1"></script>
   <script src="/static/js/study.js?v=23"></script>
