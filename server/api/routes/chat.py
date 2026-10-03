@@ -769,13 +769,14 @@ async def chat(request: ChatRequest):
                 return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
             if not _upstream_session_id:
                 return {"error": "Could not create chat session"}
+    # NOTE: per-provider prompt-injection toggles are resolved *after*
+    # current_provider is computed below — see `_inj = ...` further down.
     _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _ctx_parts = ""
     if request.cwd:
         _ctx_parts += f" | cwd: {request.cwd}"
     if request.open_file:
         _ctx_parts += f" | file: {request.open_file}"
-    timestamped_message = f"[{_ts}{_ctx_parts}]\n{request.message}"
     _memory_context = None  # injected before user message in api_message
     _injected_memory_keys = get_injected_memory_keys(active_chat_id)
     _ms_cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
@@ -919,6 +920,26 @@ async def chat(request: ChatRequest):
         current_provider = _resolve_api_backend(request.model)
     else:
         current_provider = "qwen"
+
+    # Per-provider prompt-injection toggles (Settings -> Providers).
+    # Unknown provider -> all-on defaults, so behaviour is unchanged until a
+    # key is explicitly toggled off. The inner try/except deliberately does
+    # NOT mask a bad provider key: a failure here would silently disable every
+    # toggle, so an unknown provider yields the all-on default map instead.
+    try:
+        from connectors.common.prompt_injection import injection_enabled_map as _inj_map
+        _inj = _inj_map(current_provider)
+    except Exception:
+        logger.warning("prompt_injection: config lookup failed", exc_info=True)
+        _inj = {}
+
+    # Timestamp + cwd/file prefix — built AFTER the toggles so "timestamp:off"
+    # strips the whole `[YYYY-MM-DD HH:MM:SS | cwd: ...]` line from the message.
+    if _inj.get("timestamp", True):
+        timestamped_message = f"[{_ts}{_ctx_parts}]\n{request.message}"
+    else:
+        timestamped_message = request.message
+
     locked_provider = get_chat_provider(active_chat_id)
     _forked = is_chat_fork(active_chat_id)
     if locked_provider and locked_provider != current_provider and not _forked:
@@ -1031,21 +1052,22 @@ async def chat(request: ChatRequest):
         # ponytail: study mode has no chat_title tool (get_study_tool_schemas) and
         # its directive replaces the chat harness — injecting the mandatory-title
         # nudge just makes the model hallucinate a tool call it can't make.
-        if _layout_mode != "study":
+        if _layout_mode != "study" and _inj.get("chat_title", True):
             _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
         # Inject platform info so the model uses correct paths and commands
-        import platform as _plat
-        _sys = _plat.system()  # 'Linux', 'Windows', 'Darwin'
-        _plat_hints = {
-            'Linux': 'Use Linux paths (/home/user/..., /tmp/...) and commands (ls, cat, grep, etc.). Shell is typically bash/fish/zsh.',
-            'Windows': r'Use Windows paths (C:\Users\..., %TEMP%\...) and commands (dir, type, findstr, PowerShell cmdlets). Use backslashes or forward slashes.',
-            'Darwin': 'Use macOS paths (/Users/..., /tmp/...) and commands (ls, cat, grep). Shell is zsh by default. Homebrew is the common package manager.',
-        }
-        _hint = _plat_hints.get(_sys, f'Platform: {_sys}. Use appropriate paths and commands for this OS.')
-        _context_parts.append(f'[SYSTEM PLATFORM: The user is on {_sys}. {_hint}]')
+        if _inj.get("platform", True):
+            import platform as _plat
+            _sys = _plat.system()  # 'Linux', 'Windows', 'Darwin'
+            _plat_hints = {
+                'Linux': 'Use Linux paths (/home/user/..., /tmp/...) and commands (ls, cat, grep, etc.). Shell is typically bash/fish/zsh.',
+                'Windows': r'Use Windows paths (C:\Users\..., %TEMP%\...) and commands (dir, type, findstr, PowerShell cmdlets). Use backslashes or forward slashes.',
+                'Darwin': 'Use macOS paths (/Users/..., /tmp/...) and commands (ls, cat, grep). Shell is zsh by default. Homebrew is the common package manager.',
+            }
+            _hint = _plat_hints.get(_sys, f'Platform: {_sys}. Use appropriate paths and commands for this OS.')
+            _context_parts.append(f'[SYSTEM PLATFORM: The user is on {_sys}. {_hint}]')
         try:
             from server.database import get_upcoming_schedules
-            _upcoming = get_upcoming_schedules(days=10)
+            _upcoming = get_upcoming_schedules(days=10) if _inj.get("schedule", True) else []
             if _upcoming:
                 _sched_lines = []
                 for _s in _upcoming:
@@ -1068,7 +1090,7 @@ async def chat(request: ChatRequest):
         except Exception:
             pass
     # Relevant memory context (already searched above)
-    if _memory_context:
+    if _memory_context and _inj.get("memory", True):
         _context_parts.append(_memory_context)
     # Study grounding rides in the API payload only — it must never be written
     # to the stored user message (timestamped_message is what gets persisted),

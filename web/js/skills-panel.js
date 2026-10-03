@@ -620,6 +620,7 @@
       loadCustomEndpoints();
       if (typeof loadSearchSettings === "function") loadSearchSettings();
       if (typeof loadJitterSettings === "function") loadJitterSettings();
+      if (typeof loadPromptInjectionSettings === "function") loadPromptInjectionSettings();
     });
 
     // --- Request Jitter section (inside Providers tab) ---
@@ -696,6 +697,180 @@
 
     window._universalSave?.register("jitter", _saveJitterSettings);
     window.loadJitterSettings = loadJitterSettings;
+
+    // --- Prompt Injection: provider picker + section switches ---
+    const _piEls = {
+      select: () => document.getElementById("piProviderSelect"),
+      sections: () => document.getElementById("piSections"),
+      empty: () => document.getElementById("piEmpty"),
+      count: () => document.getElementById("piCount"),
+      status: () => document.getElementById("piStatus"),
+      allOn: () => document.getElementById("piAllOn"),
+      allOff: () => document.getElementById("piAllOff"),
+      reload: () => document.getElementById("piReload"),
+    };
+    let _piProviders = {};      // provider -> {key: bool}
+    let _piKeys = [];
+    let _piKeyLabels = {};
+    let _piProviderLabels = {};
+    let _piProviderOrder = [];
+    let _piActive = "";         // currently selected provider
+    let _piSwitches = [];       // checkbox elements for _piActive
+
+    // Keys grouped by where they act, so the panel reads as sections not a dump.
+    const _PI_GROUPS = [
+      { title: "System Prompt", keys: ["persona", "output_format", "skills", "tools", "tool_format", "mcp", "output_dir", "facts", "git"] },
+      { title: "Message Prefix", keys: ["chat_title", "platform", "schedule", "timestamp", "memory"] },
+    ];
+
+    function _piUpdateCount() {
+      const c = _piEls.count();
+      if (!c) return;
+      if (!_piActive) { c.textContent = ""; return; }
+      const row = _piProviders[_piActive] || {};
+      const on = _piKeys.filter((k) => row[k] !== false).length;
+      c.textContent = on + " / " + _piKeys.length + " on";
+    }
+
+    function _piRender() {
+      const box = _piEls.sections();
+      const empty = _piEls.empty();
+      if (!box || !empty) return;
+
+      _piSwitches = [];
+      box.innerHTML = "";
+
+      if (!_piActive) {
+        box.style.display = "none";
+        empty.style.display = "block";
+        _piUpdateCount();
+        return;
+      }
+      box.style.display = "flex";
+      empty.style.display = "none";
+
+      const row = _piProviders[_piActive] || {};
+
+      _PI_GROUPS.forEach((grp) => {
+        const hdr = document.createElement("div");
+        hdr.textContent = grp.title;
+        hdr.style.cssText = "font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);margin:10px 0 2px;";
+        box.appendChild(hdr);
+
+        grp.keys.forEach((key) => {
+          const on = row[key] !== false;
+
+          const line = document.createElement("label");
+          line.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;cursor:pointer;font-size:11.5px;color:var(--text);";
+          line.addEventListener("mouseenter", () => { line.style.background = "rgba(255,255,255,.04)"; });
+          line.addEventListener("mouseleave", () => { line.style.background = "transparent"; });
+
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = on;
+          cb.style.cssText = "accent-color:var(--accent);width:14px;height:14px;cursor:pointer;flex:0 0 auto;";
+          cb.addEventListener("change", () => {
+            if (!_piProviders[_piActive]) _piProviders[_piActive] = {};
+            _piProviders[_piActive][key] = cb.checked;
+            _piUpdateCount();
+            window._universalSave?.markDirty("prompt-injection");
+            const st = _piEls.status();
+            if (st) st.textContent = "Unsaved changes.";
+          });
+          _piSwitches.push(cb);
+
+          const txt = document.createElement("span");
+          txt.textContent = _piKeyLabels[key] || key;
+
+          line.appendChild(cb);
+          line.appendChild(txt);
+          box.appendChild(line);
+        });
+      });
+
+      _piUpdateCount();
+    }
+
+    function _piPopulateProviders() {
+      const sel = _piEls.select();
+      if (!sel) return;
+      const keep = _piActive;
+      sel.innerHTML = "";
+      const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "Select provider…";
+      sel.appendChild(ph);
+      _piProviderOrder.forEach((prov) => {
+        const o = document.createElement("option");
+        o.value = prov;
+        o.textContent = _piProviderLabels[prov] || prov;
+        sel.appendChild(o);
+      });
+      sel.value = keep || "";
+    }
+
+    function _piSetAll(val) {
+      if (!_piActive) return;
+      if (!_piProviders[_piActive]) _piProviders[_piActive] = {};
+      _piKeys.forEach((k) => { _piProviders[_piActive][k] = val; });
+      _piSwitches.forEach((cb) => { cb.checked = val; });
+      _piUpdateCount();
+      window._universalSave?.markDirty("prompt-injection");
+      const st = _piEls.status();
+      if (st) st.textContent = "Unsaved changes.";
+    }
+
+    async function loadPromptInjectionSettings() {
+      try {
+        const res = await fetch("/api/settings/prompt-injection");
+        if (!res.ok) {
+          const st = _piEls.status();
+          if (st) st.textContent = "Failed to load (HTTP " + res.status + "). Server may need a restart.";
+          return;
+        }
+        const d = await res.json();
+        _piProviders = d.providers || {};
+        _piKeys = d.keys || [];
+        _piKeyLabels = d.key_labels || {};
+        _piProviderLabels = d.provider_labels || {};
+        _piProviderOrder = d.available_providers || Object.keys(_piProviders);
+        _piPopulateProviders();
+        _piRender();
+        const st = _piEls.status();
+        if (st) st.textContent = "Loaded.";
+      } catch (e) {
+        console.error("Failed to load prompt-injection settings:", e);
+        const st = _piEls.status();
+        if (st) st.textContent = "Failed to load: " + e.message;
+      }
+    }
+
+    async function _savePromptInjectionSettings() {
+      const res = await fetch("/api/settings/prompt-injection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providers: _piProviders }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || "Save failed");
+      if (data.providers) _piProviders = data.providers;
+      _piRender();
+      const st = _piEls.status();
+      if (st) st.textContent = "Saved.";
+    }
+
+    _piEls.select()?.addEventListener("change", (e) => {
+      _piActive = e.target.value || "";
+      _piRender();
+      const st = _piEls.status();
+      if (st) st.textContent = _piActive ? "" : "Select a provider to configure its injections.";
+    });
+    _piEls.allOn()?.addEventListener("click", () => _piSetAll(true));
+    _piEls.allOff()?.addEventListener("click", () => _piSetAll(false));
+    _piEls.reload()?.addEventListener("click", () => loadPromptInjectionSettings());
+
+    window._universalSave?.register("prompt-injection", _savePromptInjectionSettings);
+    window.loadPromptInjectionSettings = loadPromptInjectionSettings;
 
     // --- Search Engine section (inside Providers tab) ---
     const _searchEls = {

@@ -707,6 +707,71 @@ async def set_jitter_settings(request: Request) -> dict[str, Any]:
 
 
 
+# ── Prompt Injection (per-provider toggle matrix) ─────────────────────
+
+@router.get("/api/settings/prompt-injection")
+async def get_prompt_injection_settings() -> dict[str, Any]:
+    """Return the per-provider prompt-injection toggle matrix."""
+    from connectors.common.prompt_injection import (
+        get_injection_config, INJECTION_KEYS, KEY_LABELS, PROVIDERS, PROVIDER_LABELS,
+    )
+    cfg = get_injection_config()
+    return {
+        "providers": cfg["providers"],
+        "keys": list(INJECTION_KEYS),
+        "key_labels": KEY_LABELS,
+        "available_providers": list(PROVIDERS),
+        "provider_labels": PROVIDER_LABELS,
+    }
+
+
+@router.post("/api/settings/prompt-injection")
+async def set_prompt_injection_settings(request: Request) -> dict[str, Any]:
+    """Update the prompt-injection toggle matrix.
+
+    Body: ``{"providers": {"deepseek": {"persona": false, ...}, ...}}``
+    Only known providers/keys are accepted; unknown ones are ignored.
+    """
+    from connectors.common.prompt_injection import (
+        get_injection_config, INJECTION_KEYS, PROVIDERS, KEY_LABELS, PROVIDER_LABELS,
+    )
+    body = await request.json()
+
+    cfg = get_injection_config()
+    providers = cfg["providers"]
+
+    incoming = body.get("providers")
+    if isinstance(incoming, dict):
+        for prov in PROVIDERS:
+            row = incoming.get(prov)
+            if not isinstance(row, dict):
+                continue
+            for k in INJECTION_KEYS:
+                if k in row:
+                    providers[prov][k] = bool(row[k])
+
+    _settings = _read_system_settings()
+    _settings["prompt_injection"] = {"providers": providers}
+    _write_system_settings(_settings)
+
+    # Bust every connector's cached instruction payload so the change applies
+    # to the very next turn instead of on next server restart.
+    try:
+        from connectors.common.instruction_builder import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "providers": providers,
+        "keys": list(INJECTION_KEYS),
+        "key_labels": KEY_LABELS,
+        "available_providers": list(PROVIDERS),
+        "provider_labels": PROVIDER_LABELS,
+    }
+
+
 @router.post("/api/settings/gemini/api-key")
 async def add_gemini_api_key(request: Request) -> dict[str, Any]:
     """Add a Gemini API key to the pool."""

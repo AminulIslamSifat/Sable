@@ -81,9 +81,33 @@ def kill_process_tree(
     if sig is None:
         sig = signal.SIGTERM
 
-    # Never killpg a zombie: getpgid() on a dead-but-unreaped pid can return a
-    # group that still holds LIVE processes, so killpg would murder healthy
-    # browsers. If the pid isn't a running process, there is nothing to kill.
+    # Resolve the process group BEFORE any liveness check.
+    #
+    # Why: when a shell does `cmd & exit` under start_new_session=True, the
+    # shell IS the group leader (pgid == pid). It exits, becomes a ZOMBIE, and
+    # is never reaped by us — yet its group is still valid and still holds the
+    # live descendants we actually need to kill. A zombie-only guard here would
+    # skip the signal entirely and leak the whole tree.
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = None
+
+    # killpg is only safe when WE own the group. If pgid == pid then we were
+    # the setsid/start_new_session leader and the group is ours to destroy —
+    # even if the leader is a zombie. If pgid != pid we did not create a
+    # session, so the group belongs to our parent; killing it would take out
+    # unrelated processes.
+    if pgid is not None and pgid == pid:
+        try:
+            os.killpg(pgid, sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    # Fallback: single-pid kill. Here the zombie check IS correct — signalling
+    # a dead-but-unreaped pid does nothing useful, and getpgid() may have
+    # handed us a group we don't own.
     try:
         with open(f"/proc/{pid}/stat", "rb") as fh:
             data = fh.read()
@@ -95,10 +119,6 @@ def kill_process_tree(
         return
 
     try:
-        pgid = os.getpgid(pid)
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            os.kill(pid, sig)
-        except Exception:
-            pass
+        os.kill(pid, sig)
+    except Exception:
+        pass

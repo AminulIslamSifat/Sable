@@ -1441,6 +1441,24 @@
           <div id="jitterProviders" style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:8px;"></div>
           <div id="jitterStatus" style="font-size:11px;color:var(--text-dim);margin-top:6px;"></div>
 
+          <!-- ═══ Prompt Injection (per-provider) ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">💉</span>Prompt Injection</h3>
+          <p class="muted mem-desc">Pick a provider, then toggle each prompt fragment on or off. Anything switched off is <em>never built</em> — the model receives none of it. Applies from the next message.</p>
+
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px;">
+            <select id="piProviderSelect" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;min-width:200px;">
+              <option value="">Select provider…</option>
+            </select>
+            <button id="piAllOn" class="icon-btn" style="width:auto;padding:5px 12px;font-size:11px;">All on</button>
+            <button id="piAllOff" class="icon-btn" style="width:auto;padding:5px 12px;font-size:11px;">All off</button>
+            <button id="piReload" class="icon-btn" style="width:auto;padding:5px 12px;font-size:11px;">Reload</button>
+            <span id="piCount" class="muted" style="font-size:11px;"></span>
+          </div>
+
+          <div id="piSections" style="display:none;flex-direction:column;gap:4px;"></div>
+          <div id="piEmpty" class="muted" style="font-size:11.5px;padding:10px 0;">Select a provider to configure its injections.</div>
+          <div id="piStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
+
           <!-- ═══ Search Engine ═══ -->
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span>Search Engine</h3>
           <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>

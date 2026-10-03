@@ -328,6 +328,15 @@ def build_instructions(
     parts: list[str] = []
     _active_tool_format = None  # Default init to prevent UnboundLocalError in non-chat/edge cases
 
+    # Per-provider injection toggles (Settings -> Providers).
+    # Unknown/None provider -> all-on defaults, so new connectors are never
+    # silently starved of context until explicitly toggled off.
+    try:
+        from connectors.common.prompt_injection import injection_enabled_map
+        _inj = injection_enabled_map(provider)
+    except Exception:
+        _inj = {}
+
     # Persona config is needed for both main chat and subagent paths (output_format toggle)
     _persona_cfg_path = _INSTRUCTION_DIR / ".persona_config.json"
 
@@ -368,29 +377,30 @@ def build_instructions(
             if instr_path.exists():
                 project_instruction = instr_path.read_text(encoding="utf-8")
 
-        if project_instruction and proj and proj.get("persona_enabled", True):
-            parts.append(project_instruction)
-        else:
-            # Load active persona from config
-            _active_persona = None
-            _disabled_personas: list[str] = []
-            if _persona_cfg_path.exists():
-                try:
-                    _pcfg = json.loads(_persona_cfg_path.read_text(encoding="utf-8"))
-                    _active_persona = _pcfg.get("active")
-                    _disabled_personas = _pcfg.get("disabled", [])
-                except (json.JSONDecodeError, OSError):
-                    pass
+        if _inj.get("persona", True):
+            if project_instruction and proj and proj.get("persona_enabled", True):
+                parts.append(project_instruction)
+            else:
+                # Load active persona from config
+                _active_persona = None
+                _disabled_personas: list[str] = []
+                if _persona_cfg_path.exists():
+                    try:
+                        _pcfg = json.loads(_persona_cfg_path.read_text(encoding="utf-8"))
+                        _active_persona = _pcfg.get("active")
+                        _disabled_personas = _pcfg.get("disabled", [])
+                    except (json.JSONDecodeError, OSError):
+                        pass
 
-            if _active_persona and _active_persona not in _disabled_personas:
-                persona_path = _INSTRUCTION_DIR / f"{_active_persona}.md"
-                if persona_path.exists():
-                    parts.append(persona_path.read_text(encoding="utf-8").strip())
+                if _active_persona and _active_persona not in _disabled_personas:
+                    persona_path = _INSTRUCTION_DIR / f"{_active_persona}.md"
+                    if persona_path.exists():
+                        parts.append(persona_path.read_text(encoding="utf-8").strip())
 
-            # Always load personal.md (user info, not a persona)
-            personal_path = _INSTRUCTION_DIR / "personal.md"
-            if personal_path.exists():
-                parts.append(personal_path.read_text(encoding="utf-8").strip())
+                # Always load personal.md (user info, not a persona)
+                personal_path = _INSTRUCTION_DIR / "personal.md"
+                if personal_path.exists():
+                    parts.append(personal_path.read_text(encoding="utf-8").strip())
 
     # --- Output Format ---
     _of_enabled = True
@@ -400,17 +410,17 @@ def build_instructions(
             _of_enabled = _pcfg2.get("output_format_enabled", True)
         except (json.JSONDecodeError, OSError):
             pass
-    if _of_enabled and (not proj or proj.get("output_format_enabled", True)):
+    if _inj.get("output_format", True) and _of_enabled and (not proj or proj.get("output_format_enabled", True)):
         of_path = _INSTRUCTION_DIR / "output_format.md"
         if of_path.exists():
             parts.append(of_path.read_text(encoding="utf-8").strip())
 
     # --- Facts to Remember ---
-    if proj and proj.get("facts"):
+    if _inj.get("facts", True) and proj and proj.get("facts"):
         parts.append(f"# Facts to Remember (Project: {proj.get('name', 'Unknown')})\n{proj['facts']}")
 
     # --- Git Details ---
-    if proj and any(proj.get(k) for k in ("git_repo", "git_username", "git_branch")):
+    if _inj.get("git", True) and proj and any(proj.get(k) for k in ("git_repo", "git_username", "git_branch")):
         git_lines = ["# Git Repository Details"]
         if proj.get("git_repo"):
             git_lines.append(f"- Repo: {proj['git_repo']}")
@@ -449,7 +459,7 @@ def build_instructions(
             agent_id="maria" if not agent_role else f"agent-{agent_role}",
             disabled=_disabled_skills or None,
         )
-        skills_prompt = _engine.get_registry_prompt()
+        skills_prompt = _engine.get_registry_prompt() if _inj.get("skills", True) else ""
         if skills_prompt.strip():
             parts.append(skills_prompt)
 
@@ -457,36 +467,38 @@ def build_instructions(
         # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
         # This is the highest-weighted instruction via dual placement (primer + recency).
         # Respects user override from settings UI (tool_call_format dropdown).
-        _active_tool_format = get_tool_format(provider)
+        _active_tool_format = get_tool_format(provider) if _inj.get("tool_format", True) else ""
         if _active_tool_format:
             parts.append(_active_tool_format)
 
         # --- Tool Schemas ---
-        try:
-            from engine.tools_loader import get_tools_prompt_section
-            _disabled_tools: list[str] = []
-            _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
-            if _disabled_tools_path.exists():
-                _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
-                if isinstance(_dt, list):
-                    _disabled_tools = _dt
-            # Block interactive/multiagent tools for subagents
-            if agent_role:
-                _disabled_tools = list(set(_disabled_tools) | _SUBAGENT_BLOCKED_TOOLS)
-            tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
-            if tools_section:
-                parts.append(tools_section)
-        except Exception:
-            pass
+        if _inj.get("tools", True):
+            try:
+                from engine.tools_loader import get_tools_prompt_section
+                _disabled_tools: list[str] = []
+                _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
+                if _disabled_tools_path.exists():
+                    _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
+                    if isinstance(_dt, list):
+                        _disabled_tools = _dt
+                # Block interactive/multiagent tools for subagents
+                if agent_role:
+                    _disabled_tools = list(set(_disabled_tools) | _SUBAGENT_BLOCKED_TOOLS)
+                tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
+                if tools_section:
+                    parts.append(tools_section)
+            except Exception:
+                pass
 
         # --- MCP Tools ---
-        try:
-            from engine.mcp.manager import get_mcp_manager
-            mcp_section = get_mcp_manager().get_prompt_section()
-            if mcp_section:
-                parts.append(mcp_section)
-        except Exception:
-            pass
+        if _inj.get("mcp", True):
+            try:
+                from engine.mcp.manager import get_mcp_manager
+                mcp_section = get_mcp_manager().get_prompt_section()
+                if mcp_section:
+                    parts.append(mcp_section)
+            except Exception:
+                pass
     else:
         # Chat mode: only web_search + chat_title, no skills, no MCP, no format primer
         try:
@@ -503,16 +515,17 @@ def build_instructions(
         except Exception:
             pass
 
-    # --- Output Directory (always injected, not toggleable) ---
-    from engine.config import OUTPUT_ROOT as _OUT
-    parts.append(
-        f"# Output Directory (MANDATORY)\n"
-        f"ALL generated content (notes, research, text files, agent logs, assets, downloads) "
-        f"MUST be saved under `{_OUT}/`. NEVER save to CWD or project root unless explicitly instructed.\n"
-        f"Subdirs: notes/, research/, agent/, assets/, sessions/, logs/.\n"
-        f"When user asks to 'save' anything without specifying a path, default to `{_OUT}/notes/` "
-        f"for text/docs, or the appropriate subdirectory otherwise."
-    )
+    # --- Output Directory (toggleable per-provider) ---
+    if _inj.get("output_dir", True):
+        from engine.config import OUTPUT_ROOT as _OUT
+        parts.append(
+            f"# Output Directory (MANDATORY)\n"
+            f"ALL generated content (notes, research, text files, agent logs, assets, downloads) "
+            f"MUST be saved under `{_OUT}/`. NEVER save to CWD or project root unless explicitly instructed.\n"
+            f"Subdirs: notes/, research/, agent/, assets/, sessions/, logs/.\n"
+            f"When user asks to 'save' anything without specifying a path, default to `{_OUT}/notes/` "
+            f"for text/docs, or the appropriate subdirectory otherwise."
+        )
 
     # --- ⚠️ TOOL CALL FORMAT REINFORCEMENT (END of prompt — recency weight) ---
     # Second injection of the same format instruction. Models weight instructions at

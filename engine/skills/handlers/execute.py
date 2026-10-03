@@ -124,6 +124,31 @@ def handle_execute_command(
         **popen_kwargs(),
     )
 
+    # Capture the process-group id NOW, at spawn time.
+    #
+    # The group outlives its leader. Once the shell exits and is reaped by
+    # proc.wait(), /proc/<pid> disappears and os.getpgid(pid) can no longer
+    # resolve the group — so we would permanently lose our only handle on any
+    # descendants the command left behind. This applies to BOTH failure paths:
+    # the timeout timer (leader may already be reaped) and normal completion
+    # (leader is always reaped before the finally block runs).
+    _pgid: int | None = None
+    if not IS_WINDOWS:
+        try:
+            _pgid = os.getpgid(proc.pid)
+        except OSError:
+            _pgid = None
+
+    def _kill_group(sig: int) -> None:
+        """Signal our spawned process group, falling back to the single pid."""
+        if _pgid is not None:
+            try:
+                os.killpg(_pgid, sig)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                return
+        kill_process_tree(proc.pid, sig=sig)
+
     if use_sudo and proc.stdin:
         try:
             proc.stdin.write(SUDO_PASSWORD + "\n")
@@ -138,9 +163,12 @@ def handle_execute_command(
     # read blocked forever (no output -> the in-loop deadline check never
     # runs), and the generator would never yield a final result.
     def _enforce_timeout() -> None:
-        kill_process_tree(proc.pid)                      # SIGTERM / taskkill graceful
-        time.sleep(2)                                    # grace period
-        kill_process_tree(proc.pid, sig=signal.SIGKILL)  # force kill, unstoppable
+        # Use the captured pgid, not the pid: by the time this fires the shell
+        # leader may already be reaped, and kill_process_tree(pid) would find
+        # no /proc entry and silently do nothing.
+        _kill_group(signal.SIGTERM)   # graceful first
+        time.sleep(2)                 # grace period
+        _kill_group(signal.SIGKILL)   # force, unstoppable
 
     timer = threading.Timer(timeout, _enforce_timeout)
     timer.start()
@@ -216,6 +244,38 @@ def handle_execute_command(
         proc.wait()
     finally:
         timer.cancel()
+
+        # The timer is NOT the only thing that must stop here. This finally
+        # runs on EVERY exit path — normal completion, an exception, and
+        # critically GeneratorExit (the user pressing Stop, which closes the
+        # SSE stream and throws GeneratorExit at the yield above). Previously
+        # this block only cancelled the timer, i.e. it DISARMED the one thing
+        # that would ever have killed the child, then walked away. Any command
+        # still running at Stop time was orphaned deliberately.
+        #
+        # kill_process_tree is a no-op on an already-dead pid and never raises,
+        # so this is safe to call unconditionally.
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except Exception:
+            pass
+        # Kill the captured GROUP, not merely the pid.
+        #
+        # The old `if proc.poll() is None:` guard was wrong in both directions:
+        #   - Normal completion: the shell has already exited and been reaped
+        #     by proc.wait(), so poll() is not None -> the kill was SKIPPED
+        #     entirely. Every "nohup x &" inside a foreground command leaked
+        #     its child. (Measured: 0.0s wall clock, child survived.)
+        #   - Timeout/Stop: the leader is a zombie or already gone, and
+        #     /proc/<pid> no longer resolves the group.
+        # _kill_group uses the pgid captured at spawn, so it works on every
+        # path. killpg on an empty group raises ESRCH and is swallowed.
+        _kill_group(signal.SIGKILL)
+        try:
+            proc.poll()  # reap the leader if it has already exited
+        except Exception:
+            pass
 
     code = proc.returncode
     ok = code == 0
