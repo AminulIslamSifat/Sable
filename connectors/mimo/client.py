@@ -381,6 +381,8 @@ class MiMoClient:
 
             buf = ""
             in_think = False
+            from engine.think_parser import ThinkTagSplitter
+            _think_split = ThinkTagSplitter()
             try:
                 async for chunk in resp.aiter_content():
                     if not chunk:
@@ -406,29 +408,19 @@ class MiMoClient:
                         content = msg.get("content", "")
                         if not content:
                             continue
-                        if content.startswith("<think>"):
-                            in_think = True
-                            content = content[len("<think>"):]
                         # strip stray NUL markers MiMo sends as separators
                         content = content.replace("\x00", "")
                         if not content:
                             continue
-                        if "</think>" in content:
-                            pre, _, post = content.partition("</think>")
-                            if pre:
-                                thinking_buf.append(pre)
-                                yield {"type": "thinking", "text": pre}
-                            in_think = False
-                            if post:
-                                answer.append(post)
-                                yield {"type": "answer", "text": post}
-                            continue
-                        if in_think:
-                            thinking_buf.append(content)
-                            yield {"type": "thinking", "text": content}
-                        else:
-                            answer.append(content)
-                            yield {"type": "answer", "text": content}
+                        # Route through the shared splitter so <think> blocks
+                        # (even split across chunks) become thinking events.
+                        for _kind, _seg in _think_split.feed(content):
+                            if _kind == "thinking":
+                                thinking_buf.append(_seg)
+                                yield {"type": "thinking", "text": _seg}
+                            else:
+                                answer.append(_seg)
+                                yield {"type": "answer", "text": _seg}
             except Exception as exc:
                 # A cancel() closes the response handle mid-iteration — that's
                 # expected, not an error. Any content we already streamed stands.

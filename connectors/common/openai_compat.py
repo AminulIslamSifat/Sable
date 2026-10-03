@@ -264,6 +264,14 @@ class OpenAICompatClient:
 
     def _load_instructions(self, project_id: str | None = None, layout_mode: str | None = None) -> str:
         mode = self.INSTRUCTION_MODE
+        # Custom endpoints are built ad-hoc with instruction_mode=None, which
+        # would skip instruction assembly entirely — no persona, no tool
+        # schemas, and (critically) no way for per-endpoint prompt-injection
+        # toggles to take effect. When a BASE_URL is present, treat it as a
+        # project-mode endpoint so build_instructions runs and the ``ep:<url>``
+        # row is honoured.
+        if mode is None and getattr(self, "BASE_URL", ""):
+            mode = "project"
         if mode == "project":
             from connectors.common.instruction_builder import get_instruction_version
             current_version = get_instruction_version()
@@ -640,6 +648,11 @@ class OpenAICompatClient:
 
                         in_thinking = False
                         _tc_buffers: dict[int, dict] = {}
+                        # Provider-agnostic safety net for reasoning that leaks
+                        # into content as <think>...</think> (llama-server, MiMo,
+                        # custom endpoints, etc.). Idempotent when already split.
+                        from engine.think_parser import ThinkTagSplitter
+                        _think_split = ThinkTagSplitter()
 
                         async for line in response.aiter_lines():
                             if not line.startswith("data: "):
@@ -653,15 +666,26 @@ class OpenAICompatClient:
                                 continue
                             delta = (chunk.get("choices") or [{}])[0].get("delta", {})
 
+                            # Native reasoning field (DeepSeek-R1, Groq, OpenRouter...)
+                            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                            if isinstance(reasoning, str) and reasoning:
+                                full_thinking += reasoning
+                                yield {"type": "thinking", "text": reasoning}
+
                             tc = delta.get("content")
                             if tc:
                                 if isinstance(tc, str):
                                     if in_thinking:
                                         in_thinking = False
-                                    full_answer += tc
-                                    clean_text = strip_summarize_tag(tc)
-                                    if clean_text:
-                                        yield {"type": "answer", "text": clean_text}
+                                    for _kind, _seg in _think_split.feed(tc):
+                                        if _kind == "thinking":
+                                            full_thinking += _seg
+                                            yield {"type": "thinking", "text": _seg}
+                                        else:
+                                            full_answer += _seg
+                                            clean_text = strip_summarize_tag(_seg)
+                                            if clean_text:
+                                                yield {"type": "answer", "text": clean_text}
                                 elif isinstance(tc, list):
                                     for part in tc:
                                         ptype = part.get("type", "")
@@ -677,10 +701,15 @@ class OpenAICompatClient:
                                                 in_thinking = False
                                             text = part.get("text", "")
                                             if text:
-                                                full_answer += text
-                                                clean_text = strip_summarize_tag(text)
-                                                if clean_text:
-                                                    yield {"type": "answer", "text": clean_text}
+                                                for _kind, _seg in _think_split.feed(text):
+                                                    if _kind == "thinking":
+                                                        full_thinking += _seg
+                                                        yield {"type": "thinking", "text": _seg}
+                                                    else:
+                                                        full_answer += _seg
+                                                        clean_text = strip_summarize_tag(_seg)
+                                                        if clean_text:
+                                                            yield {"type": "answer", "text": clean_text}
 
                             tc_deltas = delta.get("tool_calls")
                             if tc_deltas:

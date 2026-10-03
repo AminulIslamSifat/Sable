@@ -17,9 +17,13 @@ logger = logging.getLogger("sable.research.llm")
 
 
 def _strip_thinking(text: str) -> str:
-    """Remove any <think>...</think> reasoning blocks from model output."""
-    import re
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+    """Remove any <think>...</think> reasoning blocks from model output.
+
+    Delegates to the shared provider-agnostic splitter so <thinking>,
+    <redacted_thinking>, and orphaned closing tags are handled too.
+    """
+    from engine.think_parser import strip_thinking
+    return strip_thinking(text)
 
 
 async def qwen_complete(

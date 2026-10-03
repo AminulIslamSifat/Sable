@@ -156,11 +156,12 @@ class LocalConnector:
 
                         # Accumulate streaming tool call deltas
                         _tc_buffers: dict[int, dict] = {}
-                        # Fallback: parse <think> tags from content when
-                        # llama-server doesn't separate reasoning_content
-                        _in_think = False
-                        _got_reasoning_field = False
-                        _tag_buf = ""  # partial tag accumulator
+                        # Provider-agnostic fallback: some llama-server builds
+                        # emit reasoning as a native field, others embed it in
+                        # content as <think>...</think>. Route content through
+                        # the shared splitter so both paths become thinking.
+                        from engine.think_parser import ThinkTagSplitter
+                        _think_split = ThinkTagSplitter()
 
                         async for line in response.aiter_lines():
                             if not line.startswith("data: "):
@@ -177,62 +178,17 @@ class LocalConnector:
                             # Thinking / reasoning (native field from llama-server)
                             reasoning = delta.get("reasoning_content", "")
                             if reasoning:
-                                _got_reasoning_field = True
                                 yield {"type": "thinking", "text": reasoning}
 
-                            # Text content
+                            # Text content — split any leaked <think> blocks out
                             content = delta.get("content", "")
-                            if content and not _got_reasoning_field and _enable_thinking:
-                                # Fallback: parse <think>...</think> from content
-                                _answer_out = ""
-                                _think_out = ""
-                                _target_tag = "</think>" if _in_think else "<think>"
-                                for ch in content:
-                                    if _tag_buf:
-                                        _tag_buf += ch
-                                        if _target_tag.startswith(_tag_buf):
-                                            if _tag_buf == _target_tag:
-                                                _in_think = not _in_think
-                                                _tag_buf = ""
-                                                _target_tag = "</think>" if _in_think else "<think>"
-                                            continue
-                                        else:
-                                            # Not a tag — flush buffer
-                                            if _in_think:
-                                                _think_out += _tag_buf
-                                            else:
-                                                _answer_out += _tag_buf
-                                            _tag_buf = ""
-                                            # Re-process current char
-                                            if ch == "<":
-                                                _tag_buf = "<"
-                                            elif _in_think:
-                                                _think_out += ch
-                                            else:
-                                                _answer_out += ch
-                                            continue
-                                    if ch == "<":
-                                        _tag_buf = "<"
-                                        continue
-                                    if _in_think:
-                                        _think_out += ch
+                            if content and isinstance(content, str):
+                                for _kind, _seg in _think_split.feed(content):
+                                    if _kind == "thinking":
+                                        yield {"type": "thinking", "text": _seg}
                                     else:
-                                        _answer_out += ch
-                                # Flush any remaining tag buffer
-                                if _tag_buf:
-                                    if _in_think:
-                                        _think_out += _tag_buf
-                                    else:
-                                        _answer_out += _tag_buf
-                                    _tag_buf = ""
-                                if _think_out:
-                                    yield {"type": "thinking", "text": _think_out}
-                                if _answer_out:
-                                    full_answer += _answer_out
-                                    yield {"type": "answer", "text": _answer_out}
-                            elif content:
-                                full_answer += content
-                                yield {"type": "answer", "text": content}
+                                        full_answer += _seg
+                                        yield {"type": "answer", "text": _seg}
 
                             # Tool call deltas (streaming)
                             tc_deltas = delta.get("tool_calls")

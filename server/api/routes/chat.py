@@ -16,6 +16,7 @@ from engine.config import get_model_config
 from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
 from engine.skills import SkillEngine, SkillParser, build_tool_feedback
+from engine.think_parser import ThinkTagSplitter, split_thinking, strip_thinking
 from engine.agents.resilience import LoopDetector, MainChatGuard, TurnCapTracker
 from engine.skills.handlers import HANDLER_MAP
 from connectors import get_connector
@@ -922,13 +923,22 @@ async def chat(request: ChatRequest):
         current_provider = "qwen"
 
     # Per-provider prompt-injection toggles (Settings -> Providers).
-    # Unknown provider -> all-on defaults, so behaviour is unchanged until a
-    # key is explicitly toggled off. The inner try/except deliberately does
-    # NOT mask a bad provider key: a failure here would silently disable every
-    # toggle, so an unknown provider yields the all-on default map instead.
+    #
+    # CRITICAL: every custom endpoint resolves to api_backend="local", so
+    # looking up `current_provider` alone would make all endpoints share the
+    # "local" row and silently ignore their own per-endpoint config. Resolve
+    # the endpoint-specific key first and fall back to the backend name.
+    # Unknown providers -> all-on defaults (unchanged behaviour).
+    _inj_provider = current_provider
     try:
-        from connectors.common.prompt_injection import injection_enabled_map as _inj_map
-        _inj = _inj_map(current_provider)
+        from connectors.common.prompt_injection import (
+            endpoint_key as _ep_key, injection_enabled_map as _inj_map,
+        )
+        _model_cfg = get_model_config(request.model) or {}
+        _ep = _ep_key(_model_cfg.get("local_endpoint"))
+        if _ep:
+            _inj_provider = _ep
+        _inj = _inj_map(_inj_provider)
     except Exception:
         logger.warning("prompt_injection: config lookup failed", exc_info=True)
         _inj = {}
@@ -1283,6 +1293,10 @@ async def chat(request: ChatRequest):
         )
         answer = str(result.get("answer", ""))
         thinking = str(result.get("thinking", ""))
+        # Safety net: pull any leaked <think>…</think> out of the answer.
+        answer, _leaked_think = split_thinking(answer)
+        if _leaked_think:
+            thinking = (thinking + "\n" + _leaked_think).strip() if thinking else _leaked_think
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
         scraper_chat_url = result.get("chat_url")
@@ -1358,6 +1372,10 @@ async def chat(request: ChatRequest):
         result = await _connector.chat(**_chat_kwargs)
         answer = str(result.get("answer", ""))
         thinking = str(result.get("thinking", ""))
+        # Safety net: pull any leaked <think>…</think> out of the answer.
+        answer, _leaked_think = split_thinking(answer)
+        if _leaked_think:
+            thinking = (thinking + "\n" + _leaked_think).strip() if thinking else _leaked_think
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
         _api_pt = count_prompt_tokens(
@@ -1385,6 +1403,10 @@ async def chat(request: ChatRequest):
         )
         answer = str(result.get("answer", ""))
         thinking = str(result.get("thinking", ""))
+        # Safety net: pull any leaked <think>…</think> out of the answer.
+        answer, _leaked_think = split_thinking(answer)
+        if _leaked_think:
+            thinking = (thinking + "\n" + _leaked_think).strip() if thinking else _leaked_think
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
         _qwen_pt = count_prompt_tokens(system_instruction=_system_instruction_for_tokens, user_message=api_message, memory_context=_memory_context or "")
@@ -1581,6 +1603,10 @@ async def chat(request: ChatRequest):
                 _round_raw_parts: list[str] = []  # per-round raw text for guard checks
                 pending_thinking: list[str] = []
                 parser = _get_skill_engine().create_parser()
+                # Provider-agnostic safety net: split any <think>…</think> that
+                # leaked into the answer stream into proper thinking events.
+                # Connectors that already separate reasoning are a no-op here.
+                _think_splitter = ThinkTagSplitter()
                 _title_buf = ""  # buffer for partial <title> tags in text stream
                 _TITLE_RE = re.compile(r"<chat_title>(.*?)</chat_title>", re.S | re.I)
                 _halt_dispatch = False  # Set True when permission/cwd gate fires — stops remaining tools in this round
@@ -1786,9 +1812,25 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append(item)
                             yield sse(item)
                 def emit_parsed(text: str) -> Generator[str, None, None]:
-                    yield from _dispatch_events(parser.feed(text))
+                    # Route through the <think> splitter first so leaked
+                    # reasoning never reaches the skill parser as prose.
+                    for _kind, _seg in _think_splitter.feed(text):
+                        if _kind == "thinking":
+                            thinking_parts.append(_seg)
+                            round_thinking_parts.append(_seg)
+                            yield sse({"type": "thinking", "text": _seg})
+                        else:
+                            yield from _dispatch_events(parser.feed(_seg))
                 def emit_flush() -> Generator[str, None, None]:
                     nonlocal _title_buf
+                    # Drain any held-back partial tag from the splitter first.
+                    for _kind, _seg in _think_splitter.flush():
+                        if _kind == "thinking":
+                            thinking_parts.append(_seg)
+                            round_thinking_parts.append(_seg)
+                            yield sse({"type": "thinking", "text": _seg})
+                        else:
+                            yield from _dispatch_events(parser.feed(_seg))
                     yield from _dispatch_events(parser.flush())
                     # Flush any remaining title buffer text
                     if _title_buf:
