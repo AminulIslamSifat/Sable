@@ -364,6 +364,7 @@ class ProfileHub:
     async def acquire(cls, profile_dir: Path, helium_bin: str,
                       headless: bool = True,
                       force_headed: bool = False,
+                      kill_existing: bool = False,
                       max_retries: int = 3) -> "ProfileHub":
         """Return the live hub for ``profile_dir``, launching it if needed.
 
@@ -384,7 +385,10 @@ class ProfileHub:
             if hub is not None and hub.is_alive:
                 # A cached headless hub cannot satisfy a headed request —
                 # tear it down and build a fresh headed one.
-                if not (force_headed and hub.headless):
+                # A kill_existing request also refuses to reuse ANY cached hub:
+                # the whole point is to guarantee a single writer on the
+                # profile, so we tear down and relaunch fresh.
+                if not (force_headed and hub.headless) and not kill_existing:
                     return hub
                 await hub._teardown()
             elif hub is not None:
@@ -395,7 +399,7 @@ class ProfileHub:
             last_exc: Exception | None = None
             for attempt in range(1, max_retries + 1):
                 hub = cls(Path(profile_dir), helium_bin, headless,
-                          force_headed=force_headed)
+                          force_headed=force_headed, kill_existing=kill_existing)
                 try:
                     await hub._ensure()
                     cls._hubs[key] = hub
@@ -461,12 +465,17 @@ class ProfileHub:
                 pass
 
     def __init__(self, profile_dir: Path, helium_bin: str, headless: bool,
-                 force_headed: bool = False):
+                 force_headed: bool = False, kill_existing: bool = False):
         self.profile_dir = profile_dir
         self.helium_bin = helium_bin
         # force_headed wins over the caller's headless flag: it means "I need
         # a visible window", so the effective launch mode is headed.
         self.force_headed = force_headed
+        # kill_existing: kill EVERY browser already on this profile before
+        # launching, and never adopt one. Prevents two writers on the same
+        # --user-data-dir (the corruption cause) without forcing a headed
+        # window. Independent of force_headed.
+        self.kill_existing = kill_existing
         self.headless = False if force_headed else headless
         self._pw = None
         self._context = None
@@ -506,14 +515,24 @@ class ProfileHub:
         # force_headed: kill EVERY browser currently on this profile — any
         # binary, headed or headless — then launch a fresh HEADED one. No
         # adoption: the caller wants the old browsers gone, not reused.
-        if self.force_headed:
+        if self.force_headed or self.kill_existing:
+            # kill_existing: guarantee a single writer on the profile. Any
+            # other browser (another Sable tree, a stale daemon, an orphan)
+            # holding the same --user-data-dir is killed before we launch, so
+            # two Chromium instances never write the same LevelDB/Cookies and
+            # corrupt the profile. force_headed implies the same, plus a
+            # visible window.
             killed = await self._kill_all_holders()
-            logger.info("[hub:%s] force-headed: killed %d holder(s) — launching "
-                        "a fresh headed browser", self.profile_dir.name, killed)
+            logger.info("[hub:%s] %s: killed %d holder(s) — launching fresh",
+                        self.profile_dir.name,
+                        "force-headed" if self.force_headed else "kill-existing",
+                        killed)
             try:
                 await self._launch()
             except Exception:
-                if await self._adopt():
+                # kill_existing must NOT adopt on failure — adopting would
+                # reintroduce the second writer we just eliminated.
+                if not self.kill_existing and await self._adopt():
                     return
                 raise
             return

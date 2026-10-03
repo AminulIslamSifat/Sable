@@ -470,9 +470,14 @@ class ChatGPTGhostSession:
         except Exception:
             _headless = False
         _t0 = time.monotonic()
+        # kill_existing=True: kill EVERY browser already on this profile before
+        # launching, so two Chromium writers never share the same
+        # --user-data-dir (which corrupts Cookies / Local Storage / LevelDB).
+        # This is independent of the head/headless choice — even a headless
+        # ghost must own the profile exclusively.
         self._hub = await ProfileHub.acquire(
             self.profile_dir, self.helium_bin, headless=_headless,
-            force_headed=not _headless)
+            force_headed=not _headless, kill_existing=True)
         _t1 = time.monotonic()
         self._ctx = self._hub.context
         self._page = await self._hub.new_tab(CHATGPT_URL)
