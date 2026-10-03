@@ -1290,7 +1290,15 @@
           </details>`;
         currentThinkBody = currentThinkWrap.querySelector(".thinking-body");
         currentThinkSummary = currentThinkWrap.querySelector("summary");
-        turn.appendChild(currentThinkWrap);
+        // Place the thinking block ABOVE the answer segment it belongs to.
+        // appendThinking() calls hidePending() → ensureAnswer() BEFORE this,
+        // so answerEl may already be in the DOM; appendChild would then drop
+        // the thinking card BELOW the answer. Insert before it instead.
+        if (answerEl && answerEl.parentNode === turn) {
+          turn.insertBefore(currentThinkWrap, answerEl);
+        } else {
+          turn.appendChild(currentThinkWrap);
+        }
         activateLucideIcons(currentThinkWrap);
         // Remember it so a mid-round answer delta can reattach instead of fork.
         lastThinkWrap = currentThinkWrap;
@@ -1606,7 +1614,13 @@
             </details>`;
           currentThinkBody = currentThinkWrap.querySelector(".thinking-body");
           currentThinkSummary = currentThinkWrap.querySelector("summary");
-          turn.appendChild(currentThinkWrap);
+          // Same ordering fix as ensureThinkingBlock: keep the reasoning card
+          // above the answer even if ensureAnswer() already ran this turn.
+          if (answerEl && answerEl.parentNode === turn) {
+            turn.insertBefore(currentThinkWrap, answerEl);
+          } else {
+            turn.appendChild(currentThinkWrap);
+          }
           activateLucideIcons(currentThinkWrap);
           lastThinkWrap = currentThinkWrap;
           lastThinkBody = currentThinkBody;

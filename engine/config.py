@@ -60,6 +60,9 @@ LIBRARY_TEXT_DIR = LIBRARY_DIR / "text"
 LIBRARY_ORIG_DIR = LIBRARY_DIR / "originals"
 # Academic grouping tree — semesters → subjects → topics (JSON, doc-agnostic).
 LIBRARY_ACADEMICS_PATH = LIBRARY_DIR / "academics.json"
+# Cover-page composer state (institutions, courses, people rosters) + generated PDFs.
+LIBRARY_COVER_PATH = LIBRARY_DIR / "cover.json"
+LIBRARY_COVER_DIR = LIBRARY_DIR / "covers"
 LIBRARY_NOTES_DIR = LIBRARY_DIR / "notes"
 # Cached first-page previews (one small JPEG per doc) so the library grid
 # doesn't have to re-render a PDF to draw a card.

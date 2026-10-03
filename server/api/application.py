@@ -45,6 +45,7 @@ from .routes.study_notes import router as study_notes_router
 from .routes.study_srs import router as study_srs_router
 from .routes.study_dict import router as study_dict_router
 from .routes.study_humanize import router as study_humanize_router
+from .routes.study_cover import router as study_cover_router
 from .routes.rooms import router as rooms_router
 from .routes.drive import router as drive_router
 from .routes.email import router as email_router
@@ -409,6 +410,7 @@ app.include_router(study_notes_router)
 app.include_router(study_srs_router)
 app.include_router(study_dict_router)
 app.include_router(study_humanize_router)
+app.include_router(study_cover_router)
 app.include_router(rooms_router)
 app.include_router(drive_router)
 app.include_router(email_router)
