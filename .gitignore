@@ -21,6 +21,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# Vendored pdf.js ships PREBUILT .mjs — the broad `build/` rule above swallows
+# it, so a fresh clone gets no pdf.min.mjs and the Study reader dies on import.
+# Re-include the directory itself, then its contents (git won't descend into an
+# ignored dir to re-include files).
+!web/vendor/pdfjs/build/
+!web/vendor/pdfjs/build/**
 
 # Editor backups
 .editor_tools_backups/

@@ -1071,6 +1071,24 @@ body.rdr-open { overflow: hidden; }
   z-index: 60;
 }
 
+/* Reader's floating Study AI popup — full HEIGHT, fixed panel width.
+   Fixed so it anchors to the viewport (not the bottom-right launcher).
+   Top clears the .rdr-header (~55px: 10px pad + 34px buttons + 10px pad
+   + 1px border) plus the 10px gap; bottom leaves a 10px margin. Width
+   stays a side panel — only height stretches. */
+.rdr-ai-launch .sa-popup {
+  position: fixed;
+  top: 65px;
+  right: 10px;
+  bottom: 10px;
+  left: auto;
+  width: 550px;
+  max-width: calc(100vw - 20px);
+  height: auto;
+  max-height: none;
+  z-index: 70;
+}
+
 /* ========== Study AI surface (shared by popup + pane) ========== */
 
 .sa-float { position: relative; }
@@ -1097,10 +1115,10 @@ body.rdr-open { overflow: hidden; }
   position: absolute;
   right: 0;
   bottom: 36px;
-  width: 380px;
-  max-width: 92vw;
-  height: 520px;
-  max-height: 72vh;
+  width: 480px;
+  max-width: 94vw;
+  height: 660px;
+  max-height: 86vh;
   background: var(--panel);
   border: 1px solid var(--border-soft);
   border-radius: 16px;
@@ -1816,10 +1834,10 @@ body.rdr-open { overflow: hidden; }
   position: absolute;
   right: 16px;
   bottom: 16px;
-  width: 380px;
+  width: 480px;
   max-width: calc(100vw - 80px);
-  height: 520px;
-  max-height: 70vh;
+  height: 660px;
+  max-height: 84vh;
 }
 
 /* Note editor AI host. Zero-size anchor in the bottom-right corner.

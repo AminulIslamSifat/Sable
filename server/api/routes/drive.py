@@ -41,10 +41,36 @@ from engine.drive.client import (
     revoke_token,
     save_drive_settings,
 )
+from engine import library_index as _index
 from engine.library_ingest import ingest_bytes, pdf_tool
 
 router = APIRouter()
 logger = logging.getLogger("sable.drive")
+
+# Fire-and-forget index jobs, kept referenced so a bare create_task() isn't
+# garbage-collected mid-run (same reason study.py holds _INDEX_TASKS).
+_INDEX_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_index(doc_id: str) -> None:
+    """Build the search + RAG index for a freshly imported document.
+
+    Uploads run this as the tail of their ingest pipeline; a Drive import
+    skipped it entirely, so imported docs landed with page text but no FTS and
+    no embeddings — library search missed them and Study AI had nothing to
+    retrieve. This mirrors the upload default (index_mode='rag') and, like
+    uploads, does NOT OCR: text extraction only, OCR stays opt-in from the
+    document menu.
+    """
+    async def _run() -> None:
+        try:
+            await _index.run_job(doc_id, do_ocr=False, do_search=True, do_ai=True)
+        except Exception:
+            logger.warning("drive import index failed for %s", doc_id, exc_info=True)
+
+    task = asyncio.create_task(_run())
+    _INDEX_TASKS.add(task)
+    task.add_done_callback(_INDEX_TASKS.discard)
 
 # In-memory OAuth handshake state — single-user local app, so this is enough.
 _oauth_state: dict[str, dict[str, Any]] = {}
@@ -886,6 +912,12 @@ async def _ingest_once(
     if old and old != doc["id"]:
         # Replace: drop the previous copy so the library shows one entry.
         _delete_doc(old)
+    # Index in the background — but only for a genuinely NEW document (or a
+    # replace that produced a new id). A Drive auto-save re-ingests the SAME
+    # file on every viewer save; re-running the embedding pass each time would
+    # burn CPU for nothing, so an unchanged doc is left to its existing index.
+    if doc.get("id") and doc["id"] != old:
+        _spawn_index(doc["id"])
     if group and any(group.get(k) for k in ("semester", "subject", "topic")):
         _apply_group(doc["id"], group)
     return doc

@@ -1,7 +1,8 @@
 # -----------------------------------------------------------------------------
 #  Sable - Zero-Intervention Start Script (Windows)
-#  Handles: Python, uv, git, Docker, VCRedist, Playwright, SearXNG,
-#           BurntToast, Task Scheduler auto-start, error recovery, and launch.
+#  Handles: Python, uv, git, Docker, FFmpeg, LibreOffice, VCRedist, Playwright,
+#           SearXNG, BurntToast, Task Scheduler auto-start, error recovery,
+#           and launch.
 #  The user should never have to do anything after .\start.ps1
 # -----------------------------------------------------------------------------
 
@@ -268,6 +269,43 @@ function Ensure-FFmpeg {
         Write-Warn "Install manually: https://www.gyan.dev/ffmpeg/builds/"
     } else {
         Write-Ok "ffmpeg installed"
+    }
+}
+
+# -- Ensure LibreOffice (headless PPTX/DOCX -> PDF conversion) ---------------
+# Study mode converts non-PDF uploads (.pptx .docx .odt .xlsx ...) to PDF via
+# headless LibreOffice so the reader can render real pages. python-pptx and
+# python-docx can read TEXT but cannot RENDER, so a faithful page image needs a
+# real layout engine. Without this, non-PDF uploads fall back to text-only:
+# searchable and AI-indexable, but unstyled.
+function Test-LibreOffice {
+    # LibreOffice does NOT add itself to PATH, so a PATH probe alone misses a
+    # perfectly good install. Check the well-known Program Files location first.
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($base -and (Test-Path (Join-Path $base "LibreOffice\program\soffice.exe"))) {
+            return $true
+        }
+    }
+    if (Test-Command "soffice") { return $true }
+    return $false
+}
+
+function Ensure-LibreOffice {
+    if (Test-LibreOffice) {
+        Write-Ok "LibreOffice available (document conversion enabled)"
+        return
+    }
+    Write-Info "Installing LibreOffice (~350 MB - Study-mode document conversion)..."
+    if (Test-Command "winget") {
+        winget install TheDocumentFoundation.LibreOffice --accept-source-agreements --accept-package-agreements 2>$null
+    } else {
+        Write-Warn "winget unavailable - cannot auto-install LibreOffice"
+    }
+    if (Test-LibreOffice) {
+        Write-Ok "LibreOffice installed"
+    } else {
+        Write-Warn "LibreOffice not found - non-PDF uploads will convert as text-only"
+        Write-Warn "Install manually: https://www.libreoffice.org/download/download-libreoffice/"
     }
 }
 
@@ -976,6 +1014,7 @@ function Main {
     Ensure-Uv
     Ensure-Git
     Ensure-FFmpeg
+    Ensure-LibreOffice
     Ensure-VCRedist
     Cleanup-StaleProcess
     Bootstrap-Files

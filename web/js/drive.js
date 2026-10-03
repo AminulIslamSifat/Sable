@@ -748,45 +748,132 @@
     }
   }
 
+  // ── Import progress popup ─────────────────────────────────────────────────
+  //
+  // Imports used to report nothing but a busy line buried inside the Drive
+  // tab, which is invisible the moment the tab scrolls or the user looks away.
+  // A modal (mirroring the upload dialog) is the one place a multi-file
+  // import's outcome is unmissable — one row per file, updated as each lands.
+  let importModal = null;
+
+  function closeImportModal() {
+    if (importModal && importModal.overlay) importModal.overlay.remove();
+    importModal = null;
+  }
+
+  function openImportModal(items) {
+    closeImportModal();
+    const overlay = document.createElement('div');
+    overlay.className = 'study-modal-overlay';
+    overlay.innerHTML = `
+      <div class="study-modal drive-import-modal" role="dialog" aria-modal="true">
+        <div class="study-modal-head">
+          <h3>Importing from Drive</h3>
+          <button class="study-modal-x" data-import-close>&times;</button>
+        </div>
+        <p class="study-modal-doc">${items.length} file${items.length > 1 ? 's' : ''} → Study library</p>
+        <div class="drive-import-list" data-import-list>
+          ${items.map((it, i) => `
+            <div class="study-upload-row" data-import-row="${i}">
+              <div class="study-upload-row-head">
+                <span class="study-upload-row-name" title="${esc(it.name)}">${esc(it.name)}</span>
+              </div>
+              <div class="study-upload-row-foot">
+                <span class="study-upload-row-phase">Waiting…</span>
+              </div>
+            </div>`).join('')}
+        </div>
+        <div class="study-modal-actions">
+          <span class="study-modal-spacer"></span>
+          <button class="study-room-action primary" data-import-done disabled>Done</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    if (window.lucide) window.lucide.createIcons();
+    const doneBtn = overlay.querySelector('[data-import-done]');
+    doneBtn.onclick = closeImportModal;
+    overlay.querySelector('[data-import-close]').onclick = closeImportModal;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeImportModal(); });
+    importModal = { overlay, rows: overlay.querySelectorAll('[data-import-row]') };
+    return importModal;
+  }
+
+  function setImportRow(modal, i, status, label) {
+    const row = modal.rows[i];
+    if (!row) return;
+    row.className = 'study-upload-row' + (status === 'done' ? ' done' : status === 'error' ? ' error' : '');
+    const phase = row.querySelector('.study-upload-row-phase');
+    if (phase) phase.textContent = label;
+  }
+
   async function doImport() {
     const ids = [...selected];
     if (!ids.length) return;
-    busyMsg = `Importing ${ids.length} file${ids.length > 1 ? 's' : ''}…`;
+
+    // Names help the backend when a keyless download lacks a filename, and
+    // give the popup a human label per row.
+    const names = {};
+    for (const it of sourceItems) if (selected.has(it.id)) names[it.id] = it.name;
+    const items = ids.map((id) => ({ id, name: names[id] || id }));
+    const idxOf = new Map(items.map((it, i) => [it.id, i]));
+
+    selected = new Set();
+    busyMsg = '';
     rerender();
-    try {
-      // Send names along — keyless downloads sometimes lack a filename, and
-      // the browser view already knows what each file is called.
-      const names = {};
-      for (const it of sourceItems) if (selected.has(it.id)) names[it.id] = it.name;
-      const res = await api('/api/drive/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ids,
-          names,
-          // Tag docs with their Drive folder so the library can group them.
-          collection: activeSource ? activeSource.name : '',
-          collection_id: activeSource ? activeSource.drive_id : '',
-        }),
-      });
-      const ok = res.imported || 0;
-      const bad = res.failed || 0;
-      selected = new Set();
-      busyMsg = '';
-      rerender();
-      if (ok) {
-        notify(`Imported ${ok} file${ok > 1 ? 's' : ''} to your library ✓`);
-        window.dispatchEvent(new CustomEvent('study-library-changed'));
+
+    const modal = openImportModal(items);
+    const collection = activeSource ? activeSource.name : '';
+    const collectionId = activeSource ? activeSource.drive_id : '';
+    let ok = 0;
+    let bad = 0;
+
+    const runOne = async (it) => {
+      setImportRow(modal, idxOf.get(it.id), 'running', 'Downloading…');
+      try {
+        // One file per request so each row reports its own outcome — the batch
+        // endpoint returns everything at once, which would freeze the popup.
+        const res = await api('/api/drive/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids: [it.id],
+            names: { [it.id]: it.name },
+            collection,
+            collection_id: collectionId,
+          }),
+        });
+        const r = (res.results || [])[0];
+        if (r && r.ok) {
+          ok++;
+          setImportRow(modal, idxOf.get(it.id), 'done', 'Imported ✓');
+        } else {
+          bad++;
+          setImportRow(modal, idxOf.get(it.id), 'error', (r && r.error) || 'failed');
+        }
+      } catch (e) {
+        bad++;
+        setImportRow(modal, idxOf.get(it.id), 'error', e.message || 'failed');
       }
-      if (bad) {
-        const first = (res.results || []).find((r) => !r.ok);
-        notify(`${bad} failed${first ? ': ' + first.error : ''}`);
-      }
-    } catch (e) {
-      busyMsg = '';
-      rerender();
-      notify(e.message || 'Import failed');
+    };
+
+    // Small concurrency pool (3 at a time) so rows tick over as files land
+    // without hammering Drive with one request per file all at once.
+    const queue = items.slice();
+    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
+      while (queue.length) await runOne(queue.shift());
+    }));
+
+    // Settle the popup: header reflects the tally, Done becomes clickable.
+    const doc = modal.overlay.querySelector('.study-modal-doc');
+    if (doc) doc.textContent = bad ? `${ok} imported · ${bad} failed` : `${ok} file${ok > 1 ? 's' : ''} imported ✓`;
+    const doneBtn = modal.overlay.querySelector('[data-import-done]');
+    if (doneBtn) { doneBtn.disabled = false; doneBtn.textContent = 'Done'; }
+
+    if (ok) {
+      window.dispatchEvent(new CustomEvent('study-library-changed'));
+      notify(`Imported ${ok} file${ok > 1 ? 's' : ''} to your library ✓`);
     }
+    if (bad) notify(`${bad} import${bad > 1 ? 's' : ''} failed`);
   }
 
   async function saveKey() {

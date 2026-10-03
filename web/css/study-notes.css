@@ -524,6 +524,13 @@
 }
 .rdr-quicknote:hover { transform: translateY(-1px); border-color: var(--accent); color: var(--accent); }
 .rdr-quicknote .icon-lucide { width: 13px; height: 13px; }
+/* The AI popup (.sa-popup) and these launchers sit in the same bottom-right
+   corner. While the popup is open it covers them, so hide both — the
+   reader's own Doc/Chat/Notes tabs are the note entry point then. */
+.rdr:has(.rdr-ai-launch .sa-popup:not(.hidden)) .rdr-quicknote,
+.rdr:has(.rdr-ai-launch .sa-popup:not(.hidden)) .rdr-ai-launch .sa-float-btn {
+  display: none !important;
+}
 /* Opens up-and-left from the floating launcher. */
 .rdr-note-pop {
   position: absolute; right: 22px; bottom: 58px; z-index: 61;

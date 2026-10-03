@@ -978,14 +978,7 @@
               <option value="none">None — read only, index later</option>
             </select>
           </label>
-          <label class="study-field">
-            <span>Scanned pages (OCR)</span>
-            <select data-field="ocr">
-              <option value="auto">Auto — only blank pages</option>
-              <option value="force">Force — re-OCR every page</option>
-              <option value="never">Skip OCR</option>
-            </select>
-          </label>
+          <p style="margin:0;font-size:12px;opacity:.7;">Uploads extract text only — no OCR. For scanned pages, open the document's ⋯ menu → <strong>Index…</strong> after upload to run OCR or AI OCR.</p>
         </div>
         <div class="study-modal-actions">
           <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
@@ -1076,7 +1069,10 @@
       const tags = {
         topic,
         index_mode: $('[data-field="index_mode"]').value || 'rag',
-        ocr: $('[data-field="ocr"]').value || 'auto',
+        // Text extraction only — never auto-OCR on upload. Scanned pages stay
+        // blank until the user opts in from the doc ⋯ → Index… menu, which
+        // offers both plain OCR and AI OCR.
+        ocr: 'never',
       };
       const queue = files.filter((f) => !fileRejection(f));
       if (!queue.length) return;

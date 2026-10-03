@@ -122,11 +122,17 @@ def pdf_tool() -> str | None:
         if found:
             return found
     if os.name == "nt":
-        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
-            if base:
-                cand = Path(base) / "LibreOffice" / "program" / "soffice.exe"
-                if cand.exists():
-                    return str(cand)
+        # .com is the CONSOLE-subsystem binary: it blocks until the conversion
+        # finishes and captures stdout/stderr. .exe is GUI-subsystem — Windows
+        # can detach it, so the process may report exit before the background
+        # conversion completes, yielding a phantom "could not convert" with no
+        # PDF produced. Prefer .com, fall back to .exe on older builds.
+        for exe in ("soffice.com", "soffice.exe"):
+            for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+                if base:
+                    cand = Path(base) / "LibreOffice" / "program" / exe
+                    if cand.exists():
+                        return str(cand)
     else:
         for cand in (
             "/Applications/LibreOffice.app/Contents/MacOS/soffice",

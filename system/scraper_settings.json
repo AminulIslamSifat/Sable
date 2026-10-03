@@ -2,6 +2,6 @@
   "enabled": false,
   "engine_type": "qwen",
   "port": 9333,
-  "headless": false,
+  "headless": true,
   "show_thoughts": true
 }

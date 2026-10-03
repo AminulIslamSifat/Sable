@@ -62,6 +62,12 @@ _MAX_BODY_NOTE = 200_000  # note body budget sent to the model for a rewrite
 # themselves (see server/api/routes/chat.py). Everything else needs a real
 # provider-side upload before the model can see the file.
 _DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
+# Scraper transports upload through Playwright inside the connector's own
+# stream_chat() loop — they consume LOCAL PATHS on the `files` kwarg and call
+# engine.upload_file() per path. They are NOT direct-read (they don't inline
+# bytes) and they have NO provider-side upload endpoint, so the generic
+# _upload_attachment() path must never be used for them.
+_SCRAPER_FILE_BACKENDS = frozenset({"deepseek_scraper"})
 
 _DEFAULT_CONFIG: dict[str, str] = {
     "model": "",
@@ -1075,6 +1081,17 @@ async def _upload_attachment(backend: str, path: str) -> dict[str, Any] | None:
     except Exception as exc:
         logger.warning("study attach upload failed (%s): %s", backend, exc)
         return None
+    # A NAMED backend reaching here has no explicit upload path. Log it loudly:
+    # silently borrowing the Qwen uploader is exactly how deepseek_scraper's
+    # page images were dropped (it returned a Qwen file id the DeepSeek SPA
+    # could never use, so the model saw no image at all).
+    if backend:
+        logger.warning(
+            "study attach: backend %r has no explicit upload path — trying the "
+            "Qwen uploader as a fallback, which is wrong for any non-Qwen "
+            "transport. Add a branch in _upload_attachment/_resolve_attachments.",
+            backend,
+        )
     # Qwen / scraper models (no api_backend) go through the Qwen OSS uploader.
     try:
         return await service.upload_file(path)
@@ -1097,16 +1114,46 @@ async def _resolve_attachments(model: str, file_paths: list[str]) -> dict[str, A
 
     # Direct-read connectors take local paths and base64-inline the bytes.
     if backend in _DIRECT_READ_BACKENDS:
+        logger.info("study attach: direct-read backend %r -> local paths", backend)
         return {"files": list(file_paths)}
 
+    # Scraper transports (deepseek_scraper) upload via Playwright: the
+    # connector's stream_chat() iterates `files` and calls engine.upload_file()
+    # on each local path. Hand them the paths directly.
+    #
+    # Without this branch the call fell through to _upload_attachment(), which
+    # has no scraper case and therefore hit the Qwen OSS uploader as its
+    # catch-all — returning a Qwen file id that DeepSeek's SPA can never use.
+    # The image was silently dropped and AI OCR saw no page at all.
+    if backend in _SCRAPER_FILE_BACKENDS:
+        logger.info("study attach: scraper backend %r -> Playwright local paths", backend)
+        return {"files": list(file_paths)}
+
+    logger.info(
+        "study attach: backend=%r routing %d file(s) via provider upload",
+        backend, len(file_paths),
+    )
     resolved: list[dict[str, Any]] = []
     for path in file_paths:
         meta = await _upload_attachment(backend or "", path)
         if meta:
             resolved.append(meta)
+            logger.info(
+                "study attach: uploaded %s -> id=%s url=%s",
+                path, meta.get("file_id") or meta.get("id"),
+                (meta.get("url") or "")[:60],
+            )
         else:
-            logger.warning("study attach: could not upload %s", path)
+            logger.warning(
+                "study attach: upload FAILED for %s (backend=%r) — "
+                "this image will NOT reach the model",
+                path, backend,
+            )
     if not resolved:
+        logger.warning(
+            "study attach: NO files resolved for backend=%r — returning empty "
+            "kwargs, model gets no attachment", backend,
+        )
         return {}
 
     out: dict[str, Any] = {}

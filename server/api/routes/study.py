@@ -625,8 +625,12 @@ _DEFAULT_INDEX_MODE = "rag"
 # Scanned-page handling. "auto" only touches pages whose extracted text came
 # out blank; "force" re-OCRs every page (slow, for bad extractors); "never"
 # leaves blank pages blank.
+#
+# Uploads default to "never": the ingest path extracts text only and never
+# auto-OCRs. Scanned pages land blank, and the user opts into OCR (or AI OCR)
+# afterwards from the document's menu, which hits the on-demand index job.
 _OCR_MODES = ("auto", "force", "never")
-_DEFAULT_OCR_MODE = "auto"
+_DEFAULT_OCR_MODE = "never"
 
 
 @router.post("/api/study/upload")
@@ -658,8 +662,10 @@ async def study_upload(
       * ``rag``    -- + chunk embeddings. Slow; needed for topic-wide and
                       semantic retrieval over the document.
 
-    ``ocr`` controls the scanned-page pass: ``auto`` (only blank pages),
-    ``force`` (every page), or ``never``.
+    ``ocr`` controls the scanned-page pass: ``never`` (default — text
+    extraction only), ``auto`` (only blank pages), or ``force`` (every page).
+    Uploads do NOT OCR by default; scanned documents come in with blank page
+    text and the user runs OCR / AI OCR afterwards from the document menu.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="missing filename")

@@ -560,6 +560,20 @@ async def _ocr_vision(doc_id: str, page_number: int, model: str, thinking_mode: 
         prompt = "Transcribe this page image to plain text, verbatim."
 
         kwargs = await _resolve_attachments(model, [tmp_path])
+        # Visibility: this is the ONE line that tells us whether the page image
+        # actually made it onto the request. Without it, a failed upload looks
+        # identical to a model that simply ignored the image.
+        logger.info(
+            "AI OCR page %d: model=%s attach kwargs=%s",
+            page_number, model,
+            {k: (len(v) if isinstance(v, list) else v) for k, v in kwargs.items()},
+        )
+        if not kwargs:
+            logger.warning(
+                "AI OCR page %d: NO attachment resolved for model=%s — "
+                "the page image will NOT reach the model",
+                page_number, model,
+            )
         global _OCR_CHAT_ID
         chunks: list[str] = []
         async for ev in _stream(
