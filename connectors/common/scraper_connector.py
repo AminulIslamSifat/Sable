@@ -272,37 +272,21 @@ class BaseScraperConnector:
         # instruction is the supplied system_instruction. No Maria/Sable
         # persona, no format primer, no shared session history.
         if stateless:
+            # A stateless call (humanizer) owns NO upstream session, so its
+            # directive has to ride the message itself; raw=True skips the
+            # once-only injection + per-turn reminder in the engine.
             if system_instruction:
                 message = (
                     "[SYSTEM INSTRUCTION]\n" + system_instruction
                     + "\n\n[USER MESSAGE]\n" + message
                 )
-            # raw=True skips both the first-message instruction dump and the
-            # per-turn quick reminder (engine.send_msg honours it below).
             inject_instructions = False
             chat_id = None
             chat_url = None
-        elif str(kwargs.get("layout_mode") or "").lower() == "study" and system_instruction:
-            # Study mode: the caller hands us the COMPLETE study directive
-            # (persona + study tools + <tools> block) as system_instruction and
-            # sets layout_mode="study". The scraper has no native
-            # function-calling channel, so that directive IS the tool list.
-            # Without this branch the directive was silently dropped (the old
-            # guard only matched "-agent-" chat ids), and the connector fell
-            # back to dumping the generic Sable registry - which is why
-            # deepseek_scraper showed the chat/agent tool list instead of the
-            # study one. Suppress the registry dump; keep chat_id/chat_url so
-            # the study session still resumes.
-            message = (
-                "[SYSTEM INSTRUCTION]\n" + system_instruction
-                + "\n\n[USER MESSAGE]\n" + message
-            )
-            inject_instructions = False
-        elif system_instruction and "-agent-" in str(chat_id or ""):
-            message = (
-                "[SYSTEM INSTRUCTION]\n" + system_instruction
-                + "\n\n[USER MESSAGE]\n" + message
-            )
+        # Everything else (main chat, study, agent sub-chats) hands the
+        # directive to the engine below, which injects it EXACTLY ONCE via its
+        # system_injected flag. Prepending here re-sent the whole instruction on
+        # every turn — the study/agent bug this connector used to have.
 
         # Every recoverable browser failure (dead process, closed context,
         # lost session, stalled send, empty capture) restarts the browser and
@@ -326,6 +310,16 @@ class BaseScraperConnector:
           try:
             async with self._lock_for(scope):
                 engine = await self._get_engine(scope, account, browser_data_dir)
+                # Instruction source for THIS stream. When the caller hands us a
+                # built directive (study/agent), the engine injects it ONCE via
+                # its system_injected flag instead of re-pasting it every turn.
+                # layout_mode lets the engine build the right directive itself
+                # when none was passed (study -> study tool set + directive).
+                try:
+                    engine._override_instructions = system_instruction or None
+                    engine._layout_mode = kwargs.get("layout_mode")
+                except Exception:
+                    pass
 
                 _active = getattr(engine, "active_chat_id", None)
                 _cid = str(chat_id or "")

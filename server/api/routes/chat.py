@@ -729,6 +729,42 @@ async def _run_summarizer(
     return "[Summary unavailable — all summarizer fallbacks exhausted]"
 
 
+# Qwen stores its instruction in a server-side personalization slot (pushed via
+# sync_context), unlike API connectors where the system prompt rides every
+# request. The slot is global per account, so it only needs a re-sync when the
+# layout mode actually changes — normal chat <-> study. Tracking the last mode
+# keeps a study turn from re-pushing the whole directive on every message.
+_QWEN_LAYOUT_SYNCED: dict[str, str | None] = {"mode": None}
+
+# Study chats whose upstream session already received the study directive as a
+# first-message fallback (only used when the Qwen layout sync failed). Keyed by
+# upstream session id so the fallback fires ONCE per session, never per turn.
+_QWEN_STUDY_FALLBACK_SENT: set[str] = set()
+
+
+async def _ensure_qwen_layout_sync(layout_mode: str) -> bool:
+    """Push the layout-appropriate instruction into Qwen's personalization slot.
+
+    Returns True when the slot already holds (or was just updated to) the
+    requested layout's instruction. A False return means the caller should fall
+    back to sending the directive on the first message of the session.
+    """
+    if _QWEN_LAYOUT_SYNCED["mode"] == layout_mode:
+        return True
+    try:
+        _sync_mode = None if layout_mode in ("agent", "", None) else layout_mode
+        # Bounded so a slow sync (cold browser fallback) can never wedge the
+        # first study message — on timeout the caller uses the first-message
+        # fallback instead, and the next turn retries.
+        ok = await asyncio.wait_for(service.sync_context(layout_mode=_sync_mode), timeout=15.0)
+    except Exception as exc:
+        logger.warning("[qwen-layout] sync failed for %s: %s", layout_mode, exc)
+        return False
+    if ok:
+        _QWEN_LAYOUT_SYNCED["mode"] = layout_mode
+    return bool(ok)
+
+
 @router.post("/api/chat")
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
@@ -744,14 +780,33 @@ async def chat(request: ChatRequest):
     # the chat harness (chat_title, persona, agents) is suppressed below.
     _study_system: str | None = None
     _study_grounding: str | None = None
+    _study_sync_failed = False
     if _layout_mode == "study":
+        # Provider selects the tool-format primer inside the shared builder.
+        # deepseek_scraper shares DeepSeek's format, not its own key.
+        _study_provider = "qwen"
+        try:
+            if _is_api_model(request.model):
+                _study_provider = _resolve_api_backend(request.model) or "qwen"
+        except Exception:
+            pass
+        if _study_provider == "deepseek_scraper":
+            _study_provider = "deepseek"
         try:
             from .study_ai import build_study_turn
             _study_system, _study_grounding = build_study_turn(
-                request.study_context, request.message,
+                request.study_context, request.message, provider=_study_provider,
             )
         except Exception:
             logger.warning("study turn build failed", exc_info=True)
+        # Qwen keeps its instruction in a server-side personalization slot, so
+        # study mode needs a background re-sync. If it fails we fall back to
+        # sending the directive on the first message of the session (below).
+        if not _is_api_model(request.model) and not scraper_enabled:
+            try:
+                _study_sync_failed = not await _ensure_qwen_layout_sync("study")
+            except Exception:
+                _study_sync_failed = True
     _upstream_session_id: str | None = None
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
@@ -2119,9 +2174,9 @@ async def chat(request: ChatRequest):
                     except Exception:
                         _round_prompt_tokens = 0
                     _scraper_msg = current_message
-                    _scraper_override = _study_system or request.system_prompt
-                    if _scraper_override and ("-agent-" in str(active_chat_id) or _layout_mode == "study"):
-                        _scraper_msg = f"[SYSTEM INSTRUCTION]\n{_scraper_override}\n\n[USER MESSAGE]\n{current_message}"
+                    # Agent sub-chats still carry their own system prompt inline.
+                    if request.system_prompt and "-agent-" in str(active_chat_id):
+                        _scraper_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
                     round_event_source = scraper_service.stream_events(
                         message=_scraper_msg,
                         chat_id=active_chat_id,
@@ -2129,6 +2184,11 @@ async def chat(request: ChatRequest):
                         files=files_for_round,
                         model=request.model,
                         thinking_mode=request.thinking_mode,
+                        # Study mode: the scraper engine injects this ONCE via its
+                        # system_injected flag — never per message. layout_mode
+                        # lets the engine build study tools + directive itself.
+                        system_instruction=_study_system,
+                        layout_mode=_layout_mode,
                     )
                 else:
                     # Qwen uses upstream_session_id for the server-side session;
@@ -2155,13 +2215,24 @@ async def chat(request: ChatRequest):
                     # timeout-based reconnection. Triple-nesting caused 9-27 HTTP calls
                     # per user message.
                     _qwen_msg = current_message
-                    # Agent sub-chats and study chats override the system prompt
-                    # (skip the Maria persona). Qwen manages system prompts
-                    # server-side via sync_context, so we inject directly into
-                    # the message payload.
-                    _qwen_override = _study_system or request.system_prompt
-                    if _qwen_override and ("-agent-" in str(active_chat_id) or _layout_mode == "study"):
-                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{_qwen_override}\n\n[USER MESSAGE]\n{current_message}"
+                    # Qwen keeps its instruction server-side (personalization
+                    # slot, synced once via sync_context). Study mode re-syncs
+                    # that slot on entry; only if the sync FAILED do we fall
+                    # back to injecting the directive on the first message of
+                    # the session. Agent sub-chats still carry theirs inline.
+                    if request.system_prompt and "-agent-" in str(active_chat_id):
+                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
+                    elif (
+                        _study_system
+                        and _study_sync_failed
+                        and round_index == 0
+                        and _qwen_chat_id not in _QWEN_STUDY_FALLBACK_SENT
+                    ):
+                        # Sync failed: seed the directive on the FIRST message of
+                        # this upstream session only. Later turns rely on the
+                        # session history — re-sending it every turn was the bug.
+                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{_study_system}\n\n[USER MESSAGE]\n{current_message}"
+                        _QWEN_STUDY_FALLBACK_SENT.add(_qwen_chat_id)
                     round_event_source = service.stream_events(
                         message=_qwen_msg,
                         chat_id=_qwen_chat_id,

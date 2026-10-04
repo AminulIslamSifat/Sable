@@ -182,6 +182,8 @@ class ScraperEngine(ScraperLifecycle):
         thinking_mode: str | None = None,
         chat_url: str | None = None,
         raw: bool = False,
+        system_instruction: str | None = None,
+        layout_mode: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         settings = _load_settings()
         if not settings.get("enabled"):
@@ -291,6 +293,16 @@ class ScraperEngine(ScraperLifecycle):
                             await _sleep_jitter(_jdelay)
                     except Exception as _jexc:
                         logger.debug("Qwen jitter skipped: %s", _jexc)
+
+                    # Hand the engine its instruction for THIS stream. When set,
+                    # the engine injects it ONCE (system_injected flag) instead
+                    # of re-pasting it every turn; layout_mode lets it build the
+                    # right directive itself (study -> study tool set).
+                    try:
+                        engine._override_instructions = system_instruction or None
+                        engine._layout_mode = layout_mode
+                    except Exception:
+                        pass
 
                     send_kwargs: dict[str, Any] = {}
                     if _accepts_arg(engine.send_msg, 'raw'):

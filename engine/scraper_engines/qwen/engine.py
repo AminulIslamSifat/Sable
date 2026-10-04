@@ -1214,9 +1214,19 @@ class QwenEngine(BaseScraperEngine):
     # ------------------------------------------------------------------
 
     def _load_instructions(self) -> str:
-        """Use the shared instruction builder — same as API mode."""
+        """Use the shared instruction builder — same as API mode.
+
+        A caller-supplied directive (study/agent) wins and is injected once.
+        ``layout_mode`` selects the study branch when the caller set it.
+        """
+        override = getattr(self, "_override_instructions", None)
+        if override:
+            return override
         from connectors.common.instruction_builder import build_instructions
-        return build_instructions(provider="qwen")
+        return build_instructions(
+            provider="qwen",
+            layout_mode=getattr(self, "_layout_mode", None),
+        )
 
     # ------------------------------------------------------------------
     # Diary processing

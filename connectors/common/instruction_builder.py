@@ -21,6 +21,23 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Subagents operate autonomously — no interactive user prompts or nested multiagent spawns.
 _SUBAGENT_BLOCKED_TOOLS = frozenset({"ask_user", "multi_agent"})
 
+# The study-mode directive. Study mode is a normal chat whose ONLY deltas are
+# (1) a different tool list and (2) this directive appended at the end. It is
+# defined here — not in the route — so every transport (API, scraper, Qwen)
+# assembles study instructions through the SAME builder as a normal chat.
+_STUDY_MODE_DIRECTIVE = (
+    "## Study Mode\n"
+    "You are an expert study assistant embedded in a Sable study workspace. "
+    "You are in STUDY MODE and you CONTROL study mode through your tools: "
+    "you can highlight passages, take notes, edit notes, read any page of any "
+    "library PDF, and inspect the user's study activity.\n"
+    "Use the tools when the user asks you to change something or look something "
+    "up — do not just describe what you would do. Prefer precise, surgical "
+    "tools (append / replace_section) over rewriting a whole note.\n"
+    "Answer in clear, well-structured markdown. Never output a chat_title "
+    "block — that tool does not exist here."
+)
+
 # Cache-busting version counter — incremented on persona/instruction changes
 # so all connectors (Gemini, DeepSeek, Mistral/OpenAI-compat) detect stale caches.
 _instruction_version: int = 0
@@ -302,6 +319,8 @@ def build_instructions(
     agent_role: str | None = None,
     agent_skills: list[str] | None = None,
     layout_mode: str | None = None,
+    persona_override: str | None = None,
+    custom_instructions: str | None = None,
 ) -> str:
     """Build full system instruction with optional project overrides.
 
@@ -378,7 +397,10 @@ def build_instructions(
                 project_instruction = instr_path.read_text(encoding="utf-8")
 
         if _inj.get("persona", True):
-            if project_instruction and proj and proj.get("persona_enabled", True):
+            if persona_override and persona_override.strip():
+                # Study mode may name its own persona; it replaces the active one.
+                parts.append(persona_override.strip())
+            elif project_instruction and proj and proj.get("persona_enabled", True):
                 parts.append(project_instruction)
             else:
                 # Load active persona from config
@@ -397,10 +419,10 @@ def build_instructions(
                     if persona_path.exists():
                         parts.append(persona_path.read_text(encoding="utf-8").strip())
 
-                # Always load personal.md (user info, not a persona)
-                personal_path = _INSTRUCTION_DIR / "personal.md"
-                if personal_path.exists():
-                    parts.append(personal_path.read_text(encoding="utf-8").strip())
+            # Always load personal.md (user info, not a persona)
+            personal_path = _INSTRUCTION_DIR / "personal.md"
+            if personal_path.exists():
+                parts.append(personal_path.read_text(encoding="utf-8").strip())
 
     # --- Output Format ---
     _of_enabled = True
@@ -430,10 +452,43 @@ def build_instructions(
             git_lines.append(f"- Branch: {proj['git_branch']}")
         parts.append("\n".join(git_lines))
 
-    # --- Chat mode: strip all tools/skills/MCP except web search + chat_title ---
+    # --- Layout mode: chat / study / agent ---
     _is_chat_mode = layout_mode == "chat"
+    _is_study_mode = layout_mode == "study"
 
-    if not _is_chat_mode:
+    if _is_study_mode:
+        # Study mode = a NORMAL chat with a different tool list and one extra
+        # study directive at the end. Persona + personal.md + output format are
+        # already assembled above (identical to a normal chat); here we add the
+        # tool-call primer, the study tool schemas, then the study directive.
+        # No skills registry, no MCP, no chat_title, no agent tooling.
+        _active_tool_format = get_tool_format(provider) if _inj.get("tool_format", True) else ""
+        if _active_tool_format:
+            parts.append(_active_tool_format)
+        if _inj.get("tools", True):
+            try:
+                from engine.tools_loader import get_study_tool_schemas
+                _study_disabled_tools: list[str] = []
+                _study_dt_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
+                if _study_dt_path.exists():
+                    try:
+                        _study_dt = json.loads(_study_dt_path.read_text(encoding="utf-8"))
+                        if isinstance(_study_dt, list):
+                            _study_disabled_tools = _study_dt
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                _study_schemas = get_study_tool_schemas(_study_disabled_tools)
+                if _study_schemas:
+                    _study_lines = ["<tools>"]
+                    _study_lines.extend(json.dumps(s, ensure_ascii=False) for s in _study_schemas)
+                    _study_lines.append("</tools>")
+                    parts.append("\n".join(_study_lines))
+            except Exception:
+                pass
+        if custom_instructions and custom_instructions.strip():
+            parts.append(custom_instructions.strip())
+        parts.append(_STUDY_MODE_DIRECTIVE)
+    elif not _is_chat_mode:
         # --- Skill Registry ---
         from engine.skills import SkillEngine
         from engine.skills.handlers import HANDLER_MAP

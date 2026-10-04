@@ -1166,9 +1166,17 @@ class BaseBrowserEngine:
         return cleaned.strip()
 
     def _load_instructions(self) -> str:
+        # A caller-supplied directive (study/agent) wins — it is the FULL
+        # instruction for this stream and must be injected exactly once.
+        override = getattr(self, "_override_instructions", None)
+        if override:
+            return override
         try:
             from connectors.common.instruction_builder import build_instructions
-            return build_instructions(provider=self.spec.instruction_provider or self.spec.provider)
+            return build_instructions(
+                provider=self.spec.instruction_provider or self.spec.provider,
+                layout_mode=getattr(self, "_layout_mode", None),
+            )
         except Exception:
             return ""
 

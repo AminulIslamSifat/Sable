@@ -491,7 +491,7 @@ def _study_tool_sections() -> str:
 
 
 def _build_system(custom_prompt: str, persona_text: str) -> str:
-    """System directive for study answers — replaces Sable's instruction registry."""
+    """Legacy single-shot study directive (standalone /api/study/ai endpoint)."""
     system = _STUDY_SYSTEM
     if custom_prompt.strip():
         system += "\n\nAdditional instructions from the reader:\n" + custom_prompt.strip()
@@ -501,9 +501,35 @@ def _build_system(custom_prompt: str, persona_text: str) -> str:
     return system
 
 
+def _build_study_system(
+    provider: str | None,
+    persona_text: str,
+    custom_prompt: str,
+) -> str:
+    """Assemble the study system via the SHARED instruction builder.
+
+    Study mode is a normal chat: persona + output format + tool-format primer +
+    the study tool set + the study directive appended last. Building it here (not
+    by hand) is what keeps study and normal chat on one pipeline, so a transport
+    only ever has to inject this string once — exactly like any other chat.
+    """
+    try:
+        from connectors.common.instruction_builder import build_instructions
+        return build_instructions(
+            provider=provider,
+            layout_mode="study",
+            persona_override=persona_text or None,
+            custom_instructions=custom_prompt or None,
+        )
+    except Exception:
+        logger.warning("study system build failed", exc_info=True)
+        return _build_system(custom_prompt, persona_text)
+
+
 def build_study_turn(
     study_context: dict[str, Any] | None,
     user_message: str,
+    provider: str | None = None,
 ) -> tuple[str, str]:
     """Build ``(system_prompt, grounded_user_message)`` for a study chat turn.
 
@@ -536,7 +562,7 @@ def build_study_turn(
     custom_prompt = str(
         ctx.get("custom_prompt") if "custom_prompt" in ctx else cfg.get("custom_prompt") or ""
     )
-    system = _build_system(custom_prompt, _read_persona(persona))
+    system = _build_study_system(provider, _read_persona(persona), custom_prompt)
 
     # No document (e.g. a free-form study chat) — just the directive + message.
     if not meta:
