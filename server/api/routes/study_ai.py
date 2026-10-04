@@ -445,10 +445,9 @@ def _read_persona(name: str) -> str:
 def _study_tool_sections() -> str:
     """Tool-call primer + schemas for a study turn.
 
-    Reuses the SAME machinery the main chat uses to hand Qwen its tools:
-    ``get_tool_format`` for the ``<action>`` primer and
-    ``get_tools_prompt_section`` for the core-tool ``<tools>`` block. Study
-    tools are then appended on top of that core set, and the shared
+    ``get_tool_format`` supplies the ``<action>`` primer and
+    ``get_study_tool_schemas`` supplies the ``<tools>`` block — the SAME set
+    the native tool-calling path sends, so both transports agree. The shared
     ``output_format.md`` is included last. Purely additive — study's own
     directive is left untouched.
     """
@@ -461,10 +460,17 @@ def _study_tool_sections() -> str:
     except Exception:
         logger.debug("study tool primer failed", exc_info=True)
     try:
-        from engine.tools_loader import get_tools_prompt_section, get_study_tool_schemas
-        core = get_tools_prompt_section()
-        if core:
-            parts.append(core)
+        from engine.tools_loader import get_study_tool_schemas
+        # Study mode exposes EXACTLY get_study_tool_schemas() - the study-gated
+        # tools plus the shared allow-list (online_search / simulacra /
+        # image_generator / code_editor / file_uploader / grep_search). Same set
+        # the native tool-calling path sends, so the prompt-injected
+        # (Qwen/scraper) path and the native path can never disagree.
+        #
+        # Previously this prepended get_tools_prompt_section(), which dumps the
+        # whole agent harness (ask_user, chat_title, critique, execute_command,
+        # spawn_agent, MCP, load_tool stubs) and THEN appended study tools. Study
+        # mode advertised chat_title + agent tooling it has no handlers for.
         study_tools = get_study_tool_schemas()
         if study_tools:
             lines = ["<tools>"]

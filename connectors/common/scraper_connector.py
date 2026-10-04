@@ -282,6 +282,22 @@ class BaseScraperConnector:
             inject_instructions = False
             chat_id = None
             chat_url = None
+        elif str(kwargs.get("layout_mode") or "").lower() == "study" and system_instruction:
+            # Study mode: the caller hands us the COMPLETE study directive
+            # (persona + study tools + <tools> block) as system_instruction and
+            # sets layout_mode="study". The scraper has no native
+            # function-calling channel, so that directive IS the tool list.
+            # Without this branch the directive was silently dropped (the old
+            # guard only matched "-agent-" chat ids), and the connector fell
+            # back to dumping the generic Sable registry - which is why
+            # deepseek_scraper showed the chat/agent tool list instead of the
+            # study one. Suppress the registry dump; keep chat_id/chat_url so
+            # the study session still resumes.
+            message = (
+                "[SYSTEM INSTRUCTION]\n" + system_instruction
+                + "\n\n[USER MESSAGE]\n" + message
+            )
+            inject_instructions = False
         elif system_instruction and "-agent-" in str(chat_id or ""):
             message = (
                 "[SYSTEM INSTRUCTION]\n" + system_instruction

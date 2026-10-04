@@ -748,30 +748,119 @@ def insert_file(path: str, content: str, at_line: int = None, after_str: str = N
 # SEARCH/REPLACE block parser
 # --------------------------------------------------------------------------
 
-_SEARCH_MARK = "<<<<<<< SEARCH"
-_DIVIDER_MARK = "======="
-_REPLACE_MARK = ">>>>>>> REPLACE"
+_LT = chr(60)
+_EQ = chr(61)
+_GT = chr(62)
+_LF = chr(10)
+_CR = chr(13)
+_TAB = chr(9)
+_BOM = chr(0xFEFF)
+_BS = chr(92)
+_NL_ESC = _BS + "n"
+_CRLF_ESC = _BS + "r" + _BS + "n"
+_TAB_ESC = _BS + "t"
+
+_SEARCH_MARK = _LT * 7 + " SEARCH"
+_DIVIDER_MARK = _EQ * 7
+_REPLACE_MARK = _GT * 7 + " REPLACE"
+
+
+def _marker_kind(line: str) -> str:
+    """Classify a marker line; tolerates 7 or more marker characters."""
+    s = line.strip()
+    if not s:
+        return ""
+    ch = s[0]
+    if ch != _LT and ch != _EQ and ch != _GT:
+        return ""
+    n = 0
+    for c in s:
+        if c == ch:
+            n += 1
+        else:
+            break
+    if n < 7:
+        return ""
+    word = s[n:].strip().upper()
+    if ch == _LT and (word == "" or word == "SEARCH"):
+        return "search"
+    if ch == _EQ and word == "":
+        return "divider"
+    if ch == _GT and (word == "" or word == "REPLACE"):
+        return "replace"
+    return ""
+
+
+def _repair_marker_run(run_len: int) -> int:
+    """Invert the transport's less-than run expansion (n -> 2n-1)."""
+    if run_len > 7 and run_len % 2 == 1:
+        return (run_len + 1) // 2
+    return run_len
+
+
+def _repair_doubled_lt_runs(text: str) -> str:
+    """Collapse over-long less-than runs on marker-shaped lines only.
+
+    The tool-argument transport expands a run of n less-than chars into
+    2n-1 of them. Only lines that look like block markers (a pure run,
+    optionally followed by SEARCH) are repaired, so ordinary code that
+    happens to contain a run is never rewritten.
+    """
+    out = []
+    for line in text.split(_LF):
+        s = line.strip()
+        n = 0
+        for c in s:
+            if c == _LT:
+                n += 1
+            else:
+                break
+        if n > 7:
+            tail = s[n:]
+            word = tail.strip().upper()
+            if word == "" or word == "SEARCH":
+                fixed = _repair_marker_run(n)
+                if fixed != n:
+                    indent = line[: len(line) - len(line.lstrip())]
+                    line = indent + _LT * fixed + tail
+        out.append(line)
+    return _LF.join(out)
+
+
+def _normalize_block_text(text: str) -> str:
+    """Repair transport damage before parsing marker blocks."""
+    if _CR in text:
+        text = text.replace(_CR + _LF, _LF).replace(_CR, _LF)
+    if text.startswith(_BOM):
+        text = text[1:]
+    marker = _LT * 6
+    if marker in text and text.count(_LF) <= 1 and (_NL_ESC in text or _CRLF_ESC in text):
+        text = text.replace(_CRLF_ESC, _LF).replace(_NL_ESC, _LF).replace(_TAB_ESC, _TAB)
+    return _repair_doubled_lt_runs(text)
 
 
 def _parse_search_replace_blocks(text: str):
     """Parse SEARCH/REPLACE marker blocks. Returns dict or list of dicts."""
-    lines = text.split("\n")
+    text = _normalize_block_text(text)
+    lines = text.split(_LF)
     blocks = []
     state = "outside"
     cur_old, cur_new = [], []
     for line in lines:
-        stripped = line.strip()
+        kind = _marker_kind(line)
         if state == "outside":
-            if stripped == _SEARCH_MARK:
-                state, cur_old = "search", []
+            if kind == "search":
+                state = "search"
+                cur_old = []
         elif state == "search":
-            if stripped == _DIVIDER_MARK:
-                state, cur_new = "replace", []
+            if kind == "divider":
+                state = "replace"
+                cur_new = []
             else:
                 cur_old.append(line)
         elif state == "replace":
-            if stripped == _REPLACE_MARK:
-                blocks.append({"old_str": "\n".join(cur_old), "new_str": "\n".join(cur_new)})
+            if kind == "replace":
+                blocks.append({"old_str": _LF.join(cur_old), "new_str": _LF.join(cur_new)})
                 state = "outside"
             else:
                 cur_new.append(line)
@@ -779,16 +868,17 @@ def _parse_search_replace_blocks(text: str):
     if state != "outside":
         raise ToolError(
             "Unterminated SEARCH/REPLACE block: missing the closing "
-            f"'{_DIVIDER_MARK}' or '{_REPLACE_MARK}' marker line."
+            + repr(_DIVIDER_MARK) + " or " + repr(_REPLACE_MARK) + " marker line."
         )
     if not blocks:
+        preview = _LF.join(text.split(_LF)[:6])
         raise ToolError(
-            f"No SEARCH/REPLACE blocks found. Expected at least one block "
-            f"delimited by '{_SEARCH_MARK}' / '{_DIVIDER_MARK}' / '{_REPLACE_MARK}'."
+            "No SEARCH/REPLACE blocks found. Expected at least one block "
+            "delimited by " + repr(_SEARCH_MARK) + " / " + repr(_DIVIDER_MARK)
+            + " / " + repr(_REPLACE_MARK) + "." + _LF
+            + "First lines received:" + _LF + preview
         )
     return blocks if len(blocks) > 1 else blocks[0]
-
-
 # --------------------------------------------------------------------------
 # JSON payload loading (legacy)
 # --------------------------------------------------------------------------

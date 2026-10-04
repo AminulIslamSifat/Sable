@@ -89,22 +89,26 @@ class ThinkTagSplitter:
 
             # We are assembling a candidate tag.
             if self._tag:
-                self._tag += ch
-                if self._is_partial_tag(self._tag):
-                    if self._tag in _ALL_TAGS:
-                        self._in_think = self._tag in _OPEN_TAGS
+                candidate = self._tag + ch
+                if self._is_partial_tag(candidate):
+                    self._tag = candidate
+                    if candidate in _ALL_TAGS:
+                        self._in_think = candidate in _OPEN_TAGS
                         self._tag = ""
                     i += 1
                     continue
+                # Candidate is not a tag prefix. Flush only the buffered
+                # text (which excludes ch), then handle ch on its own. This
+                # avoids emitting ch twice when it can seed a new candidate.
+                literal = self._tag
+                self._tag = ""
+                (thinking if self._in_think else answer).append(literal)
+                if ch == "<":
+                    self._tag = "<"
                 else:
-                    # Not a tag after all — flush literally to current sink.
-                    literal = self._tag
-                    self._tag = ""
-                    (thinking if self._in_think else answer).append(literal)
-                    if ch == "<":
-                        self._tag = "<"
-                    i += 1
-                    continue
+                    (thinking if self._in_think else answer).append(ch)
+                i += 1
+                continue
 
             if ch == "<":
                 self._tag = "<"
