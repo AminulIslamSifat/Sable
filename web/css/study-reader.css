@@ -388,10 +388,13 @@ body.rdr-open { overflow: hidden; }
   background: #fff;
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.28);
   border-radius: 3px;
-  overflow: hidden;
+  /* No `overflow: hidden` here. It clipped the text layer at the page box, so
+     a line sitting flush against the bottom edge had its hit area cut off —
+     you could not start or end a selection on it. The canvas is exactly
+     page-sized, so nothing actually needed clipping. */
   flex-shrink: 0;
 }
-.rdr-canvas { display: block; }
+.rdr-canvas { display: block; border-radius: 3px; }
 
 /* Highlight rectangles sit above the text layer but below the selection UI. */
 .rdr-hl-layer {
@@ -493,7 +496,9 @@ body.rdr-open { overflow: hidden; }
 .rdr-text-layer {
   position: absolute;
   inset: 0;
-  overflow: clip;
+  /* `clip` cut those same edge lines a second time. Spans are transparent, so
+     letting them spill past the page box costs nothing visually. */
+  overflow: visible;
   opacity: 1;
   line-height: 1;
   text-align: initial;
@@ -546,6 +551,11 @@ body.rdr-open { overflow: hidden; }
   user-select: none;
 }
 .rdr-text-layer ::selection {
+  /* Solid fallback FIRST. If --accent is undefined in the reader's scope, the
+     color-mix() below computes to invalid, the whole declaration is dropped,
+     and the selection is genuinely there but paints nothing — the classic
+     "I selected a line and it did not get selected". */
+  background: rgba(88, 166, 255, 0.42);
   background: color-mix(in srgb, var(--accent) 45%, transparent);
   color: transparent !important;
   -webkit-text-fill-color: transparent !important;
@@ -789,13 +799,19 @@ body.rdr-open { overflow: hidden; }
 .rdr-ai-pin .icon-lucide { width: 12px; height: 12px; }
 
 /* --- Floating answer card --- */
+/* Geometry mirrors .rdr-ai-launch .sa-popup exactly (full-height side panel,
+   fixed to the viewport) so every Study AI entry point — floating button,
+   right-click actions, and the highlight bar — opens the SAME sized surface. */
 .rdr-ai-card {
   position: fixed;
-  right: 22px;
-  bottom: 22px;
+  top: 65px;
+  right: 10px;
+  bottom: 10px;
+  left: auto;
   z-index: 1100;
-  width: min(460px, 92vw);
-  max-height: min(70vh, 640px);
+  width: 550px;
+  max-width: calc(100vw - 20px);
+  max-height: none;
   display: flex;
   flex-direction: column;
   border-radius: 14px;
@@ -1014,7 +1030,7 @@ body.rdr-open { overflow: hidden; }
 .rdr-ai-note-view .icon-lucide { width: 13px; height: 13px; }
 
 @media (max-width: 640px) {
-  .rdr-ai-card { right: 10px; bottom: 10px; left: 10px; width: auto; }
+  .rdr-ai-card { right: 8px; left: 8px; width: auto; height: 60vh; }
   .rdr-ai-config { right: 10px; left: 10px; width: auto; }
   .rdr-hl-ai { font-size: 11px; }
 }

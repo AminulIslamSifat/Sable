@@ -36,11 +36,16 @@ let currentPage = 1;
 // intermediate positions don't yank the sidebar to a page we're passing over.
 let scrollSyncSuppressUntil = 0;
 let pageSyncRaf = 0;
+let selectionDebounce = 0;   // debounce handle for the selectionchange listener
 let pageEls = [];       // index 0 = page 1
 let pageObserver = null;
-let evictObserver = null;
 let thumbObserver = null;
-let rendering = false;
+// In-flight page.render() / TextLayer.render() calls. `pdfDoc.cleanup()`
+// THROWS if any page proxy is mid-render, so this is the guard that keeps the
+// debounced cleanup honest. The old `rendering` boolean was declared, reset to
+// false once, and never set true — a dead flag that guarded nothing.
+let activeRenders = 0;
+let docCleanupTimer = 0;   // debounced pdfDoc.cleanup() — see scheduleDocCleanup()
 let renderGen = 0;      // bumps on every renderAllPages rebuild — stale renders bail
 let progressTimer = null;
 let activeSideTab = 'pages';
@@ -473,9 +478,18 @@ function wire() {
     }
   });
 
-  // Selection → highlight bar
+  // Selection → highlight bar.
+  // `mouseup` on the scroll container alone missed every release that happened
+  // outside #rdrMain (over the sidebar, past the window edge) and every
+  // keyboard selection. Bind on document and cover both paths: pointerup for
+  // the instant case, debounced selectionchange for drag + Shift+Arrow.
   const main = $("#rdrMain");
-  main.addEventListener('mouseup', onSelection);
+  document.addEventListener('pointerup', onSelection);
+  document.addEventListener('selectionchange', () => {
+    if (!overlay || overlay.classList.contains('hidden')) return;
+    clearTimeout(selectionDebounce);
+    selectionDebounce = setTimeout(onSelection, 120);
+  });
   main.addEventListener('scroll', onMainScroll, { passive: true });
 
   // Right-click context menu on the document pane.
@@ -868,8 +882,8 @@ function teardown() {
   closeNotePopup();
   if (window.studyNotes) { try { window.studyNotes.close(); } catch {} }
   if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
-  if (evictObserver) { evictObserver.disconnect(); evictObserver = null; }
   if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+  clearTimeout(docCleanupTimer);
   for (const rec of pageEls) releaseCanvas(rec);
   if (pdfDoc) { try { pdfDoc.destroy(); } catch {} pdfDoc = null; }
   if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
@@ -879,7 +893,7 @@ function teardown() {
   pendingSelection = null;
   aiCurrent = null;
   aiNotes = [];
-  rendering = false;
+  activeRenders = 0;
   // AI pane/popup are per-document; drop them so the next open rebuilds.
   if (aiPane && aiPane.view && aiPane.view.dispose) { try { aiPane.view.dispose(); } catch {} }
   if (aiFloat && aiFloat.getView && aiFloat.getView()) {
@@ -943,6 +957,16 @@ function releaseCanvas(rec) {
 function unrenderPage(n) {
   const rec = pageEls[n - 1];
   if (!rec || !rec.rendered) return;
+  // Never tear down the page a live selection lives in. `innerHTML = ''`
+  // removes the very nodes the Range points at, which collapses the selection
+  // and yanks the highlight bar away mid-gesture. This is why scrolling with
+  // text selected felt like it "disabled" selection on the pages above.
+  const liveSel = window.getSelection();
+  if (liveSel && liveSel.rangeCount && !liveSel.isCollapsed) {
+    const node = liveSel.getRangeAt(0).startContainer;
+    const host = node.nodeType === 3 ? node.parentNode : node;
+    if (host && host.closest && host.closest('.rdr-page') === rec.el) return;
+  }
   if (rec.textLayer) { try { rec.textLayer.cancel(); } catch {} rec.textLayer = null; }
   const tl = rec.el.querySelector('.rdr-text-layer');
   if (tl) tl.innerHTML = '';
@@ -953,6 +977,34 @@ function unrenderPage(n) {
     pageCache.delete(n);
     try { pg.cleanup(); } catch { /* best effort */ }
   }
+  // `page.cleanup()` above only frees ONE page's render-time objects. The
+  // transport keeps the parsed page + operator lists for every page you have
+  // ever visited — that is the real RAM growth. `pdfDoc.cleanup()` releases it.
+  scheduleDocCleanup();
+}
+
+/**
+ * Debounced document-level cleanup.
+ *
+ * Do NOT call `pdfDoc.cleanup()` inline here. Reading pdf.js's own
+ * `startCleanup()`:
+ *   - it THROWS if any page is mid-render, and it returns a *promise*, so an
+ *     inline try/catch around the call catches nothing — you get an unhandled
+ *     rejection instead;
+ *   - `cleanup(false)` calls `fontLoader.clear()`, so firing it on every
+ *     eviction would drop the font cache and force every subsequent page to
+ *     re-parse its fonts — slower and flickerier than the RAM it saves.
+ * So: debounce it, and pass `true` to keep the font loader alive.
+ */
+function scheduleDocCleanup() {
+  clearTimeout(docCleanupTimer);
+  docCleanupTimer = setTimeout(() => {
+    // Never while a page is rendering — startCleanup throws on that.
+    if (!pdfDoc || activeRenders > 0) return scheduleDocCleanup();
+    Promise.resolve()
+      .then(() => pdfDoc.cleanup(true))
+      .catch(() => { /* rejects if a render slipped in — next tick retries */ });
+  }, 2000);
 }
 
 async function renderAllPages() {
@@ -962,10 +1014,6 @@ async function renderAllPages() {
   if (pageObserver) {
     pageObserver.disconnect();
     pageObserver = null;
-  }
-  if (evictObserver) {
-    evictObserver.disconnect();
-    evictObserver = null;
   }
 
   const host = overlay.querySelector('#rdrPages');
@@ -1009,32 +1057,25 @@ async function renderAllPages() {
 
   // Render only what's near the viewport.
   const main = overlay.querySelector('#rdrMain');
-  // Two observers, one job each. The render band stays tight so scrolling is
-  // responsive; the eviction band is wide so a slow scroll doesn't thrash
-  // rasterise → drop → rasterise on the same page.
+  // ONE band for both rasterise and eviction.
+  // The old split — render in at 600px, evict out at 1500px — left a hole. A
+  // page evicted past 1500px never came back at 1400px, because the evict
+  // observer only evicted and the render observer's band was tighter. Pages
+  // sat blank across a ~900px band and popped in late. That pop-in is the
+  // flicker you were seeing while scrolling. Same rootMargin, one decision.
   pageObserver = new IntersectionObserver((entries) => {
     if (gen !== renderGen) return;  // stale observer from an older layout
     for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      // Active-page tracking is scroll-driven (see schedulePageSync) — a wide
-      // rootMargin makes several off-screen pages report as intersecting, so
-      // the observer can't pick the current one.
-      renderPage(parseInt(entry.target.dataset.page, 10));
+      const n = parseInt(entry.target.dataset.page, 10);
+      // Active-page tracking stays scroll-driven (see schedulePageSync) — a
+      // wide rootMargin makes several off-screen pages report as intersecting,
+      // so the observer can't be trusted to pick the current one.
+      if (entry.isIntersecting) renderPage(n);
+      else unrenderPage(n);
     }
-  }, { root: main, rootMargin: '600px 0px', threshold: 0.01 });
+  }, { root: main, rootMargin: '1000px 0px', threshold: 0 });
 
-  evictObserver = new IntersectionObserver((entries) => {
-    if (gen !== renderGen) return;
-    for (const entry of entries) {
-      if (entry.isIntersecting) continue;   // still inside the render band
-      unrenderPage(parseInt(entry.target.dataset.page, 10));
-    }
-  }, { root: main, rootMargin: '1500px 0px', threshold: 0 });
-
-  pageEls.forEach((p) => {
-    pageObserver.observe(p.el);
-    evictObserver.observe(p.el);
-  });
+  pageEls.forEach((p) => pageObserver.observe(p.el));
   schedulePageSync();
 }
 
@@ -1052,7 +1093,12 @@ async function renderPage(n) {
   // Canvas area grows with the square of scale. At 3x zoom on a HiDPI panel a
   // single page is 4320x3240 = 14 Mpx = 56 MB. Retina sharpness is worth
   // paying for at 1x, not at 3x.
-  const dpr = Math.min(window.devicePixelRatio || 1, scale >= 2 ? 1 : 2);
+  // Never drop below native DPR. The old `scale >= 2 ? 1 : 2` cap threw away
+  // half the resolution exactly when the user zoomed in to read — that was the
+  // soft, mushy text at high zoom. Memory is bounded by the eviction band
+  // instead (only ~1 page in flight at high zoom, ~14 MB worst case), which is
+  // the right lever for this. 2x ceiling stays for the 3x-zoom 4K case.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const viewport = page.getViewport({ scale });
 
   // Correct the placeholder size now that the true viewport is known.
@@ -1064,6 +1110,7 @@ async function renderPage(n) {
   canvas.style.width = `${Math.floor(viewport.width)}px`;
   canvas.style.height = `${Math.floor(viewport.height)}px`;
 
+  activeRenders++;
   try {
     await page.render({
       canvasContext: ctx,
@@ -1072,6 +1119,8 @@ async function renderPage(n) {
     }).promise;
   } catch {
     return;
+  } finally {
+    activeRenders--;
   }
 
   await renderTextLayer(rec, page, viewport);
@@ -1080,11 +1129,18 @@ async function renderPage(n) {
 }
 
 async function renderTextLayer(rec, page, viewport) {
-  const container = rec.el.querySelector('.rdr-text-layer');
+  let container = rec.el.querySelector('.rdr-text-layer');
   // Cancel any in-flight layer before wiping — two renders into one container
   // leaves duplicated spans and broken selection geometry.
   if (rec.textLayer) { try { rec.textLayer.cancel(); } catch {} rec.textLayer = null; }
-  container.innerHTML = '';
+  // Clone-and-swap instead of innerHTML = ''. TextLayer.render() schedules work
+  // across rAF ticks, so a cancelled layer can still append its .endOfContent
+  // marker after the wipe. Those orphans pile up on every evict/re-render and
+  // poison range.getClientRects() — which is why selection geometry drifted
+  // worse the longer a session ran. The old node dies with all its spans.
+  const freshLayer = container.cloneNode(false);
+  container.replaceWith(freshLayer);
+  container = freshLayer;
   // pdf.js positions text spans using these CSS vars — both are needed across v5/v6.
   rec.el.style.setProperty('--scale-factor', String(scale));
   rec.el.style.setProperty('--total-scale-factor', String(scale));
@@ -1100,7 +1156,14 @@ async function renderTextLayer(rec, page, viewport) {
       container,
       viewport,
     });
-    await layer.render();
+    // Counted too: startCleanup() also clears TextLayer's shared static caches,
+    // which would corrupt a layer that is still mid-render.
+    activeRenders++;
+    try {
+      await layer.render();
+    } finally {
+      activeRenders--;
+    }
     rec.textLayer = layer;
   } catch (err) {
     console.warn('[study-reader] text layer failed', err);
@@ -1342,9 +1405,18 @@ async function drawThumb(n) {
     const base = page.getViewport({ scale: 1 });
     const s = Math.min(120 / base.width, 160 / base.height);
     const vp = page.getViewport({ scale: s });
-    canvas.width = Math.floor(vp.width);
-    canvas.height = Math.floor(vp.height);
-    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    // Thumbnails were rendering at 1 CSS px per device px on a HiDPI panel and
+    // looked like smudges next to the page. Match the main render path.
+    const tdpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(vp.width * tdpr);
+    canvas.height = Math.floor(vp.height * tdpr);
+    canvas.style.width = `${Math.floor(vp.width)}px`;
+    canvas.style.height = `${Math.floor(vp.height)}px`;
+    await page.render({
+      canvasContext: ctx,
+      viewport: vp,
+      transform: tdpr !== 1 ? [tdpr, 0, 0, tdpr, 0, 0] : null,
+    }).promise;
   } catch { /* ignore */ }
 }
 
@@ -1636,18 +1708,85 @@ function onTopicPanelClick(e) {
 
 // ── Selection & highlighting ─────────────────────────────────────────────────
 
+/**
+ * Expand a selection Range out to whole-word boundaries.
+ *
+ * pdf.js emits one absolutely-positioned span per glyph run, and a run can
+ * break mid-word ("p" | "seudocode"). Chrome's double-click word-selection
+ * then stops at the span edge, so the captured text loses the leading letter
+ * and the dictionary looks up the wrong word. Walking the text layer's flat
+ * text recovers the full word and hands back a Range that covers it too, so
+ * the highlight geometry matches the text.
+ *
+ * Returns { range, text } or null when the selection is already word-aligned.
+ */
+function snapRangeToWord(pageEl, range) {
+  const layer = pageEl.querySelector('.rdr-text-layer');
+  if (!layer) return null;
+  const nodes = [];
+  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+  if (!nodes.length) return null;
+
+  const base = new Map();
+  let flat = '';
+  for (const t of nodes) { base.set(t, flat.length); flat += t.data; }
+
+  const flatAt = (container, offset) => {
+    if (container.nodeType === Node.TEXT_NODE) {
+      const b = base.get(container);
+      return b == null ? null : b + offset;
+    }
+    // Element container — use its first text descendant.
+    for (const t of nodes) if (container.contains(t)) return base.get(t);
+    return null;
+  };
+
+  let s = flatAt(range.startContainer, range.startOffset);
+  let e = flatAt(range.endContainer, range.endOffset);
+  if (s == null || e == null || e <= s) return null;
+
+  const WORD = /[A-Za-z0-9'\u2019\-]/;
+  const s0 = s, e0 = e;
+  while (s > 0 && WORD.test(flat[s - 1])) s--;
+  while (e < flat.length && WORD.test(flat[e])) e++;
+  if (s === s0 && e === e0) return null;
+
+  const locate = (pos) => {
+    for (const t of nodes) {
+      const b = base.get(t);
+      if (pos <= b + t.data.length) return { node: t, offset: Math.max(0, pos - b) };
+    }
+    const last = nodes[nodes.length - 1];
+    return { node: last, offset: last.data.length };
+  };
+
+  const a = locate(s), b = locate(e);
+  const r = document.createRange();
+  try { r.setStart(a.node, a.offset); r.setEnd(b.node, b.offset); }
+  catch { return null; }
+  return { range: r, text: flat.slice(s, e).trim() };
+}
+
 function onSelection() {
+  if (!overlay || overlay.classList.contains('hidden')) return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return hideHlBar();
 
-  const range = sel.getRangeAt(0);
-  const text = sel.toString().trim();
+  let range = sel.getRangeAt(0);
+  let text = sel.toString().trim();
   if (!text) return hideHlBar();
 
   let node = range.startContainer;
   if (node.nodeType === 3) node = node.parentNode;
   const pageEl = node.closest && node.closest('.rdr-page');
   if (!pageEl) return hideHlBar();
+
+  // Whole-word snap — see snapRangeToWord. Fixes "seudocode" → "pseudocode"
+  // for the dictionary and every AI action grounded on the selection.
+  const snapped = snapRangeToWord(pageEl, range);
+  if (snapped) { range = snapped.range; text = snapped.text; }
 
   const pageRect = pageEl.getBoundingClientRect();
   const rects = Array.from(range.getClientRects())
@@ -1971,22 +2110,40 @@ async function textToRects(page, text) {
     // Build a char-offset index over the page's text items, then find the
     // needle and map the covered items to their transform rects.
     const items = tc.items || [];
+
+    // Anchor on the first and last WORD and take every item between them.
+    // The old test was `needle.includes(str) || str.includes(needle.split('\n')[0])`
+    // — for any multi-line selection that collapses to "does this item contain
+    // the first line", so it matched unrelated items all over the page and
+    // painted highlight rects in the wrong places. This is a heuristic, not a
+    // char-offset mapping (getTextContent gives no stable per-char positions),
+    // but it is bounded to the actual selection span.
+    const words = needle.split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const firstWord = words[0];
+    const lastWord = words[words.length - 1];
+
+    const has = (it, w) => (it.str || '').includes(w);
+    const lo = items.findIndex((it) => has(it, firstWord));
+    if (lo < 0) return [];
+    let hi = lo;
+    for (let i = items.length - 1; i >= lo; i--) {
+      if (has(items[i], lastWord)) { hi = i; break; }
+    }
+
     const rects = [];
-    for (const it of items) {
-      const str = it.str || '';
-      if (!str) continue;
-      if (needle.includes(str) || str.includes(needle.split('\n')[0])) {
-        const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
-        const h = Math.hypot(tx[2], tx[3]);
-        const w = it.width * scale;
-        rects.push({
-          x: tx[4] / vp.width,
-          y: (tx[5] - h) / vp.height,
-          w: w / vp.width,
-          h: (h * 1.15) / vp.height,
-        });
-      }
-      if (rects.length >= 40) break;
+    for (let i = lo; i <= hi && rects.length < 60; i++) {
+      const it = items[i];
+      if (!(it.str || '').trim()) continue;
+      const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
+      const h = Math.hypot(tx[2], tx[3]);
+      const w = it.width * scale;
+      rects.push({
+        x: tx[4] / vp.width,
+        y: (tx[5] - h) / vp.height,
+        w: w / vp.width,
+        h: (h * 1.15) / vp.height,
+      });
     }
     return rects.filter((r) => r.w > 0 && r.h > 0 && r.y > -0.02 && r.y < 1.02);
   } catch (_) {
@@ -2008,7 +2165,9 @@ async function onHighlightBarClick(e) {
     if (!pendingSelection) return;
     const sel = pendingSelection;
     hideHlBar();
-    window.getSelection()?.removeAllRanges();
+    // Selection is deliberately NOT collapsed here. Clearing it on every
+    // action is what made the reader feel like it "disables all selection" —
+    // you pick a word, the card opens, and your highlight vanishes.
     openDictCard(sel.text);
     return;
   }
@@ -2020,7 +2179,7 @@ async function onHighlightBarClick(e) {
     const action = aiBtn.dataset.rdrAi;
     const sel = pendingSelection;
     hideHlBar();
-    window.getSelection()?.removeAllRanges();
+    // Keep the selection alive — same reason as the dictionary branch above.
     runAi({
       action,
       scope: 'selection',
@@ -2079,7 +2238,9 @@ async function onHighlightBarClick(e) {
     toast('Highlight failed: ' + err.message, 'error');
   }
   hideHlBar();
-  window.getSelection()?.removeAllRanges();
+  // No removeAllRanges() here either — the selection stays put so you can see
+  // what you just highlighted, and chain another action off it. It used to be
+  // wiped here, which is why the reader felt like it ate your selection.
 }
 
 function layoutHighlights() {
