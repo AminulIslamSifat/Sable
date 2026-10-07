@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from engine.config import _ROOT, PERSISTENT_ROOT
+from engine.telegram_session import is_dead_session_error, purge_session
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
@@ -39,18 +40,48 @@ def _save_config(cfg: dict[str, Any]) -> None:
 
 
 async def _get_client():
-    """Return connected+authorized Telethon client or raise."""
+    """Return connected+authorized Telethon client or raise.
+
+    Self-healing: if the session's auth key is permanently dead
+    (AUTH_KEY_DUPLICATED / revoked / deactivated), the poisoned ``.session``
+    file is deleted automatically and a 401 is raised telling the user to
+    sign in again. No manual ``rm`` needed.
+    """
     global _client
     cfg = _load_config()
     if not cfg or not cfg.get("enabled"):
         raise HTTPException(403, "Telegram is disabled in settings")
+    session_path = str(_SESSION_DIR / "sable_tg")
+
+    def _heal() -> None:
+        """Purge the dead session and drop the cached client."""
+        global _client
+        purge_session(session_path)
+        _client = None
+        raise HTTPException(
+            401,
+            "Telegram session expired or was duplicated; the stale session "
+            "was cleared automatically. Please sign in again.",
+        )
+
+    async def _probe(cl) -> bool:
+        """Authorized + alive check. Raises on a dead auth key."""
+        if not cl.is_connected():
+            return False
+        return await cl.is_user_authorized()
+
     # Fast path: reuse only if connected AND still authorized
     if _client is not None and _client.is_connected():
         try:
-            if await _client.is_user_authorized():
+            if await _probe(_client):
                 return _client
-        except Exception:
-            pass
+        except Exception as e:
+            if is_dead_session_error(e):
+                try:
+                    await _client.disconnect()
+                except Exception:
+                    pass
+                _heal()
         # Connected but not authorized — stale session, tear it down
         try:
             await _client.disconnect()
@@ -61,10 +92,15 @@ async def _get_client():
         # Double-check after acquiring lock
         if _client is not None and _client.is_connected():
             try:
-                if await _client.is_user_authorized():
+                if await _probe(_client):
                     return _client
-            except Exception:
-                pass
+            except Exception as e:
+                if is_dead_session_error(e):
+                    try:
+                        await _client.disconnect()
+                    except Exception:
+                        pass
+                    _heal()
             try:
                 await _client.disconnect()
             except Exception:
@@ -75,18 +111,67 @@ async def _get_client():
         except ImportError:
             raise HTTPException(500, "telethon not installed. Run: uv pip install telethon")
         _SESSION_DIR.mkdir(parents=True, exist_ok=True)
-        session_path = str(_SESSION_DIR / "sable_tg")
         c = TelegramClient(
             session_path,
             api_id=int(cfg["api_id"]),
             api_hash=cfg["api_hash"],
         )
-        await c.connect()
-        if not await c.is_user_authorized():
+        try:
+            await c.connect()
+            # Probe with an RPC — AUTH_KEY_DUPLICATED only surfaces on a
+            # request, not on connect(), so is_user_authorized() is the
+            # earliest reliable detector.
+            authorized = await c.is_user_authorized()
+        except Exception as e:
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+            if is_dead_session_error(e):
+                _heal()
+            raise HTTPException(502, f"Telegram connection failed: {e}")
+        if not authorized:
             await c.disconnect()
             raise HTTPException(401, "Not authorized. Please sign in first.")
         _client = c
         return _client
+
+
+async def purge_dead_session_on_startup() -> list[str]:
+    """Probe the stored session once at boot; purge it if the key is dead.
+
+    Returns the list of purged files (empty when the session is healthy, the
+    feature is disabled, or no session exists yet). Never raises — a startup
+    preflight must not be able to break the server.
+    """
+    cfg = _load_config()
+    if not cfg or not cfg.get("enabled"):
+        return []
+    session_path = str(_SESSION_DIR / "sable_tg")
+    if not Path(session_path + ".session").exists():
+        return []
+    try:
+        from telethon import TelegramClient
+        c = TelegramClient(
+            session_path,
+            api_id=int(cfg["api_id"]),
+            api_hash=cfg["api_hash"],
+            connection_retries=2,
+        )
+        try:
+            await c.connect()
+            # An RPC is what surfaces AUTH_KEY_DUPLICATED, not connect().
+            await c.is_user_authorized()
+        finally:
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+        return []
+    except Exception as e:
+        if is_dead_session_error(e):
+            return [str(p) for p in purge_session(session_path)]
+        return []
 
 
 async def disconnect_client():
@@ -402,6 +487,14 @@ async def send_code(req: SignInRequest):
                 await c.disconnect()
             except Exception:
                 pass
+            # A dead auth key can never be retried — purge it and stop.
+            if is_dead_session_error(e):
+                purge_session(session_path)
+                raise HTTPException(
+                    401,
+                    "Telegram session expired or was duplicated; the stale "
+                    "session was cleared automatically. Please send a new code.",
+                )
             if attempt < 2:
                 await asyncio.sleep(1.5)
 

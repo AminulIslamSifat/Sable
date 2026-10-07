@@ -631,16 +631,25 @@ class BrowserManager:
             self.page = await self.context.new_page()
             await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
 
-            # Poll localStorage directly for auth token (faster than waiting for UI selectors in headless)
+            # Poll localStorage for ANY known auth marker. This BrowserManager is
+            # shared across Qwen, DeepSeek and z.ai — Qwen/z.ai park their JWT at
+            # localStorage 'token', DeepSeek at 'userToken'. Checking only
+            # 'token' made every DeepSeek refresh (which reuses this same
+            # manager) log a bogus "no JWT" warning even though login was fine.
+            # We only warn when NONE of the known markers appear.
+            _AUTH_KEYS = ("token", "userToken")
             has_token = False
             for _ in range(12):  # up to 6s, checking every 500ms
-                has_token = await self.page.evaluate("() => !!localStorage.getItem('token')")
+                has_token = await self.page.evaluate(
+                    "(keys) => keys.some(k => !!localStorage.getItem(k))",
+                    list(_AUTH_KEYS),
+                )
                 if has_token:
                     break
                 await self.page.wait_for_timeout(500)
 
             if not has_token:
-                logger.warning("⚠️  No JWT token in localStorage after 6s!")
+                logger.warning("⚠️  No auth token in localStorage after 6s (checked: %s)!", ", ".join(_AUTH_KEYS))
                 logger.warning(f"Profile may be stale/corrupted. Try: rm -rf {self.user_data_dir} && re-login via browser_opener.py")
             else:
                 logger.debug("✅ Auth token hydrated successfully.")
@@ -1213,69 +1222,104 @@ class BrowserManager:
         if len(instructions) > MAX_CHARS:
             instructions = instructions[:MAX_CHARS]
 
-        # Use provided headers or fetch fresh from browser
-        if headers is None:
-            headers = await self.get_fresh_headers()
-        headers = dict(headers)  # copy to avoid mutating the cached dict
-
-        headers.update({
-            "Content-Type": "application/json",
-            "Version": "0.2.91",
-            "source": "web",
-            "Referer": "https://chat.qwen.ai/settings/personalization",
-            "X-Request-Id": str(uuid.uuid4()),
-        })
-
-        try:
-            from curl_cffi.requests import AsyncSession as _CffiSession
-
-            # Step 1: Disable default Qwen tools that conflict with Sable skills.
-            # Each step uses its own session because curl_cffi auto-stores Set-Cookie
-            # responses in its jar and appends them to subsequent requests, creating
-            # duplicate cookies that Qwen's WAF rejects as tampered.
-            tools_payload = {
-                "tools_enabled": {
-                    "web_extractor": False,
-                    "web_search_image": False,
-                    "web_search": False,
-                    "image_gen_tool": False,
-                    "code_interpreter": False,
-                    "history_retriever": False,
-                    "image_edit_tool": False,
-                    "bio": False,
-                    "image_zoom_in_tool": False,
-                }
+        # Payloads are built once and reused by both the first attempt and the
+        # self-heal retry below.
+        tools_payload = {
+            "tools_enabled": {
+                "web_extractor": False,
+                "web_search_image": False,
+                "web_search": False,
+                "image_gen_tool": False,
+                "code_interpreter": False,
+                "history_retriever": False,
+                "image_edit_tool": False,
+                "bio": False,
+                "image_zoom_in_tool": False,
             }
+        }
+        instr_payload = {
+            "personalization": {
+                "name": _get_user_name(),
+                "description": "",
+                "style": "Default",
+                "instruction": instructions,
+            }
+        }
+
+        async def _attempt(base_headers: dict[str, str]) -> tuple[bool, bool]:
+            """Run both settings POSTs. Returns (ok, unauthorized).
+
+            Each step uses its own session because curl_cffi auto-stores
+            Set-Cookie responses in its jar and appends them to subsequent
+            requests, creating duplicate cookies that Qwen's WAF rejects.
+            """
+            from curl_cffi.requests import AsyncSession as _CffiSession
+            h = dict(base_headers)  # copy — never mutate the cached dict
+            h.update({
+                "Content-Type": "application/json",
+                "Version": "0.2.91",
+                "source": "web",
+                "Referer": "https://chat.qwen.ai/settings/personalization",
+                "X-Request-Id": str(uuid.uuid4()),
+            })
+            # Step 1: Disable default Qwen tools that conflict with Sable skills.
             async with _CffiSession(impersonate="chrome", timeout=15) as s1:
-                r1 = await s1.post(SETTINGS_URL, json=tools_payload, headers=headers)
+                r1 = await s1.post(SETTINGS_URL, json=tools_payload, headers=h)
                 d1 = json.loads(r1.content)
                 if r1.status_code == 401 or d1.get("data", {}).get("code") == "Unauthorized":
                     logger.warning(f"sync_context: {r1.status_code} Unauthorized — response: {str(d1)[:300]}")
-                    return False
+                    return False, True
                 if not d1.get("success"):
                     raise Exception(f"Disable tools failed: {d1}")
                 logger.debug("Qwen default tools disabled")
-
-            # Step 2: Update personalization instruction (separate session)
-            instr_payload = {
-                "personalization": {
-                    "name": _get_user_name(),
-                    "description": "",
-                    "style": "Default",
-                    "instruction": instructions,
-                }
-            }
-            headers["X-Request-Id"] = str(uuid.uuid4())
+            # Step 2: Update personalization instruction (separate session).
+            h["X-Request-Id"] = str(uuid.uuid4())
             async with _CffiSession(impersonate="chrome", timeout=15) as s2:
-                r2 = await s2.post(SETTINGS_URL, json=instr_payload, headers=headers)
+                r2 = await s2.post(SETTINGS_URL, json=instr_payload, headers=h)
                 d2 = json.loads(r2.content)
                 if not d2.get("success"):
                     raise Exception(f"Update instruction failed: {d2}")
-                logger.debug("sync_context: instruction synced (%d chars)", len(instructions))
-                return True
+            return True, False
+
+        # First attempt with whatever headers we already hold (disk-cached or
+        # freshly minted).
+        if headers is None:
+            headers = await self.get_fresh_headers()
+        try:
+            ok, unauthorized = await _attempt(headers)
         except Exception as e:
             logger.error("sync_context failed: %s", e, exc_info=True)
             return False
+        if ok:
+            logger.debug("sync_context: instruction synced (%d chars)", len(instructions))
+            return True
+
+        # Unauthorized → the JWT login cookie is still valid but the Alibaba WAF
+        # fingerprint (acw_tc/isg/tfstk) is stale or duplicated, so the settings
+        # API returns 200 + {"code":"Unauthorized"}. Re-mint live headers from
+        # the browser (deduped on save) and retry EXACTLY once.
+        if unauthorized:
+            logger.info("sync_context: re-minting WAF headers from live browser and retrying once")
+            try:
+                fresh = await self.get_fresh_headers()
+                from engine.config import (
+                    save_qwen_tokens_for_account,
+                    _resolve_active_account,
+                )
+                save_qwen_tokens_for_account(
+                    cookies=fresh.get("Cookie", ""),
+                    bx_ua=fresh.get("bx-ua", ""),
+                    bx_umidtoken=fresh.get("bx-umidtoken", ""),
+                    account=_resolve_active_account(),
+                )
+                ok2, _ = await _attempt(fresh)
+                if ok2:
+                    logger.info("sync_context: recovered after live WAF header refresh")
+                    return True
+            except Exception as e:
+                logger.error("sync_context self-heal failed: %s", e, exc_info=True)
+            return False
+        return False
 
     async def close(self):
         """Cleanly closes context, saving browser profile state."""

@@ -186,9 +186,15 @@ async def _restart_scraper_connectors() -> list[str]:
         from connectors.deepseek_scraper.client import _clients as _ds_clients, _default_client as _ds_default
     except Exception:
         _ds_clients, _ds_default = {}, None
+    try:
+        from connectors.qwen_scraper.client import _clients as _qs_clients, _default_client as _qs_default
+    except Exception:
+        _qs_clients, _qs_default = {}, None
 
     seen: set[int] = set()
-    for client in list(_ds_clients.values()) + ([_ds_default] if _ds_default else []):
+    _all = (list(_ds_clients.values()) + ([_ds_default] if _ds_default else [])
+            + list(_qs_clients.values()) + ([_qs_default] if _qs_default else []))
+    for client in _all:
         if client is None or id(client) in seen:
             continue
         seen.add(id(client))
@@ -218,6 +224,162 @@ async def _restart_chatgpt_ghost_sessions() -> list[str]:
     except Exception as exc:
         logger.warning("chatgpt ghost restart failed: %s", exc)
         return []
+
+# --- Per-connector transport (ghost/curl) + launch-mode (head/headless) ----
+#
+# Data-driven capability map for Settings → Account. Each provider declares
+# which knobs it actually supports and where the value is persisted, so the
+# UI never renders a dead toggle:
+#   * transport : "ghost" | "curl"   (None = not offered)
+#   * headless  : bool               (None = not offered)
+# Locked knobs are reported with `locked: True` so the frontend greys them out
+# and explains why (e.g. ChatGPT/Kimi have no curl fallback; Kimi's browser is
+# token-refresh-only and cannot go headed).
+
+# system/settings.json keys
+_GHOST_KEY = {"qwen": "qwen_use_ghost", "deepseek": "deepseek_use_ghost", "chatgpt": "chatgpt_use_ghost"}
+_HEADLESS_SETTINGS_KEY = {"qwen": "qwen_headless", "deepseek": "deepseek_headless"}
+
+
+def _connector_capabilities() -> dict[str, dict[str, Any]]:
+    """Static capability map (no I/O). Keeps route + frontend in lockstep."""
+    return {
+        "qwen": {"label": "Qwen", "transport": True, "headless": True},
+        "deepseek": {"label": "DeepSeek", "transport": True, "headless": True},
+        # ChatGPT: ghost-only. No curl fallback exists, so transport is locked
+        # to ghost; headless is live (relaunches the ghost browser).
+        "chatgpt": {"label": "ChatGPT", "transport": False, "headless": True},
+        # Kimi: ghost-only AND its browser is token-refresh-only — going headed
+        # is not supported, so both knobs are locked/omitted.
+        "kimi": {"label": "Kimi", "transport": False, "headless": False},
+    }
+
+
+def _read_scraper_headless() -> dict[str, Any]:
+    try:
+        return get_scraper_settings()
+    except Exception:
+        return {}
+
+
+@router.get("/api/settings/connectors")
+async def get_connectors_settings() -> dict[str, Any]:
+    """Per-provider transport (ghost/curl) + headless state for the UI."""
+    sys_settings = _read_system_settings()
+    scraper = _read_scraper_headless()
+    caps = _connector_capabilities()
+    out: dict[str, Any] = {}
+    for pid, cap in caps.items():
+        if pid == "chatgpt":
+            headless = bool(scraper.get("chatgpt_headless", False))
+        elif pid in _HEADLESS_SETTINGS_KEY:
+            headless = bool(sys_settings.get(_HEADLESS_SETTINGS_KEY[pid], False))
+        else:
+            headless = None
+        transport = "ghost"
+        if cap["transport"]:
+            key = _GHOST_KEY.get(pid)
+            # ghost enabled (default True) → transport "ghost" else "curl"
+            transport = "ghost" if (key is None or bool(sys_settings.get(key, True))) else "curl"
+        out[pid] = {
+            "label": cap["label"],
+            "transport": transport,
+            "transport_toggleable": cap["transport"],
+            "headless": headless,
+            "headless_toggleable": cap["headless"],
+        }
+    return {"connectors": out}
+
+
+async def _restart_qwen_ghost() -> list[str]:
+    """Tear down the Qwen ghost browser so a change takes effect next turn."""
+    done: list[str] = []
+    try:
+        from engine.inpage import GhostEngine
+        eng = getattr(GhostEngine, "_instance", None)
+        if eng is not None:
+            await eng.shutdown()
+            GhostEngine._instance = None
+            done.append("qwen")
+    except Exception as exc:
+        logger.warning("qwen ghost restart failed: %s", exc)
+    return done
+
+
+async def _restart_deepseek_ghost() -> list[str]:
+    """Close live DeepSeek ghost sessions so the next turn relaunches."""
+    done: list[str] = []
+    try:
+        from connectors.deepseek.ghost import GhostSession
+        await GhostSession.close_all()
+        done.append("deepseek")
+    except Exception as exc:
+        logger.warning("deepseek ghost restart failed: %s", exc)
+    return done
+
+
+@router.post("/api/settings/connectors")
+async def update_connectors_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Update one provider's transport and/or headless mode, then restart.
+
+    payload: { provider: "deepseek", transport?: "ghost"|"curl", headless?: bool }
+    """
+    provider = str(payload.get("provider") or "").lower().strip()
+    caps = _connector_capabilities()
+    if provider not in caps:
+        raise HTTPException(status_code=400, detail=f"Unknown provider '{provider}'")
+    cap = caps[provider]
+    restarted: list[str] = []
+
+    sys_settings = _read_system_settings()
+    sys_dirty = False
+    scraper_dirty = False
+    scraper_payload: dict[str, Any] = {}
+
+    # --- transport (ghost/curl) ---
+    if "transport" in payload:
+        if not cap["transport"]:
+            raise HTTPException(status_code=400, detail=f"{provider} does not support a transport toggle")
+        want = str(payload.get("transport") or "").lower().strip()
+        if want not in ("ghost", "curl"):
+            raise HTTPException(status_code=400, detail="transport must be 'ghost' or 'curl'")
+        key = _GHOST_KEY.get(provider)
+        if key:
+            sys_settings[key] = (want == "ghost")
+            sys_dirty = True
+        if provider == "qwen":
+            restarted += await _restart_qwen_ghost()
+        elif provider == "deepseek":
+            restarted += await _restart_deepseek_ghost()
+
+    # --- headless ---
+    if "headless" in payload:
+        if not cap["headless"]:
+            raise HTTPException(status_code=400, detail=f"{provider} does not support a headless toggle")
+        headless = bool(payload.get("headless"))
+        if provider == "chatgpt":
+            scraper_payload["chatgpt_headless"] = headless
+            scraper_dirty = True
+        elif provider in _HEADLESS_SETTINGS_KEY:
+            sys_settings[_HEADLESS_SETTINGS_KEY[provider]] = headless
+            sys_dirty = True
+            if provider == "qwen":
+                restarted += await _restart_qwen_ghost()
+            elif provider == "deepseek":
+                restarted += await _restart_deepseek_ghost()
+
+    if sys_dirty:
+        _write_system_settings(sys_settings)
+    if scraper_dirty:
+        update_scraper_settings(scraper_payload)
+        if "chatgpt_headless" in scraper_payload:
+            restarted += await _restart_chatgpt_ghost_sessions()
+
+    result = await get_connectors_settings()
+    if restarted:
+        result["restarted"] = restarted
+    return result
+
 
 @router.get("/api/settings/browser")
 async def get_browser_settings() -> dict[str, bool]:
@@ -2155,6 +2317,14 @@ async def list_accounts_by_provider() -> dict[str, Any]:
         "deepseek_scraper", "DeepSeek (Scraper)", ds_scraper_accounts, avail_key="has_ds"
     )
 
+    # Qwen (scraper): headed-browser transport. Own active-account slot,
+    # separate from the Qwen ghost/curl provider above. Lists every standard
+    # acc* profile (any of which could hold a chat.qwen.ai login).
+    qwen_scraper_accounts = list(browser_accounts)
+    providers["qwen_scraper"] = _browser_provider(
+        "qwen_scraper", "Qwen (Scraper)", qwen_scraper_accounts, avail_key="has_waf"
+    )
+
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
     try:
         from connectors.deepseek.client import get_unique_tokens_with_accounts as _ds_unique_acct
@@ -2322,7 +2492,7 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
 # This is the canonical set for per-provider switching (qwen included — it is
 # just another provider with its own slot, no longer a special global).
 _BROWSER_PROVIDERS_ALL = (
-    "qwen", "deepseek", "deepseek_scraper", "zai", "gemini_web", "gemini",
+    "qwen", "deepseek", "deepseek_scraper", "qwen_scraper", "zai", "gemini_web", "gemini",
     "mimo", "kimi", "mistral_web", "chatgpt",
 )
 # Back-compat alias (older references).

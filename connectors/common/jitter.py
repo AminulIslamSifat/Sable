@@ -51,6 +51,7 @@ _DEFAULT_PROVIDERS: dict[str, bool] = {
     "deepseek": True,
     "deepseek_scraper": True,
     "qwen": True,
+    "qwen_scraper": True,
     "zai": False,
     "gemini": False,
 }

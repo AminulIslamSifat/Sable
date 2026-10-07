@@ -45,6 +45,52 @@ def _load_config() -> dict[str, Any]:
     sys.exit(1)
 
 
+# ── Dead-session auto-heal ────────────────────────────────────────────────────
+# Telegram permanently kills an auth key if it is used from two IPs/processes
+# at once (AUTH_KEY_DUPLICATED) or if it is revoked. Copying .session files
+# between project clones is the usual cause. Retrying never helps — the file
+# must be deleted. Do that automatically so a poisoned session self-heals.
+
+_DEAD_SESSION_CLASSES = frozenset({
+    "AuthKeyDuplicatedError",
+    "AuthKeyUnregisteredError",
+    "SessionRevokedError",
+    "UserDeactivatedError",
+    "UserDeactivatedBanError",
+})
+
+_DEAD_SESSION_MARKERS = (
+    "AUTH_KEY_DUPLICATED",
+    "AUTH_KEY_UNREGISTERED",
+    "AUTH_KEY_INVALID",
+    "SESSION_REVOKED",
+    "USER_DEACTIVATED",
+)
+
+
+def _is_dead_session_error(exc: BaseException) -> bool:
+    """True if exc means this session's auth key is permanently dead."""
+    if type(exc).__name__ in _DEAD_SESSION_CLASSES:
+        return True
+    msg = str(exc).upper()
+    return any(m in msg for m in _DEAD_SESSION_MARKERS)
+
+
+def _purge_session(session_path: str) -> list[str]:
+    """Delete a poisoned session file and its SQLite side-files. Idempotent."""
+    base = session_path[: -len(".session")] if session_path.endswith(".session") else session_path
+    removed: list[str] = []
+    for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+        p = Path(base + suffix)
+        if p.exists():
+            try:
+                p.unlink()
+                removed.append(str(p))
+            except OSError:
+                pass
+    return removed
+
+
 # ── Client helper ─────────────────────────────────────────────────────────────
 
 async def _get_client(cfg: dict[str, Any]):
@@ -61,8 +107,25 @@ async def _get_client(cfg: dict[str, Any]):
         api_id=int(cfg["api_id"]),
         api_hash=cfg["api_hash"],
     )
-    await client.connect()
-    if not await client.is_user_authorized():
+    try:
+        await client.connect()
+        authorized = await client.is_user_authorized()
+    except Exception as e:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        if _is_dead_session_error(e):
+            _purge_session(session_path)
+            print(json.dumps({
+                "error": "Telegram session expired or was duplicated; the stale "
+                         "session was cleared automatically. Re-authenticate via "
+                         "Sable settings.",
+                "auto_purged": True,
+            }))
+            sys.exit(1)
+        raise
+    if not authorized:
         await client.disconnect()
         print(json.dumps({"error": "Not authorized. Sign in via Sable settings first."}))
         sys.exit(1)
@@ -275,20 +338,34 @@ def main():
     args = parser.parse_args()
     cfg = _load_config()
 
-    if args.command == "status":
-        result = asyncio.run(cmd_status(cfg))
-    elif args.command == "chats":
-        result = asyncio.run(cmd_chats(cfg, args.limit))
-    elif args.command == "messages":
-        result = asyncio.run(cmd_messages(cfg, args.chat_id, args.limit, args.offset_id))
-    elif args.command == "send":
-        result = asyncio.run(cmd_send(cfg, args.chat_id, args.text))
-    elif args.command == "send-file":
-        result = asyncio.run(cmd_send_file(cfg, args.chat_id, args.file, args.caption))
-    elif args.command == "search":
-        result = asyncio.run(cmd_search_contacts(cfg, args.query, args.limit))
-    else:
-        result = {"error": f"Unknown command: {args.command}"}
+    try:
+        if args.command == "status":
+            result = asyncio.run(cmd_status(cfg))
+        elif args.command == "chats":
+            result = asyncio.run(cmd_chats(cfg, args.limit))
+        elif args.command == "messages":
+            result = asyncio.run(cmd_messages(cfg, args.chat_id, args.limit, args.offset_id))
+        elif args.command == "send":
+            result = asyncio.run(cmd_send(cfg, args.chat_id, args.text))
+        elif args.command == "send-file":
+            result = asyncio.run(cmd_send_file(cfg, args.chat_id, args.file, args.caption))
+        elif args.command == "search":
+            result = asyncio.run(cmd_search_contacts(cfg, args.query, args.limit))
+        else:
+            result = {"error": f"Unknown command: {args.command}"}
+    except Exception as e:
+        # A dead auth key can also surface mid-command (on the first RPC).
+        # Purge it so the next run starts clean instead of failing forever.
+        if _is_dead_session_error(e):
+            purged = _purge_session(str(_SESSION_DIR / "sable_skill_tg"))
+            result = {
+                "error": "Telegram session expired or was duplicated; the stale "
+                         "session was cleared automatically. Re-authenticate via "
+                         "Sable settings.",
+                "auto_purged": bool(purged),
+            }
+        else:
+            raise
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

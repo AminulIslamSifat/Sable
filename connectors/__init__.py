@@ -88,6 +88,11 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
         # Experimental per-model transport: headed browser + DOM/SSE scrape.
         from connectors.deepseek_scraper.client import get_client
         _registry[backend] = get_client()
+    elif backend == "qwen_scraper":
+        # Experimental per-model transport: headed browser + DOM/SSE scrape
+        # of chat.qwen.ai (same login as the Qwen ghost/curl paths).
+        from connectors.qwen_scraper.client import get_client
+        _registry[backend] = get_client()
     elif backend == "kimi":
         from connectors.kimi.client import get_client
         _registry[backend] = get_client()

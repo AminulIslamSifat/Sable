@@ -270,6 +270,11 @@ class BaseBrowserEngine:
         # socket read (curl_cffi has no such floor).
         self._sse_wake = asyncio.Event()
         self._sse_active_req_id: str | None = None
+        # Set by a subclass parser when the stream carries an explicit terminal
+        # marker (Qwen: {"status":"finished"}). Lets the capture loop end on
+        # the network signal instead of relying solely on the stop button,
+        # which some SPAs never paint for very fast turns.
+        self._stream_finished = False
 
         self._prefix = re.sub(r"[^a-z0-9]", "", spec.provider.lower())[:6] or "scr"
         os.makedirs(Path(self.user_data_dir).parent, exist_ok=True)
@@ -599,6 +604,7 @@ class BaseBrowserEngine:
         self._sse_done.clear()
         self._sse_wake.clear()
         self._sse_active_req_id = None
+        self._stream_finished = False
 
     def parse_sse_delta(self, raw_text: str) -> tuple[str, str]:
         """Parse one SSE chunk into (content_delta, reasoning_delta).
@@ -940,12 +946,20 @@ class BaseBrowserEngine:
                 return ""
             await asyncio.sleep(0.3)
 
-        # Phase 2 — stream loop
+        # Phase 2 — stream loop. Completion is driven by the NETWORK first
+        # (explicit terminal marker, stream-close signal, or idle), with the
+        # stop button as a SECONDARY signal. Gating the loop purely on the stop
+        # button silently skipped all live streaming whenever that selector did
+        # not match — the answer then only appeared at the very end via the DOM
+        # fallback, which is exactly the 'sluggish and broken' symptom.
         # `streamed_reasoning` tracks whether ANY reasoning reached the callback
         # this turn. It gates the DOM fallback + the final re-emit so the two
         # sources (network SSE and the rendered panel) never interleave.
         streamed_reasoning = False
-        while stop_locator is not None and await stop_locator.is_visible():
+
+        async def _drain() -> None:
+            """Consume every unconsumed chunk and update the live views."""
+            nonlocal net_content, net_reasoning, idx, streamed_reasoning
             while idx < len(chunk_list):
                 content_delta, reasoning_delta = self.parse_sse_delta(chunk_list[idx])
                 idx += 1
@@ -959,24 +973,59 @@ class BaseBrowserEngine:
                         # prefix-extension of the previous tick's value. The
                         # connector converts each callback into a suffix delta by
                         # common-prefix diff; a non-monotonic value makes that
-                        # diff return "" — chunks of thinking silently vanish and
-                        # the panel looks frozen. Cleaned once, at the end.
+                        # diff return "" — chunks of thinking silently vanish.
                         await thoughts_callback(net_reasoning)
                 if content_delta:
                     net_content += content_delta
                     if live_display:
-                        # Cheap prefix strip only while streaming. _clean_garbage
-                        # runs four regex subs over the ENTIRE accumulated text,
-                        # so calling it per chunk made cost grow with answer
-                        # length (O(n^2) overall). _strip_ui is a couple of
-                        # startswith checks — enough to keep the "markdown /
-                        # Copy / Download" header out of the live view, with the
-                        # full clean applied once at the end.
+                        # Cheap prefix strip only while streaming; the full
+                        # clean runs once at the end (O(n^2) note above).
                         live_display(self._strip_ui(net_content))
 
+        generation_active = False
+        if stop_locator is not None:
+            try:
+                generation_active = await stop_locator.is_visible()
+            except Exception:
+                generation_active = False
+        last_progress = time.time()
+        idle_limit = 30.0
+        hard_deadline = time.time() + 300.0
+        prev_idx = -1
+        while True:
+            await _drain()
+
+            if idx != prev_idx:
+                last_progress = time.time()
+                prev_idx = idx
+
+            # Network completion signals.
+            if self._stream_finished:
+                break
+            if self._sse_done.is_set() and idx >= len(chunk_list):
+                break
+
+            # Stop-button SECONDARY signal: once we have seen it active, its
+            # disappearance means the model finished. If it never appeared we
+            # must NOT treat that as completion (that was the original bug).
+            if stop_locator is not None:
+                try:
+                    vis = await stop_locator.is_visible()
+                except Exception:
+                    vis = generation_active
+                if vis:
+                    generation_active = True
+                elif generation_active:
+                    break
+
+            if (time.time() - last_progress) > idle_limit:
+                self._log("capture_idle_timeout", secs=idle_limit)
+                break
+            if time.time() > hard_deadline:
+                self._log("capture_hard_timeout")
+                break
+
             # DOM reasoning fallback — ONLY while the network produced none.
-            # Interleaving both sources gives the connector two differently
-            # formatted copies of the same reasoning under one diff cursor.
             if thinking_sel and thoughts_callback and self.show_thoughts and not streamed_reasoning:
                 stream = await self._read_thoughts_dom(thinking_sel)
                 if stream and stream != cached_thinking and stream != last_thinking:
@@ -984,10 +1033,7 @@ class BaseBrowserEngine:
                     streamed_reasoning = True
                     await thoughts_callback(stream)
 
-            # DOM answer fallback — ONLY while the network produced none, and
-            # with the reasoning panel stripped out (it lives inside the
-            # assistant block; inner_text() used to return thought+answer glued
-            # together, which is how thinking showed up as the response).
+            # DOM answer fallback — ONLY while the network produced none.
             if not net_content and new_resp_sel:
                 stream = await self._read_response_dom(response_sel)
                 stream = self._strip_ui(stream)
@@ -1023,6 +1069,32 @@ class BaseBrowserEngine:
             if idx >= len(chunk_list) or time.time() > settle_deadline:
                 break
             await asyncio.sleep(0.15)
+
+        # If the stop button vanished before ANY content landed, the send may
+        # have been coalesced into the previous turn (or the SPA answered so
+        # fast the button never painted). The network is authoritative, so give
+        # it one more bounded window before concluding the turn is empty. This
+        # is the difference between a spurious CAPTURE_EMPTY error and a real
+        # answer, on fast models where the whole turn fits between two polls.
+        if not net_content and not net_reasoning:
+            extra_deadline = time.time() + 6.0
+            while time.time() < extra_deadline:
+                progressed = False
+                while idx < len(chunk_list):
+                    content_delta, reasoning_delta = self.parse_sse_delta(chunk_list[idx])
+                    idx += 1
+                    net_content += content_delta
+                    net_reasoning += reasoning_delta
+                    progressed = True
+                    if reasoning_delta and thoughts_callback and self.show_thoughts:
+                        streamed_reasoning = True
+                        await thoughts_callback(net_reasoning)
+                    if content_delta and live_display:
+                        live_display(self._strip_ui(net_content))
+                if net_content:
+                    break
+                if not progressed:
+                    await self._wait_for_sse_activity(0.3)
 
         # Flush any buffered partial final line. The SSE stream frequently ends
         # WITHOUT a trailing newline, so the last line sits in _sse_line_buf and

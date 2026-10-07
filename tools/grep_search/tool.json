@@ -32,6 +32,12 @@
         "full": {
           "type": "boolean",
           "description": "Bypass output truncation"
+        },
+        "time": {
+          "type": "integer",
+          "description": "Max seconds to spend searching (default 30, max 120). Killed at the deadline.",
+          "minimum": 1,
+          "maximum": 120
         }
       },
       "required": [
@@ -41,7 +47,7 @@
   },
   {
     "name": "glob",
-    "description": "Find files by glob pattern, sorted by mtime.",
+    "description": "Find files by glob pattern, sorted by mtime. Skips .venv/node_modules/.git and other heavy dirs. Aborts at the time limit (default 15s, max 120s).",
     "parameters": {
       "type": "object",
       "properties": {
@@ -52,6 +58,12 @@
         "path": {
           "type": "string",
           "description": "Base directory to search"
+        },
+        "time": {
+          "type": "integer",
+          "description": "Max seconds to spend searching (default 15, max 120). Walk is aborted at the deadline.",
+          "minimum": 1,
+          "maximum": 120
         }
       },
       "required": [

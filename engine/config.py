@@ -133,6 +133,7 @@ BROWSER_PROVIDERS: tuple[str, ...] = (
     "qwen",
     "deepseek",
     "deepseek_scraper",
+    "qwen_scraper",
     "zai",
     "gemini_web",
     "mimo",
@@ -212,36 +213,70 @@ def _ensure_active_accounts_migrated() -> None:
         logger.info("Migrated active-account store: %s", store)
 
 
+def _account_dir_exists(name: str) -> bool:
+    """True if `name` is a real browser-profile directory under system/."""
+    try:
+        return bool(name) and (_SYSTEM / name).is_dir()
+    except Exception:
+        return False
+
+
 def get_provider_active_account(provider: str) -> str:
     """Resolve the active browser account for ONE provider.
 
     Each provider owns an independent slot — switching one never moves another.
     Unset slots fall back to the primary provider's slot (fresh-install path);
     if even that is unset, auto-select an available account and persist it.
+
+    The stored value is VALIDATED against the filesystem: a stale id whose
+    profile directory no longer exists (e.g. browser-data-acc117 after the
+    profile was deleted) is dropped and re-resolved instead of being returned.
+    Without this a provider silently resolved to a missing dir, its connector
+    reported `is_available == False`, and the chat router fell back to a
+    DIFFERENT backend (deepseek-scraper silently ran on qwen).
     """
     _ensure_active_accounts_migrated()
     store = _load_active_accounts()
+    dirty = False
 
     # alias-aware lookup (e.g. "gemini" → "gemini_web")
     for key in _PROVIDER_ALIASES.get(provider, (provider,)):
         val = store.get(key)
-        if val:
+        if val and _account_dir_exists(val):
             return val
+        if val:
+            logger.warning(
+                "Active account %r for provider %r no longer exists — repairing",
+                val, key,
+            )
+            store.pop(key, None)
+            dirty = True
 
-    # Fall back to the primary provider's slot
+    # Fall back to the primary provider's slot (only if it is real).
     primary = store.get(PRIMARY_BROWSER_PROVIDER)
-    if primary:
-        return primary
+    if primary and not _account_dir_exists(primary):
+        store.pop(PRIMARY_BROWSER_PROVIDER, None)
+        dirty = True
+        primary = None
 
-    # Nothing configured at all — auto-select and persist for the primary.
-    selected = get_next_available_account()
-    if selected:
-        set_provider_active_account(PRIMARY_BROWSER_PROVIDER, selected)
-        logger.info("Auto-selected %s active account: %s (was unset)",
-                    PRIMARY_BROWSER_PROVIDER, selected)
-        return selected
+    # Auto-select a real account and persist it for THIS provider so the
+    # repair sticks (otherwise we would re-run the scan on every call).
+    if not primary:
+        selected = get_next_available_account()
+        if selected:
+            if provider == PRIMARY_BROWSER_PROVIDER:
+                store[PRIMARY_BROWSER_PROVIDER] = selected
+            set_provider_active_account(provider, selected)
+            logger.info("Auto-selected %s active account: %s", provider, selected)
+            return selected
+        if dirty:
+            _save_active_accounts(store)
+        return "browser-data"
 
-    return "browser-data"
+    # Re-point this provider at the (valid) primary account and persist.
+    if dirty or store.get(provider) != primary:
+        set_provider_active_account(provider, primary)
+    return primary
 
 
 def set_provider_active_account(provider: str, name: str) -> None:
@@ -668,6 +703,23 @@ MODELS = [
             {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
         ],
     },
+    # ── Qwen (scraper): headed-browser DOM/SSE transport of chat.qwen.ai ──
+    # Uses the same account profile as the Qwen ghost/curl paths, but scrapes
+    # the real SPA DOM + in-page SSE instead of calling the API from Python.
+    # Selectable as its own model; NOT tied to the global scraper-mode toggle.
+    {
+        "id": "qwen-scraper",
+        "label": "Qwen (scraper)",
+        "api_backend": "qwen_scraper",
+        "api_model_type": None,
+        "experimental": True,
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
     # ── Kimi (kimi.ai, browser-auth ghost tab, no API key) ──
     # thinking_mode values MUST stay lowercase (none/low/medium/high) — the
     # kimi client maps them via _EFFORT; anything else silently falls back to LOW.
@@ -925,6 +977,47 @@ def save_qwen_token_store(store: dict[str, list[dict[str, str]]]) -> None:
         pass
 
 
+# Cookie names that belong to Google/YouTube SSO, never to chat.qwen.ai. The
+# legacy .session_tokens.json migration copied a whole browser cookie jar in,
+# so these leak into stored blobs and inflate the fingerprint. A real browser
+# never sends them to chat.qwen.ai.
+_NON_QWEN_COOKIE_NAMES = frozenset({
+    "SID", "HSID", "SSID", "APISID", "SAPISID", "LSID", "OSID",
+    "__Secure-1PSID", "__Secure-3PSID", "__Secure-OSID",
+    "__Secure-1PAPISID", "__Secure-3PAPISID",
+    "__Secure-1PSIDTS", "__Secure-3PSIDTS",
+    "__Secure-1PSIDCC", "__Secure-3PSIDCC", "__Host-1PLSID", "__Host-3PLSID",
+    "SIDCC", "ACCOUNT_CHOOSER", "SEARCH_SAMESITE", "NID", "AEC", "OTZ",
+    "smidV2", "__Host-GAPS",
+})
+
+
+def sanitize_qwen_cookies(cookie_str: str) -> str:
+    """Drop non-Qwen cookies and collapse duplicate names to the LAST value.
+
+    Alibaba's WAF treats a duplicated session cookie (two different ``acw_tc``
+    values in one string) as a tampered/replayed fingerprint and rejects the
+    request with HTTP 200 + ``{"code": "Unauthorized"}`` — a silent auth
+    failure even though the JWT login cookie is still valid. Real browsers send
+    each cookie name once (last write wins), so we mirror that here.
+    """
+    if not cookie_str:
+        return cookie_str
+    seen: dict[str, str] = {}
+    order: list[str] = []
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name = part.partition("=")[0].strip()
+        if not name or name in _NON_QWEN_COOKIE_NAMES:
+            continue
+        if name not in seen:
+            order.append(name)
+        seen[name] = part  # last write wins
+    return "; ".join(seen[n] for n in order)
+
+
 def get_qwen_tokens_for_account(account: str | None = None) -> dict[str, str] | None:
     """Get the most recent Qwen WAF tokens for an account.
 
@@ -936,7 +1029,13 @@ def get_qwen_tokens_for_account(account: str | None = None) -> dict[str, str] | 
 
     def _latest(entries: list[dict[str, str]]) -> dict[str, str] | None:
         valid = [e for e in entries if e.get("cookies")]
-        return valid[-1] if valid else None
+        if not valid:
+            return None
+        # Sanitize on read too — this cleans already-stored dirty blobs (legacy
+        # migration, duplicated acw_tc) without waiting for the next save.
+        tok = dict(valid[-1])
+        tok["cookies"] = sanitize_qwen_cookies(tok.get("cookies", ""))
+        return tok
 
     # Explicit account: strict lookup only. No fallback.
     if account is not None:
@@ -963,6 +1062,9 @@ def save_qwen_tokens_for_account(
     """Save Qwen WAF tokens for an account. Replaces any existing entry (1 per account)."""
     if not cookies:
         return
+    # Collapse duplicate names (WAF tamper rejection) and drop non-Qwen cookies
+    # before they ever hit disk.
+    cookies = sanitize_qwen_cookies(cookies)
     acct = account or _resolve_active_account()
     store = load_qwen_token_store()
     store[acct] = [{"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}]

@@ -417,9 +417,14 @@ class GhostSession:
         # and lets you eyeball the session; a headless holder is killed and
         # replaced by _ensure via force_headed.
         from connectors.common.profile_hub import ProfileHub
+        _headless = deepseek_headless()
+        # Headed (default) keeps a genuine windowed device identity and lets you
+        # eyeball the session; headless is opt-in from Settings → Account →
+        # DeepSeek. force_headed follows the choice so a live holder of the
+        # opposite mode is replaced instead of silently reused.
         self._hub = await ProfileHub.acquire(
-            self.profile_dir, self.helium_bin, headless=False,
-            force_headed=True)
+            self.profile_dir, self.helium_bin, headless=_headless,
+            force_headed=not _headless)
         self._ctx = self._hub.context
         self._page = await self._hub.new_tab("https://chat.deepseek.com/")
         await self._after_browser_ready()
@@ -732,6 +737,25 @@ def ghost_enabled() -> bool:
         return bool(val)
     except Exception:
         return True
+
+
+def deepseek_headless() -> bool:
+    """Read `deepseek_headless` from settings.json (default False = headed).
+
+    Headed is the default so a first run is visible / debuggable; the
+    Settings → Account → DeepSeek "Headless" toggle flips this.
+    """
+    try:
+        path = _SYSTEM_DIR / "settings.json"
+        if not path.is_file():
+            return False
+        s = json.loads(path.read_text(encoding="utf-8"))
+        val = s.get("deepseek_headless")
+        if val is None:
+            return False
+        return bool(val)
+    except Exception:
+        return False
 
 
 

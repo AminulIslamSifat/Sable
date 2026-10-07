@@ -11,6 +11,7 @@ from pathlib import Path
 from curl_cffi.requests import AsyncSession
 
 from engine.config import MODEL, MODELS, URL, get_model_config
+from engine.inpage import qwen_ghost_enabled
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
@@ -69,10 +70,27 @@ async def stream_chat(
     is_retry: bool = False,
 ) -> tuple[str | None, str | None]:
     """Send a message and stream the response token by token, returning updated (chat_id, parent_id)."""
-    # --- curl-only path ----------------------------------------------------
-    # Qwen ALWAYS goes through the raw curl_cffi API path below. The former
-    # ghost-tab primary path (engine.inpage) has been removed by request —
-    # no ghost tab is opened, parked, or adopted for Qwen anymore.
+    # --- Ghost tab primary path --------------------------------------------
+    # In-page fetch on a parked ghost tab: Baxia signs at send-time (token age
+    # zero, genuine TLS, live cookies). Any ghost failure raises GhostError,
+    # we tear down, and fall through to the raw curl_cffi API path below.
+    # Gated by the `qwen_use_ghost` setting (Settings → Account → Qwen).
+    if not is_retry and not files and qwen_ghost_enabled():
+        try:
+            from engine.inpage import GhostError, ghost_stream_chat
+            return await ghost_stream_chat(message, chat_id=chat_id, parent_id=parent_id,
+                                           model=model, thinking_mode=thinking_mode)
+        except GhostError as e:
+            try:
+                from engine.inpage import GhostEngine
+                await GhostEngine.instance().shutdown()
+            except Exception:
+                pass
+            print(f"[GHOST] → falling back to raw API path: {e}")
+        except Exception as e:
+            print(f"[GHOST] unexpected failure ({type(e).__name__}: {e}) → raw API path")
+    # --- curl path ---------------------------------------------------------
+    # Reached when the ghost is disabled or raised before producing content.
     # Always grab live headers before every request — cookies and bx-ua rotate
     # continuously in the browser. This reads them instantly from the live context.
     try:

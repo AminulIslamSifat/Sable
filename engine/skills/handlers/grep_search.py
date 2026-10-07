@@ -23,7 +23,8 @@ def handle_grep(
     if not args.get("pattern") and content.strip():
         args["pattern"] = content.strip()
 
-    yield _output_event(tag_id, f"$ grep '{args.get('pattern', '')}' in {args.get('path', '$PROJECT_ROOT')}\n", "command")
+    _time_disp = args.get("time") or "30"
+    yield _output_event(tag_id, f"$ grep '{args.get('pattern', '')}' in {args.get('path', '$PROJECT_ROOT')} (max {_time_disp}s)\n", "command")
     try:
         lines = cmd_grep(args)
     except Exception as exc:
@@ -42,7 +43,8 @@ def handle_glob(
     if not args.get("pattern") and content.strip():
         args["pattern"] = content.strip()
 
-    yield _output_event(tag_id, f"$ glob '{args.get('pattern', '')}' in {args.get('path', '$PROJECT_ROOT')}\n", "command")
+    _time_disp = args.get("time") or "15"
+    yield _output_event(tag_id, f"$ glob '{args.get('pattern', '')}' in {args.get('path', '$PROJECT_ROOT')} (max {_time_disp}s)\n", "command")
     try:
         lines = cmd_glob(args)
     except Exception as exc:

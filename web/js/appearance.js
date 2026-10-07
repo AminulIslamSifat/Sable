@@ -58,6 +58,10 @@ window.safeCopy = async function(text) {
     // ChatGPT ghost-tab launch mode (Settings → Account → ChatGPT). Separate
     // from the scraper flag because ChatGPT uses its own browser transport.
     let _chatgptHeadless = false;
+    // Per-provider connector capabilities (transport ghost/curl + headless),
+    // from /api/settings/connectors. Keyed by provider id. Lets the card render
+    // the right toggles (and grey out the unsupported ones) without guessing.
+    let _connectorCaps = {};
 
     async function loadScraperLaunchMode() {
       try {
@@ -66,6 +70,15 @@ window.safeCopy = async function(text) {
         const data = await res.json();
         _scraperHeadless = !!data.headless;
         _chatgptHeadless = !!data.chatgpt_headless;
+      } catch (e) { /* keep last known value */ }
+    }
+
+    async function loadConnectorCaps() {
+      try {
+        const res = await fetch("/api/settings/connectors");
+        if (!res.ok) return;
+        const data = await res.json();
+        _connectorCaps = data.connectors || {};
       } catch (e) { /* keep last known value */ }
     }
     window.loadScraperLaunchMode = loadScraperLaunchMode;
@@ -173,6 +186,122 @@ window.safeCopy = async function(text) {
       </div>`;
     }
 
+    // Helper: render a DISABLED (greyed) toggle row — used for knobs a provider
+    // does not support (e.g. ChatGPT/Kimi have no curl fallback), with a note
+    // explaining why so the user isn't left guessing.
+    function _renderLockedToggle(labelText, descText) {
+      return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px dashed var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;opacity:0.55;">
+        <div style="min-width:0;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-dim);">${labelText} <span style="font-size:10px;">🔒</span></div>
+          ${descText ? `<div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${descText}</div>` : ''}
+        </div>
+        <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:not-allowed;">
+          <span style="position:absolute;inset:0;background:var(--border);border-radius:20px;"></span>
+          <span style="position:absolute;left:2px;top:2px;width:16px;height:16px;background:#fff;border-radius:50%;"></span>
+        </label>
+      </div>`;
+    }
+
+    // Render the transport (ghost/curl) + headless toggles for one provider,
+    // driven entirely by the capability map so no dead switch ever appears.
+    function _renderConnectorToggles(pid) {
+      const cap = _connectorCaps[pid];
+      if (!cap) return '';
+      let out = '';
+      // --- transport: ghost tab vs curl ---
+      if (cap.transport_toggleable) {
+        const isGhost = cap.transport !== 'curl';
+        out += _renderToggle(`connTransport_${pid}`, isGhost,
+          `Transport: ${isGhost ? 'Ghost tab' : 'Curl (raw API)'}`,
+          `Ghost runs the request inside a real browser tab (genuine TLS + live cookies). Curl uses the raw impersonated HTTP path. Changing this restarts the ${cap.label} browser.`);
+      } else {
+        out += _renderLockedToggle('Transport: Ghost tab only',
+          `${cap.label} has no curl fallback — it always uses the ghost browser.`);
+      }
+      // --- headless: head vs headless ---
+      if (cap.headless_toggleable) {
+        const headless = !!cap.headless;
+        out += _renderToggle(`connHeadless_${pid}`, headless,
+          `Run Headless (no browser window)`,
+          `Launch the ${cap.label} browser without a visible window. Changing this restarts any open ${cap.label} browser.`);
+      } else {
+        out += _renderLockedToggle('Run Headless',
+          `${cap.label}'s browser is token-refresh-only and cannot run headed.`);
+      }
+      return out;
+    }
+
+    // Bind the transport + headless toggles for one provider.
+    function _bindConnectorToggles(pid) {
+      const cap = _connectorCaps[pid];
+      if (!cap) return;
+      // transport toggle
+      const tEl = document.getElementById(`connTransport_${pid}`);
+      if (tEl && cap.transport_toggleable) {
+        tEl.addEventListener('change', async () => {
+          const toGhost = tEl.checked;
+          const label = tEl.closest('label');
+          const _paint = (on) => {
+            if (!label) return;
+            const bg = label.children[1], knob = label.children[2];
+            if (bg) bg.style.background = on ? 'var(--accent)' : 'var(--border)';
+            if (knob) knob.style.left = on ? '18px' : '2px';
+          };
+          _paint(toGhost);
+          tEl.disabled = true;
+          try {
+            const res = await fetch('/api/settings/connectors', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ provider: pid, transport: toGhost ? 'ghost' : 'curl' }),
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            _connectorCaps = data.connectors || _connectorCaps;
+            const restarted = (data.restarted || []).length;
+            showToast(toGhost
+              ? `👻 ${cap.label} → Ghost tab` + (restarted ? ' — browser restarted' : '')
+              : `⚡ ${cap.label} → Curl` + (restarted ? ' — browser restarted' : ''), 'success');
+            await loadAccountProfiles();
+          } catch (e) {
+            showToast('Failed to change transport: ' + e.message, 'error');
+            tEl.checked = !toGhost; _paint(!toGhost);
+          } finally { tEl.disabled = false; }
+        });
+      }
+      // headless toggle
+      const hEl = document.getElementById(`connHeadless_${pid}`);
+      if (hEl && cap.headless_toggleable) {
+        hEl.addEventListener('change', async () => {
+          const headless = hEl.checked;
+          const label = hEl.closest('label');
+          const _paint = (on) => {
+            if (!label) return;
+            const bg = label.children[1], knob = label.children[2];
+            if (bg) bg.style.background = on ? 'var(--accent)' : 'var(--border)';
+            if (knob) knob.style.left = on ? '18px' : '2px';
+          };
+          _paint(headless);
+          hEl.disabled = true;
+          try {
+            const res = await fetch('/api/settings/connectors', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ provider: pid, headless }),
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            _connectorCaps = data.connectors || _connectorCaps;
+            const restarted = (data.restarted || []).length;
+            showToast(headless
+              ? `🕶️ ${cap.label} now runs headless` + (restarted ? ' — browser restarted' : '')
+              : `🖥️ ${cap.label} now runs headed` + (restarted ? ' — browser restarted' : ''), 'success');
+          } catch (e) {
+            showToast('Failed to change launch mode: ' + e.message, 'error');
+            hEl.checked = !headless; _paint(!headless);
+          } finally { hEl.disabled = false; }
+        });
+      }
+    }
+
     // Helper: bind toggle visual + API call
     function _bindProviderToggle(toggleId, provider) {
       const el = document.getElementById(toggleId);
@@ -209,7 +338,7 @@ window.safeCopy = async function(text) {
 
     // Every browser provider now owns its OWN active account — qwen included.
     // Mirrors _BROWSER_PROVIDERS_ALL in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek", "deepseek_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
+    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek", "deepseek_scraper", "qwen_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
     function _renderBrowserCard(acc, active, providerId, token) {
@@ -572,6 +701,7 @@ window.safeCopy = async function(text) {
       // Keep the scraper launch-mode card in sync with the server before we
       // render, so the toggle never shows a stale value after a settings POST.
       await loadScraperLaunchMode();
+      await loadConnectorCaps();
       const filterBar = document.getElementById("providerFilterBar");
       accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>';
       try {
@@ -583,7 +713,7 @@ window.safeCopy = async function(text) {
         const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
-        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "deepseek_scraper", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "deepseek_scraper", "qwen_scraper", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter
@@ -703,15 +833,18 @@ window.safeCopy = async function(text) {
             html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span>${clearAllBtn}</div>`;
 
             if (pd.type === "browser") {
-              if (pid === "deepseek_scraper") {
+              // Scraper transports share the global scraper headless flag and
+              // get their own toggle (no ghost/curl knob — they ARE the scraper).
+              const _SCRAPER_PROVS = ["deepseek_scraper", "qwen_scraper"];
+              // Transport (ghost/curl) + headless toggles, capability-driven.
+              // Only rendered for the ghost-backed providers we manage here.
+              if (!_SCRAPER_PROVS.includes(pid)) {
+                html += _renderConnectorToggles(pid);
+              }
+              if (_SCRAPER_PROVS.includes(pid)) {
                 html += _renderToggle(`scraperHeadless_${pid}`, _scraperHeadless,
                   `Run Headless (no browser window)`,
-                  `Launch the DeepSeek scraper browser without a visible window. Changing this restarts any open scraper browser.`);
-              }
-              if (pid === "chatgpt") {
-                html += _renderToggle(`chatgptHeadless_${pid}`, _chatgptHeadless,
-                  `Run Headless (no browser window)`,
-                  `Launch the ChatGPT browser without a visible window. Changing this restarts any open ChatGPT browser.`);
+                  `Launch the ${pd.label} browser without a visible window. Changing this restarts any open scraper browser.`);
               }
               html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
                 `Auto-Switch on Rate Limit / Captcha`,
@@ -766,11 +899,12 @@ window.safeCopy = async function(text) {
 
         // Bind per-provider toggles (per-provider view only)
         if (_activeProviderFilter !== "all") {
+          const _SCRAPER_PROVS = ["deepseek_scraper", "qwen_scraper"];
           for (const pid of showProvs) {
             _bindProviderToggle(`autoSwitch_${pid}`, pid);
+            if (!_SCRAPER_PROVS.includes(pid)) _bindConnectorToggles(pid);
+            if (_SCRAPER_PROVS.includes(pid)) _bindScraperHeadlessToggle(`scraperHeadless_${pid}`);
           }
-          _bindScraperHeadlessToggle("scraperHeadless_deepseek_scraper");
-          _bindChatgptHeadlessToggle("chatgptHeadless_chatgpt");
         }
 
         // Bind browser account handlers + API key handlers + combined pills

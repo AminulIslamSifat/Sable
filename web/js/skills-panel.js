@@ -631,7 +631,7 @@
       providers: () => document.getElementById("jitterProviders"),
       status: () => document.getElementById("jitterStatus"),
     };
-    const _JITTER_LABELS = { deepseek: "DeepSeek", deepseek_scraper: "DeepSeek (scraper)", qwen: "Qwen", zai: "z.ai", gemini: "Gemini" };
+    const _JITTER_LABELS = { deepseek: "DeepSeek", deepseek_scraper: "DeepSeek (scraper)", qwen: "Qwen", qwen_scraper: "Qwen (scraper)", zai: "z.ai", gemini: "Gemini" };
     let _jitterProviders = {};
 
     function _renderJitterProviders() {

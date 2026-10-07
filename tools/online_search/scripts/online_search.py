@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import textwrap
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -223,7 +224,7 @@ def http_get(
         timeout=timeout,
         allow_redirects=True,
     )
-    content_type = resp.headers.get("content-type", "text/html").split(";")[0].strip()
+    content_type = resp.headers.get("content-type", "text/html").split(";")[0].strip().lower()
     return resp.status_code, content_type, resp.text
 
 
@@ -443,6 +444,46 @@ def _looks_like_js_challenge(status_code: int, text: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Failure classification & render serialization
+# ---------------------------------------------------------------------------
+
+# Retryable across fingerprints — a different TLS profile might slip past.
+_RETRYABLE = frozenset({"js_challenge", "rate_limited", "error"})
+# Fatal — retrying other fingerprints (or rendering) cannot help.
+_FATAL = frozenset({"dns", "refused", "timeout", "ssl", "invalid_url"})
+
+# One headless browser at a time — playwright is ~200MB/instance and this is a
+# rare path, so serializing avoids RAM spikes when several URLs are fetched.
+_RENDER_LOCK = threading.Semaphore(1)
+
+
+def _classify_failure(exc: BaseException | None, status_code: int, text: str) -> str:
+    """Bucket a fetch attempt so the caller can retry smartly.
+
+    Returns one of: dns|refused|timeout|ssl|invalid_url|js_challenge|
+    rate_limited|error|ok.
+    """
+    if exc is not None:
+        msg = str(exc).lower()
+        if any(s in msg for s in ("could not resolve", "name or service", "nodename nor servname", "getaddrinfo")):
+            return "dns"
+        if any(s in msg for s in ("connection refused", "connection reset", "connection aborted")):
+            return "refused"
+        if "timed out" in msg or "timeout" in msg:
+            return "timeout"
+        if "ssl" in msg or "certificate" in msg or "tls" in msg:
+            return "ssl"
+        if "invalid url" in msg or "no scheme" in msg or "url can't contain control" in msg:
+            return "invalid_url"
+        return "error"
+    if _looks_like_js_challenge(status_code, text):
+        return "js_challenge"
+    if status_code == 429:
+        return "rate_limited"
+    return "ok"
+
+
 def _extract_with_trafilatura(html_text: str, url: str) -> tuple[str, str]:
     """Return (title, markdown_body) via trafilatura; empty strings on failure."""
     title = ""
@@ -461,7 +502,6 @@ def _extract_with_trafilatura(html_text: str, url: str) -> tuple[str, str]:
             include_links=True,
             include_tables=True,
             include_comments=False,
-            favor_recall=True,
         ) or ""
     except Exception:
         body = ""
@@ -469,18 +509,30 @@ def _extract_with_trafilatura(html_text: str, url: str) -> tuple[str, str]:
 
 
 def _playwright_fetch(url: str, *, timeout: int = 25, max_chars: int = 10000) -> dict[str, Any]:
-    """Last-resort render for JS challenges. Only used when curl_cffi is walled."""
+    """Last-resort render for JS challenges, serialized and lightly stealthed."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
         return {"success": False, "url": url, "error": f"playwright unavailable: {exc}", "content": "", "title": "", "status_code": 0}
+    if not _RENDER_LOCK.acquire(timeout=timeout + 10):
+        return {"success": False, "url": url, "error": "render slot busy", "content": "", "title": "", "status_code": 0}
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(
-                user_agent=USER_AGENT,
-                viewport={"width": 1280, "height": 900},
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
             )
+            context = browser.new_context(
+                user_agent=USER_AGENT,
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+            )
+            context.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
+                "window.chrome={runtime:{}};"
+            )
+            page = context.new_page()
             page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
             page.wait_for_timeout(2500)
             html_text = page.content()
@@ -496,6 +548,8 @@ def _playwright_fetch(url: str, *, timeout: int = 25, max_chars: int = 10000) ->
         }
     except Exception as exc:
         return {"success": False, "url": url, "error": f"playwright: {exc}", "content": "", "title": "", "status_code": 0}
+    finally:
+        _RENDER_LOCK.release()
 
 
 def fetch_webpage_content(
@@ -516,15 +570,36 @@ def fetch_webpage_content(
     last_error = ""
 
     for impersonate in _IMPERSONATE_PROFILES:
+        exc: BaseException | None = None
+        status_code, content_type, text = 0, "text/html", ""
         try:
             status_code, content_type, text = http_get(url, timeout=timeout, impersonate=impersonate)
-        except Exception as exc:
-            last_error = f"{impersonate}: {exc}"
-            continue
+        except Exception as e:
+            exc = e
 
-        if _looks_like_js_challenge(status_code, text):
-            last_error = f"{impersonate}: JS challenge (HTTP {status_code})"
-            continue  # try next fingerprint; if all fail, we render below
+        kind = _classify_failure(exc, status_code, text)
+
+        # Bail immediately on dead hosts / bad URLs — no fingerprint helps.
+        if kind in _FATAL:
+            return {
+                "success": False,
+                "url": url,
+                "error": f"{kind}: {exc if exc is not None else f'HTTP {status_code}'}",
+                "content": "",
+                "title": "",
+                "status_code": status_code,
+            }
+
+        # Transient / challenge — try the next fingerprint.
+        if kind in _RETRYABLE:
+            last_error = f"{impersonate}: {kind} (HTTP {status_code})"
+            continue  # if all profiles fail, we render below
+
+        # Reject payloads we can't turn into text.
+        if "application/pdf" in content_type:
+            return {"success": False, "url": url, "error": "unsupported: pdf", "content": "", "title": "", "status_code": status_code}
+        if content_type and not content_type.startswith("text/") and "json" not in content_type and "xml" not in content_type:
+            return {"success": False, "url": url, "error": f"unsupported: {content_type}", "content": "", "title": "", "status_code": status_code}
 
         is_html = content_type == "text/html" or "<html" in text[:2000].lower()
         if is_html:
@@ -693,6 +768,8 @@ def search_only(query: str, *, max_results: int = 15, time_filter: str | None = 
 
 def fetch_specific_urls(urls: list[str], *, max_chars: int = 10000) -> dict[str, Any]:
     """Phase 2: fetch content from specific URLs chosen by the model."""
+    # Dedupe while preserving order — the model sometimes repeats a URL.
+    urls = list(dict.fromkeys(u.strip() for u in urls if u and u.strip()))
     fetched: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(urls) or 1)) as executor:
         future_map = {

@@ -67,7 +67,7 @@ _DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
 # engine.upload_file() per path. They are NOT direct-read (they don't inline
 # bytes) and they have NO provider-side upload endpoint, so the generic
 # _upload_attachment() path must never be used for them.
-_SCRAPER_FILE_BACKENDS = frozenset({"deepseek_scraper"})
+_SCRAPER_FILE_BACKENDS = frozenset({"deepseek_scraper", "qwen_scraper"})
 
 _DEFAULT_CONFIG: dict[str, str] = {
     "model": "",

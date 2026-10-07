@@ -138,6 +138,11 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend deepseek unavailable: %s", exc)
 
+    # Qwen (scraper): headed-browser transport reuses the Qwen account profile —
+    # available whenever any logged-in Qwen browser profile exists.
+    if "qwen" in available:
+        available.add("qwen_scraper")
+
     # Gemini (web): browser-assisted — available if a captured request template
     # exists and a signed-in Google account has been seen (live or on disk).
     try:

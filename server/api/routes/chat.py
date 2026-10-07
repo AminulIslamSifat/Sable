@@ -233,6 +233,17 @@ async def stop_generation(request: Request):
             logger.warning("deepseek_scraper stop failed: %s", exc)
             return {"success": True, "aborted": False, "error": str(exc)}
 
+    # Qwen (scraper): headed-browser transport. Same stop-button approach.
+    if _prov == "qwen_scraper":
+        try:
+            from connectors.qwen_scraper.client import cancel_active_streams as _qs_cancel
+            _ok = await _qs_cancel()
+            logger.info("qwen_scraper stop: chat=%s aborted=%s", chat_id, _ok)
+            return {"success": True, "aborted": bool(_ok)}
+        except Exception as exc:
+            logger.warning("qwen_scraper stop failed: %s", exc)
+            return {"success": True, "aborted": False, "error": str(exc)}
+
     # Frontend may not have the response_id yet (Stop pressed before the first
     # chunk landed). Fall back to the id captured server-side when the
     # response_id event fired. Qwen's stop endpoint REQUIRES response_id.
@@ -792,6 +803,8 @@ async def chat(request: ChatRequest):
             pass
         if _study_provider == "deepseek_scraper":
             _study_provider = "deepseek"
+        elif _study_provider == "qwen_scraper":
+            _study_provider = "qwen"
         try:
             from .study_ai import build_study_turn
             _study_system, _study_grounding = build_study_turn(
@@ -1171,6 +1184,27 @@ async def chat(request: ChatRequest):
     resolved_files: list[dict[str, Any]] | None = None
     _ref_files_full: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
+
+    # Guard: a model that DECLARES an api_backend but whose connector is not
+    # available must NOT silently fall through to the Qwen browser path. That
+    # silent fallback is how deepseek-scraper ended up running on Qwen when
+    # its active-account profile was missing: _is_api_model() returned False,
+    # the router took the else-branch, and the user got a different provider
+    # with no warning. Fail loudly and point at the real cause.
+    try:
+        from connectors import resolve_backend as _declared_backend, is_backend_available as _bavail
+        _declared = _declared_backend(request.model)
+        if _declared and not _bavail(_declared):
+            _msg = (
+                "Model '" + str(request.model) + "' routes to backend '" + str(_declared)
+                + "', but that connector is not available (its browser profile or "
+                + "credentials are missing). Refusing to silently fall back to Qwen. "
+                + "Fix the account/credentials in Settings, then retry."
+            )
+            logger.error('backend_unavailable model=%s declared=%s', request.model, _declared)
+            return {'error': _msg}
+    except Exception:
+        pass
     if request.files:
         # --- Doc→Image conversion for models that accept images but not native docs ---
         _model_caps = get_model_config(request.model).get("capabilities", {})
@@ -1216,7 +1250,7 @@ async def chat(request: ChatRequest):
                     resolved_files.append({"path": f["path"]})
                 continue
             # Experimental scraper: engine uploads via Playwright internally
-            if _backend == "deepseek_scraper":
+            if _backend in ("deepseek_scraper", "qwen_scraper"):
                 if "path" in f:
                     resolved_files.append({"path": f["path"]})
                 continue
@@ -1980,10 +2014,10 @@ async def chat(request: ChatRequest):
                     # same context/session). Non-scraper backends keep the
                     # critique handler's scoped profile.
                     _round_bdd = bdd
-                    if _api_backend == "deepseek_scraper" and "-critique-" in str(active_chat_id or ""):
+                    if _api_backend in ("deepseek_scraper", "qwen_scraper") and "-critique-" in str(active_chat_id or ""):
                         try:
                             from engine.config import _SYSTEM as _SYS, get_provider_active_account as _gpaa
-                            _sc_acct = _gpaa("deepseek_scraper")
+                            _sc_acct = _gpaa(_api_backend)
                             _sc_path = _SYS / _sc_acct
                             if _sc_acct and _sc_path.is_dir():
                                 _round_bdd = str(_sc_path)
@@ -1994,7 +2028,7 @@ async def chat(request: ChatRequest):
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
                     # Experimental scraper: engine uploads these via Playwright
-                    elif _api_backend == "deepseek_scraper" and round_index == 0 and resolved_files:
+                    elif _api_backend in ("deepseek_scraper", "qwen_scraper") and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
                     # ChatGPT ghost: the connector stages files via the SPA's
                     # #upload-files input (set_input_files) and lets the SPA
@@ -2007,7 +2041,7 @@ async def chat(request: ChatRequest):
                         _caps = _cfg.get("capabilities", {})
                         if _caps.get("image", False) and _api_backend in _DIRECT_READ_BACKENDS:
                             _inline_files = (_inline_files or []) + _pending_skill_images
-                        elif _caps.get("image", False) and _api_backend == "deepseek_scraper":
+                        elif _caps.get("image", False) and _api_backend in ("deepseek_scraper", "qwen_scraper"):
                             # Scraper transport: no inline-file path either, but the
                             # engine uploads these through Playwright (upload_file),
                             # so they ride the same `files` channel as UI attachments.
@@ -2086,7 +2120,7 @@ async def chat(request: ChatRequest):
                     # Scraper transports: resume the stored upstream chat URL on
                     # the first round so a reopened chat continues its browser
                     # conversation instead of starting a fresh one.
-                    if _api_backend == "deepseek_scraper" and round_index == 0 and active_chat_id:
+                    if _api_backend in ("deepseek_scraper", "qwen_scraper") and round_index == 0 and active_chat_id:
                         try:
                             _stored_url = get_chat_url(active_chat_id)
                             if _stored_url:

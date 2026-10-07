@@ -2,13 +2,16 @@
 #!/usr/bin/env python3
 """Grep Search — ripgrep/glob/list_dir with path sandboxing."""
 
+import fnmatch
 import glob as _glob
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Resolve project root: env var → relative to this script → home fallback
@@ -28,6 +31,38 @@ def _no_window_kwargs() -> dict:
     if _IS_WINDOWS:
         return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
     return {}
+
+
+_GREP_DEFAULT_TIME = 30.0  # seconds — matches the old hardcoded subprocess timeout
+_GREP_MAX_TIME = 120.0     # hard cap — mirrors execute_command's max
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """Kill a subprocess and its entire process group.
+
+    os.killpg MUST be attempted before any liveness check: a group-leader
+    shell can sit in state 'Z' while its process group still holds live
+    children, and an is_alive()-style guard would skip the kill and leak
+    them. Resolve the pgid first; only fall back to proc.kill() when the
+    process is not its own group leader.
+    """
+    if _IS_WINDOWS:
+        proc.kill()
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        if pgid == proc.pid:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _find_ripgrep() -> str | None:
@@ -80,6 +115,15 @@ def _find_ripgrep() -> str | None:
 MAX_RESULTS_CAP = 200
 MAX_OUTPUT_CHARS = 25_000  # default output budget (~25k chars)
 LINE_TRUNCATE = 300        # per-line truncation
+
+# Junk pruned even when --no-ignore is on. We disable .gitignore so hidden and
+# locally-ignored files (.env, config.local.py) are searchable, which means we
+# must re-exclude the heavy generated trees .gitignore was silently covering.
+_RG_DEFAULT_EXCLUDES = (
+    ".git/", "node_modules/", ".venv/", "venv/", "__pycache__/",
+    ".mypy_cache/", ".pytest_cache/", ".ruff_cache/",
+    "*.min.js", "*.min.css", "*.pyc", "*.pyo",
+)
 
 
 def validate_path(raw: str) -> Path:
@@ -210,11 +254,14 @@ def cmd_grep(args: dict) -> list[str]:
             return [f"No matches found for '{pattern}' in {search_path}"]
         return py_results
 
-    cmd = [rg, "--json", f"--max-count={max_results}"]
+    # --hidden --no-ignore: rg skips dotfiles and .gitignored paths by default,
+    # which silently hid .env / config.local.py and returned a false "No matches".
+    # The heavy generated trees are re-excluded explicitly below.
+    cmd = [rg, "--json", "--hidden", "--no-ignore", f"--max-count={max_results}"]
     if ignore_case:
         cmd.append("-i")
     # Default exclusions for junk dirs/files
-    for excl in ("vendor/", "node_modules/", "*.min.js", "*.min.css", ".git/"):
+    for excl in _RG_DEFAULT_EXCLUDES:
         cmd.extend(["--glob", f"!{excl}"])
     # User-specified exclusions
     for excl in extra_excludes:
@@ -223,15 +270,41 @@ def cmd_grep(args: dict) -> list[str]:
         cmd.extend(["--glob", glob_filter])
     cmd.extend([pattern, str(search_path)])
 
+    # Time budget. XML attrs arrive as strings — parse defensively, clamp.
+    raw_time = args.get("time")
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, encoding="utf-8",
-            errors="replace", timeout=30, **_no_window_kwargs(),
+        budget = float(raw_time) if raw_time else _GREP_DEFAULT_TIME
+    except (TypeError, ValueError):
+        budget = _GREP_DEFAULT_TIME
+    budget = min(max(budget, 1.0), _GREP_MAX_TIME)
+
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            encoding="utf-8", errors="replace",
+            start_new_session=not _IS_WINDOWS,
+            **_no_window_kwargs(),
         )
-    except subprocess.TimeoutExpired:
-        return ["Error: search timed out after 30s"]
     except Exception as e:
         return [f"Error: {e}"]
+
+    try:
+        stdout, _stderr = proc.communicate(timeout=budget)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        return [f"Error: search timed out after {budget:.0f}s"]
+
+    # rg exit codes: 0 = matches, 1 = clean no-match, 2 = error. Treating 2 as
+    # "no matches" is the worst failure mode — the model concludes the code it
+    # is hunting for does not exist. Surface the real reason instead.
+    if proc.returncode == 2:
+        detail = (_stderr or "").strip().splitlines()
+        detail = detail[0] if detail else "unknown ripgrep error"
+        return [f"Error: ripgrep failed (exit 2): {detail}"]
 
     lines: list[str] = []
     total_chars = 0
@@ -239,7 +312,7 @@ def cmd_grep(args: dict) -> list[str]:
     total_match_count = 0
 
     # Parse ripgrep JSON lines
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         if len(lines) >= max_results:
             break
         try:
@@ -270,6 +343,20 @@ def cmd_grep(args: dict) -> list[str]:
     return lines
 
 
+# Directories never worth walking for a file search. Pruned in-place from
+# os.walk so the tree is never descended — this is what keeps glob inside
+# its time budget on repos carrying .venv/node_modules.
+_SKIP_DIRS = {
+    ".venv", "venv", "node_modules", ".git", "__pycache__", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".tox", ".idea", ".vscode",
+    ".sable_backups", ".editor_tools_backups", "dist", "build", ".next",
+}
+
+_GLOB_DEFAULT_TIME = 15.0  # seconds — mirrors execute_command's default
+_GLOB_MAX_TIME = 120.0     # hard cap — mirrors execute_command's max
+_GLOB_CHECK_EVERY = 512    # poll the deadline every N files (huge-dir guard)
+
+
 def cmd_glob(args: dict) -> list[str]:
     pattern = args.get("pattern", "")
     if not pattern:
@@ -277,16 +364,78 @@ def cmd_glob(args: dict) -> list[str]:
 
     base = validate_path(args.get("path", str(ALLOWED_ROOTS[0])))
 
+    # Time budget. XML attrs arrive as strings — parse defensively, clamp.
+    raw_time = args.get("time")
     try:
-        matches = sorted(base.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        budget = float(raw_time) if raw_time else _GLOB_DEFAULT_TIME
+    except (TypeError, ValueError):
+        budget = _GLOB_DEFAULT_TIME
+    budget = min(max(budget, 1.0), _GLOB_MAX_TIME)
+    deadline = time.monotonic() + budget
+
+    matches: list[Path] = []
+    timed_out = False
+    _since_check = 0
+    try:
+        for root, dirs, files in os.walk(base):
+            # Prune in-place: os.walk never descends into skipped dirs.
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            for f in files:
+                if fnmatch.fnmatch(f, pattern):
+                    matches.append(Path(root) / f)
+                # A single directory can hold millions of entries; the outer
+                # per-directory check never fires while we're inside one. Poll
+                # every N files so the inner loop can't run away either.
+                _since_check += 1
+                if _since_check >= _GLOB_CHECK_EVERY:
+                    _since_check = 0
+                    if time.monotonic() > deadline:
+                        timed_out = True
+                        break
+            if timed_out:
+                break
+            # The deadline check must live HERE, on the walker's own thread —
+            # the event loop is blocked inside this call, so no outer timeout
+            # can interrupt it. This is the only place the kill can fire.
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
     except Exception as e:
         return [f"Error: {e}"]
 
     if not matches:
+        if timed_out:
+            return [
+                f"Error: glob timed out after {budget:.0f}s (0 matches). "
+                f"Narrow 'path' or raise 'time'."
+            ]
         return [f"No files matching '{pattern}' in {base}"]
 
-    results = []
-    for m in matches[:200]:
+    # Newest-first ranking needs one stat() per match — untimed filesystem I/O
+    # that can block for hundreds of ms each on a network mount. Budget it too:
+    # once the clock is blown, keep the scored prefix rather than discarding the
+    # whole search. If the walk already timed out we skip the guard here and
+    # rank what we found, so a slow walk still yields results.
+    scored: list[tuple[float, Path]] = []
+    for m in matches:
+        if not timed_out and time.monotonic() > deadline:
+            timed_out = True
+            break
+        try:
+            scored.append((m.stat().st_mtime, m))
+        except OSError:
+            scored.append((0.0, m))
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    results: list[str] = []
+    if timed_out:
+        # Same contract as before (leading "Error:" => ok=False), but the
+        # partial matches the message counts are now actually returned.
+        results.append(
+            f"Error: glob timed out after {budget:.0f}s "
+            f"({len(matches)} partial matches). Narrow 'path' or raise 'time'."
+        )
+    for _mtime, m in scored[:200]:
         try:
             rel = m.relative_to(base)
         except ValueError:

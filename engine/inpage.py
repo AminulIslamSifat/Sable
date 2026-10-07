@@ -40,6 +40,30 @@ from engine.platform_paths import pid_exists
 
 logger = logging.getLogger("sable.inpage")
 
+
+def _read_system_settings() -> dict:
+    """Read system/settings.json, returning {} on any failure."""
+    try:
+        path = Path(__file__).resolve().parent.parent / "system" / "settings.json"
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def qwen_ghost_enabled() -> bool:
+    """Read `qwen_use_ghost` from settings.json (default True)."""
+    val = _read_system_settings().get("qwen_use_ghost")
+    return True if val is None else bool(val)
+
+
+def qwen_headless() -> bool:
+    """Read `qwen_headless` from settings.json (default False = headed)."""
+    val = _read_system_settings().get("qwen_headless")
+    return False if val is None else bool(val)
+
+
 GHOST_HOME = "https://chat.qwen.ai"
 STS_URL = "https://chat.qwen.ai/api/v2/files/getstsToken"
 RAW_TEXT_LIMIT = 100_000  # safe margin under the ~120k RGV587 punish wall
@@ -186,7 +210,9 @@ class GhostEngine:
     @classmethod
     def instance(cls) -> "GhostEngine":
         if cls._instance is None:
-            cls._instance = cls()
+            # Headed by default so a first run is visible/debuggable; the
+            # Settings → Account → Qwen "Headless" toggle flips this.
+            cls._instance = cls(headless=qwen_headless())
         return cls._instance
 
     def __init__(self, headless: bool = True, user_data_dir: str | None = None) -> None:

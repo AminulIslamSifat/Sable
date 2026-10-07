@@ -165,6 +165,24 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     stale = recover_stale_agents()
     if stale:
         logger.info("Recovered %d stale agent(s) from previous session", stale)
+
+    # Telegram session preflight (background, non-blocking). A poisoned auth
+    # key (AUTH_KEY_DUPLICATED / revoked) can never be retried — probe once at
+    # boot and purge the dead .session so the user only has to re-sign-in,
+    # never manually delete files.
+    async def _telegram_session_preflight() -> None:
+        try:
+            from server.api.routes.telegram import purge_dead_session_on_startup
+            purged = await purge_dead_session_on_startup()
+            if purged:
+                logger.warning(
+                    "Telegram: purged dead session at startup (%s); "
+                    "re-authentication required.", purged,
+                )
+        except Exception as exc:
+            logger.debug("Telegram session preflight skipped: %s", exc)
+
+    app.state._tg_preflight_task = _aio.create_task(_telegram_session_preflight())
     # Load saved agent config and apply to runtime + registry
     try:
         from engine.config import AGENT_CONFIG_PATH

@@ -25,6 +25,7 @@ from engine.config import (
     save_qwen_tokens_for_account,
     mark_account_exhausted,
 )
+from engine.inpage import qwen_ghost_enabled
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
@@ -520,7 +521,7 @@ class ChatService:
         provider = (provider or "").strip().lower()
         try:
             # --- Qwen WAF (cookies + bx-ua) ---
-            if provider == "qwen":
+            if provider in ("qwen", "qwen_scraper"):
                 await self.force_refresh_waf()
                 return bool(self._headers and self._headers.get("Cookie"))
 
@@ -1043,9 +1044,38 @@ class ChatService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         logger.debug(f"▶ stream_events START chat_id={chat_id} msg_len={len(message)} bdd={bdd}")
 
-        # curl-only path — curl_cffi with browser-impersonated TLS. Qwen always
-        # uses this. The former ghost-tab primary path (engine.inpage) has been
-        # removed by request; no ghost tab is opened or adopted for Qwen.
+        # --- Ghost tab primary path ----------------------------------------
+        # In-page fetch on a parked ghost tab: Baxia signs at send-time, live
+        # cookies, zero token-staleness race. ghost_stream_events raises
+        # GhostError before yielding content if the ghost can't produce, so
+        # falling through to the curl path below is always safe.
+        # Skipped when: files pre-attached (legacy upload flow), a non-default
+        # account dir is pinned (ghost uses the active profile), or disabled.
+        if (not files and not bdd and qwen_ghost_enabled()):
+            try:
+                from engine.inpage import GhostError, ghost_stream_events
+                async for _ev in ghost_stream_events(
+                    message=message,
+                    chat_id=chat_id,
+                    parent_id=parent_id,
+                    model=model,
+                    thinking_mode=thinking_mode,
+                ):
+                    yield _ev
+                    if _ev.get("type") in ("done", "error"):
+                        return
+                return
+            except GhostError as _ge:
+                logger.debug(f"ghost failed ({_ge}) — falling back to raw API path")
+            except Exception as _gerr:
+                logger.warning(
+                    "ghost unexpected failure (%s: %s) — raw API path",
+                    type(_gerr).__name__, _gerr,
+                )
+
+        # curl path — curl_cffi with browser-impersonated TLS. Reached when the
+        # ghost is disabled, files are pre-attached, or the ghost raised before
+        # producing content.
         yield {"type": "status", "message": "qwen_transport_curl"}
 
         try:

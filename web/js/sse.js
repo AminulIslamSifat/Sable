@@ -3067,11 +3067,11 @@ function handleBackendStatusEvent(evt, container) {
 
   // Parse delay patterns: deepseek_delay_5.2s, deepseek_scraper_delay_3.1s,
   // qwen_delay_3.1s, zai_delay_7.0s, gemini_delay_4.5s
-  const delayMatch = msg.match(/^(deepseek_scraper|deepseek|qwen|zai|gemini)_delay_([\d.]+)s$/);
+  const delayMatch = msg.match(/^(deepseek_scraper|qwen_scraper|deepseek|qwen|zai|gemini)_delay_([\d.]+)s$/);
   if (delayMatch) {
-    const provider = delayMatch[1] === "deepseek_scraper"
-      ? "DeepSeek (scraper)"
-      : delayMatch[1].charAt(0).toUpperCase() + delayMatch[1].slice(1);
+    const _dl = { "deepseek_scraper": "DeepSeek (scraper)", "qwen_scraper": "Qwen (scraper)" };
+    const provider = _dl[delayMatch[1]]
+      || delayMatch[1].charAt(0).toUpperCase() + delayMatch[1].slice(1);
     const seconds = delayMatch[2];
     parsedLabel = `${provider} jitter delay — waiting ${seconds}s…`;
     parsedIcon = "timer";

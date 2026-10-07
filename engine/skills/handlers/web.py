@@ -51,13 +51,15 @@ def handle_online_search(
         urls = []
 
     if urls:
-        max_chars = int(attrs.get("max_chars", "0") or 0)
-        fetch_args: list[str] = ["--fetch-urls"]
+        # Clamp: negative values would silently slice content (text[:-5]) and
+        # huge values waste context. Floor 1000, ceiling 100k.
+        try:
+            max_chars = int(attrs.get("max_chars", "0") or 0)
+        except (TypeError, ValueError):
+            max_chars = 0
+        max_chars = min(100_000, max(1_000, max_chars)) if max_chars else 10_000
 
         url_list = urls if isinstance(urls, list) else [urls]
-        fetch_args.extend(url_list)
-        if max_chars > 0:
-            fetch_args.append(f"--max-chars={max_chars}")
 
         yield _output_event(tag_id, f"Fetching {len(url_list)} URL(s):\n")
         for u in url_list:
@@ -65,7 +67,7 @@ def handle_online_search(
         yield _output_event(tag_id, "\n")
 
         try:
-            data = _fetch_urls(url_list, max_chars=max_chars or 10000)
+            data = _fetch_urls(url_list, max_chars=max_chars)
             items = data.get("pages", [])
             fetched_count = sum(1 for it in items if it.get("success"))
             yield _output_event(tag_id, f"✓ Fetched {fetched_count}/{len(items)} page(s)\n\n")

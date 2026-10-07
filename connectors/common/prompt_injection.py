@@ -194,6 +194,7 @@ _ALIASES: dict[str, str] = {
     "cloudflare": "native",
     "url": "native",
     "deepseek_scraper": "deepseek",
+    "qwen_scraper": "qwen",
 }
 
 
