@@ -474,10 +474,14 @@
     // Incremented on every selectChat; loadMessages checks before each batch.
     let _loadGeneration = 0;
 
+    // How many messages to load per page (initial + each scroll-up fetch).
+    const HISTORY_PAGE_SIZE = 50;
+
     async function loadMessages(chatId, generation) {
       try {
-        // Single fetch — all messages at once, no pagination
-        const data = await fetch(`/api/chats/${chatId}/messages?include_skill_events=true`).then(r => r.json());
+        // Only the newest page is materialized in RAM. Older messages stay
+        // on disk and are fetched lazily on scroll-up (see _loadOlderMessages).
+        const data = await fetch(`/api/chats/${chatId}/messages?limit=${HISTORY_PAGE_SIZE}&include_skill_events=true`).then(r => r.json());
         // Abort if another selectChat started while we were fetching
         if (generation !== _loadGeneration) return [];
 
@@ -547,6 +551,15 @@
         // so scrollBottom doesn't bail out early.
         window._historyLoading = false;
 
+        // Record pagination anchor for scroll-up loading.
+        const oldest = messages[0];
+        _historyState.set(chatId, {
+          oldestId: oldest ? oldest.id : null,
+          hasMore: messages.length >= HISTORY_PAGE_SIZE,
+          loading: false,
+        });
+        _attachScrollLoader(chatId, pane);
+
         // Single scroll after everything is truly rendered
         if (chatId === activeChatId) scrollBottom(true);
 
@@ -556,6 +569,72 @@
         window._historyLoading = false;
         return [];
       }
+    }
+
+    // Per-chat pagination state: { oldestId, hasMore, loading }
+    const _historyState = new Map();
+    // Guards against attaching multiple scroll listeners to the same pane.
+    const _scrollLoaderAttached = new WeakSet();
+
+    function _attachScrollLoader(chatId, pane) {
+      if (_scrollLoaderAttached.has(pane)) return;
+      _scrollLoaderAttached.add(pane);
+      pane.addEventListener("scroll", () => {
+        // Trigger when the user scrolls near the top.
+        if (pane.scrollTop > 120) return;
+        _loadOlderMessages(chatId, pane);
+      }, { passive: true });
+    }
+
+    async function _loadOlderMessages(chatId, pane) {
+      const st = _historyState.get(chatId);
+      if (!st || st.loading || !st.hasMore || !st.oldestId) return;
+      st.loading = true;
+
+      // Preserve the visual scroll position across the prepend.
+      const prevHeight = pane.scrollHeight;
+      const prevTop = pane.scrollTop;
+
+      let batch = [];
+      try {
+        const url = `/api/chats/${chatId}/messages?limit=${HISTORY_PAGE_SIZE}`
+          + `&before_id=${encodeURIComponent(st.oldestId)}&include_skill_events=true`;
+        const data = await fetch(url).then(r => r.json());
+        batch = data.messages || [];
+      } catch (err) {
+        console.error("Failed to load older messages:", err);
+        st.loading = false;
+        return;
+      }
+
+      if (batch.length === 0) {
+        st.hasMore = false;
+        st.loading = false;
+        return;
+      }
+
+      // Render the older batch into an off-screen fragment (same pattern as
+      // the initial load) then prepend it ahead of the existing content.
+      window._historyLoading = true;
+      const prevPane = activePane;
+      const tmp = document.createElement("div");
+      activePane = tmp;
+      for (const msg of batch) addHistoryMessage(msg);
+      activePane = prevPane;
+      window._historyLoading = false;
+
+      const frag = document.createDocumentFragment();
+      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+      pane.insertBefore(frag, pane.firstChild);
+
+      // Update the anchor + restore scroll position.
+      st.oldestId = batch[0] ? batch[0].id : st.oldestId;
+      st.hasMore = batch.length >= HISTORY_PAGE_SIZE;
+      st.loading = false;
+      pane.scrollTop = prevTop + (pane.scrollHeight - prevHeight);
+
+      if (typeof renderMathJax === "function") renderMathJax(pane).catch(() => {});
+      if (typeof activateLucideIcons === "function") activateLucideIcons(pane);
     }
 
     /**

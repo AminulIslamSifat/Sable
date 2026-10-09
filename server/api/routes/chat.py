@@ -66,16 +66,70 @@ def _reconstruct_message_content(msg: dict[str, Any]) -> str:
     return base_content
 
 
+# Per-turn cache of the (expensive) DB history reconstruction. Keyed by
+# (chat_id, message_row_count) so it auto-invalidates the moment a new
+# message is persisted, but is reused across every round of a single turn.
+# Without this, a 700-tool-call chat re-parsed the entire message table +
+# all skill_events on EVERY loop iteration — the quadratic flood that
+# OOM-killed a 16GB+20GB-swap machine.
+_HISTORY_CACHE: dict[tuple[str, int], list[dict[str, str]]] = {}
+
+
+def _chat_row_count(chat_id: str) -> int:
+    """Cheap COUNT(*) — used as a cache key so we never serve stale history."""
+    try:
+        with get_db() as _conn:
+            row = _conn.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            return int(row["c"]) if row else 0
+    except Exception:
+        return -1
+
+
 def _load_history_with_skills(chat_id: str) -> list[dict[str, str]]:
-    """Load conversation history with skill event content for token counting."""
-    msgs = get_messages(chat_id, include_skill_events=True)
-    history = []
+    """Load conversation history with skill event content.
+
+    Bounded: the result is trimmed to the shared history budget so a deep
+    chat can never hand the whole message table (plus every tool payload)
+    to a connector or the token counter at once.
+
+    Cached per (chat_id, row_count) for the lifetime of the turn so the
+    reconstruction does not repeat on every round of the tool loop.
+    """
+    from connectors.common.history_budget import (
+        MAX_DB_HISTORY_MESSAGES,
+        trim_history_messages,
+    )
+
+    cache_key = (chat_id, _chat_row_count(chat_id))
+    cached = _HISTORY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # CRITICAL: fetch only the newest N messages from SQLite. Loading the
+    # whole table then trimming still materializes every row + every skill
+    # event in RAM — that was the crash. The LIMIT must be in the query.
+    msgs = get_messages(
+        chat_id,
+        limit=MAX_DB_HISTORY_MESSAGES,
+        include_skill_events=True,
+    )
+    history: list[dict[str, str]] = []
     for m in msgs:
         if m["role"] not in ("user", "assistant"):
             continue
         content = _reconstruct_message_content(m)
         if content:
             history.append({"role": m["role"], "content": content})
+
+    # Safety trim (query already bounded it, but keep the invariant explicit).
+    history = trim_history_messages(history)
+
+    # Keep the cache from growing without bound across many chats.
+    if len(_HISTORY_CACHE) > 32:
+        _HISTORY_CACHE.clear()
+    _HISTORY_CACHE[cache_key] = history
     return history
 
 

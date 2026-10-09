@@ -30,12 +30,6 @@
     // Phase elements
     const phaseAccount   = document.getElementById("phaseAccount");
     const phaseSetup     = document.getElementById("phaseSetup");
-    const loginOverlay   = document.getElementById("loginOverlay");
-
-    const loginForm    = document.getElementById("loginForm");
-    const loginTokenIn = document.getElementById("loginToken");
-    const loginBtn     = document.getElementById("loginBtn");
-    const loginError   = document.getElementById("loginError");
 
     // Setup phase 2 elements
     const setupTabApiKey   = document.getElementById("setupTabApiKey");
@@ -53,7 +47,6 @@
     const setupSkipBtn     = document.getElementById("setupSkipBtn");
 
     const getToken = () => localStorage.getItem(TOKEN_KEY);
-    const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
     const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
     // Provider API base map for setup key flow
@@ -71,7 +64,6 @@
     function showPhase(phase) {
       phaseAccount.classList.add("hidden");
       phaseSetup.classList.add("hidden");
-      loginOverlay.classList.add("hidden");
       if (phase) phase.classList.remove("hidden");
     }
 
@@ -105,68 +97,11 @@
             }
           }
         } catch {}
-        showPhase(loginOverlay);
-        loginTokenIn.focus();
+        showPhase(phaseAccount);
       }
       return res;
     };
 
-    // Persistent login resolve — set when ensureAuth() needs to wait for login
-    let _loginResolve = null;
-
-    // Persistent login form handler (never removed, handles retries + 401 re-shows)
-    loginForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const token = loginTokenIn.value.trim();
-      if (!token) return;
-      loginBtn.disabled = true;
-      loginError.classList.add("hidden");
-      try {
-        const res = await _origFetch("/api/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        });
-        if (res.ok) {
-          setToken(token);
-          _authReady = true;
-          _authBounced = false;
-          showPhase(null);
-          if (_loginResolve) { _loginResolve(); _loginResolve = null; }
-          // Reload todo/tasks data if either panel is open in sidebar
-          const _hosted = window.sidebarHost?.getCurrent?.();
-          if ((_hosted === 'todo' || _hosted === 'tasks') && typeof loadAllPanels === "function") {
-            loadAllPanels();
-          }
-        } else {
-          // Check if server needs setup (no password set) — redirect to Phase 1
-          try {
-            const sRes = await _origFetch("/api/setup/status");
-            if (sRes.ok) {
-              const sData = await sRes.json();
-              if (sData.needs_password) {
-                clearToken();
-                showPhase(phaseAccount);
-                return;
-              }
-            }
-          } catch {}
-          loginError.textContent = "Invalid token. Try again.";
-          loginError.classList.remove("hidden");
-          loginTokenIn.value = "";
-          loginTokenIn.focus();
-        }
-      } catch {
-        loginError.textContent = "Connection error. Try again.";
-        loginError.classList.remove("hidden");
-      } finally {
-        loginBtn.disabled = false;
-      }
-    });
-
-    function waitForLogin() {
-      return new Promise((resolve) => { _loginResolve = resolve; });
-    }
 
     function ensureAuth() {
       if (getToken()) {
@@ -371,17 +306,7 @@
             }
 
             // === PHASE 3: Login ===
-            const _cached = getToken();
-            if (_cached) {
-              showPhase(loginOverlay);
-              loginTokenIn.value = _cached;
-              // MUST be cancelable — a non-cancelable submit event makes
-              // e.preventDefault() a no-op, so Firefox natively submits the
-              // form and reloads the page → infinite login-reload loop.
-              loginForm.dispatchEvent(new Event("submit", { cancelable: true }));
-              return waitForLogin();
-            }
-            // Setup complete, no session → account (email/password) gate
+            // Account (email/password) gate — the only front door.
             showPhase(phaseAccount);
             if (!window.AccountAuth) {
               await new Promise((resolve) => {
@@ -390,26 +315,31 @@
                 }, 50);
               });
             }
+            // Blocks until sign-in succeeds (or the tab is abandoned).
             await window.AccountAuth.run();
             if (getToken()) {
               _authReady = true;
               showPhase(null);
-              // Token acquired during the account gate — resolve ensureAuth so
-              // the boot sequence (loadModels + loadChats) can continue without
-              // a page reload.
-              return;
+              // Token acquired during the account gate — let the boot sequence
+              // (loadModels + loadChats) continue without a page reload.
             }
-            return waitForLogin();
           }
       } catch {
         // Setup status check failed — fall through to normal login
       }
 
-      // === Status check failed — legacy token login fallback ===
+      // === Status check failed — fall back to the account gate ===
       _authReady = true;
-      showPhase(loginOverlay);
-      loginTokenIn.focus();
-      return waitForLogin();
+      showPhase(phaseAccount);
+      if (!window.AccountAuth) {
+        await new Promise((resolve) => {
+          const _wait = setInterval(() => {
+            if (window.AccountAuth) { clearInterval(_wait); resolve(); }
+          }, 50);
+        });
+      }
+      await window.AccountAuth.run();
+      if (getToken()) { _authReady = true; showPhase(null); }
     }
 
     const ACTIVE_CHAT_KEY = "sable_active_chat";

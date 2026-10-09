@@ -368,13 +368,28 @@ def append_skill_event(chat_id: str, event: dict[str, Any]) -> None:
         )
 
 
+# Default ceiling for callers that omit `limit`. This is a RAM-safety
+# guard against accidental full-table loads, NOT a context budget — set
+# high enough that normal deep chats (hundreds of tool calls) are never
+# clipped. Callers needing more must pass an explicit `limit`.
+_DEFAULT_MESSAGE_LIMIT = 10000
+
+
 def get_messages(
     chat_id: str,
     limit: int | None = None,
     before_id: int | None = None,
     include_skill_events: bool = False,
 ) -> list[dict[str, Any]]:
-    """Fetch messages for a chat with optional pagination."""
+    """Fetch messages for a chat with optional pagination.
+
+    If `limit` is omitted it defaults to `_DEFAULT_MESSAGE_LIMIT`
+    (newest 2000). Callers that truly need everything must pass an
+    explicit `limit`.
+    """
+    if limit is None:
+        limit = _DEFAULT_MESSAGE_LIMIT
+
     query = "SELECT id, chat_id, role, content, thinking, memory_used, parent_id, created_at FROM messages WHERE chat_id = ?"
     params: list[Any] = [chat_id]
 
@@ -401,6 +416,25 @@ def get_messages(
             ).fetchall()
             has_events_set = {r["message_id"] for r in ev_rows}
 
+        # Batch-load skill events for ALL messages in one query. The old
+        # per-message call fired N+1 queries and held each JSON blob in a
+        # separate round-trip — brutal on a 700-message chat.
+        events_by_msg: dict[int, list[dict[str, Any]]] = {}
+        if include_skill_events and msg_ids:
+            placeholders = ",".join("?" * len(msg_ids))
+            ev_rows = conn.execute(
+                f"SELECT message_id, event_data FROM skill_events "
+                f"WHERE message_id IN ({placeholders}) ORDER BY message_id, seq ASC",
+                msg_ids,
+            ).fetchall()
+            for er in ev_rows:
+                try:
+                    events_by_msg.setdefault(er["message_id"], []).append(
+                        json.loads(er["event_data"])
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
         messages = []
         for row in reversed(rows):
             msg = dict(row)
@@ -410,7 +444,7 @@ def get_messages(
             except (json.JSONDecodeError, TypeError):
                 msg["memory_used"] = []
             if include_skill_events:
-                msg["skill_events"] = get_skill_events_for_message(msg["id"])
+                msg["skill_events"] = events_by_msg.get(msg["id"], [])
             else:
                 msg["has_skill_events"] = msg["id"] in has_events_set
             messages.append(msg)

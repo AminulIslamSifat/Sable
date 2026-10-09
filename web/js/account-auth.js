@@ -5,7 +5,10 @@
  * sessions + per-user DEK). On success the bridge session token becomes the
  * local bearer token, so the app reloads into a normal authed state.
  *
- * Google: button stays hidden until /api/account/config says it's enabled.
+ * Revisit UX: after the first successful sign-in we remember the account email
+ * in localStorage. Every later visit on the same origin shows a password-only
+ * "Welcome back" form — one account, many sessions (never evicts other
+ * browsers). Google: button stays hidden until /api/account/config enables it.
  * The OAuth code arrives on ?code= after Google redirects to /oauth/callback.
  */
 (function () {
@@ -13,8 +16,19 @@
 
   const $ = (id) => document.getElementById(id);
   const REDIRECT_URI = () => window.location.origin + "/oauth/callback";
+  const EMAIL_KEY = "sable_acct_email";
 
   let _mode = "signin"; // "signin" | "signup"
+
+  function _rememberedEmail() {
+    try { return (localStorage.getItem(EMAIL_KEY) || "").trim(); } catch { return ""; }
+  }
+  function _rememberEmail(email) {
+    try { localStorage.setItem(EMAIL_KEY, (email || "").trim()); } catch {}
+  }
+  function _forgetEmail() {
+    try { localStorage.removeItem(EMAIL_KEY); } catch {}
+  }
 
   function _err(msg) {
     const el = $("acctError");
@@ -22,6 +36,26 @@
     if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
     el.textContent = msg;
     el.classList.remove("hidden");
+  }
+
+  // Password-only "welcome back" state — email known, signup hidden.
+  function _applyRemembered(email) {
+    const emailEl = $("acctEmail");
+    const tabs = $("acctTabs");
+    const switchEl = $("acctSwitch");
+    if (emailEl) {
+      emailEl.value = email;
+      emailEl.readOnly = true;
+      emailEl.style.opacity = "0.7";
+    }
+    if (tabs) tabs.style.display = "none";
+    if (switchEl) switchEl.style.display = "";
+    $("acctTitle").textContent = "Welcome back";
+    $("acctSub").textContent = email;
+    $("acctName").style.display = "none";
+    $("acctSubmit").textContent = "Unlock";
+    _mode = "signin";
+    setTimeout(() => $("acctPassword")?.focus(), 50);
   }
 
   function _setMode(mode) {
@@ -72,6 +106,7 @@
         return;
       }
       localStorage.setItem("sable_token", data.token);
+      _rememberEmail(email);
       // Hand control back to core.js so the provider-setup phase can run in
       // this same page load (no reload needed — the server already stored it).
       if (window.__acctResolve) { window.__acctResolve(); window.__acctResolve = null; }
@@ -83,19 +118,37 @@
     }
   }
 
+  function _useDifferentAccount() {
+    _forgetEmail();
+    const emailEl = $("acctEmail");
+    if (emailEl) { emailEl.value = ""; emailEl.readOnly = false; emailEl.style.opacity = ""; }
+    $("acctTabs").style.display = "";
+    $("acctSwitch").style.display = "none";
+    $("acctPassword").value = "";
+    _setMode("signin");
+    setTimeout(() => emailEl?.focus(), 50);
+  }
+
   async function _init() {
     // Wire tabs + form once.
     $("acctTabSignin")?.addEventListener("click", () => _setMode("signin"));
     $("acctTabSignup")?.addEventListener("click", () => _setMode("signup"));
     $("acctForm")?.addEventListener("submit", (e) => { e.preventDefault(); _submit(); });
-    _setMode("signin");
+    $("acctSwitch")?.addEventListener("click", (e) => { e.preventDefault(); _useDifferentAccount(); });
 
-    // Google availability + button.
+    const remembered = _rememberedEmail();
+    if (remembered) {
+      _applyRemembered(remembered);
+    } else {
+      _setMode("signin");
+    }
+
+    // Google availability + button (hidden while unlocking a known account).
     try {
       const res = await fetch("/api/account/config");
       if (res.ok) {
         const cfg = await res.json();
-        if (cfg.google_enabled) {
+        if (cfg.google_enabled && !remembered) {
           $("acctGoogle").style.display = "";
           $("acctDivider").style.display = "flex";
           $("acctGoogle").addEventListener("click", () => {
@@ -128,6 +181,7 @@
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.token) {
         localStorage.setItem("sable_token", data.token);
+        if (data.user?.email) _rememberEmail(data.user.email);
         window.location.href = "/";
         return true;
       }

@@ -941,6 +941,8 @@
       } else {
         const content = document.createElement("div");
         content.className = "md-content";
+        // Stash raw markdown so the copy button can grab it instead of rendered text
+        content.dataset.raw = text || "";
         content.innerHTML = renderMarkdown(text);
         // ponytail: Skip heavy renders during bulk history load.
         // loadMessages does a single pane-wide pass after fragment attach.

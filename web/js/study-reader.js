@@ -37,6 +37,7 @@ let currentPage = 1;
 let scrollSyncSuppressUntil = 0;
 let pageSyncRaf = 0;
 let selectionDebounce = 0;   // debounce handle for the selectionchange listener
+let lastPointer = null;      // last pointer position — selectionchange carries none
 let pageEls = [];       // index 0 = page 1
 let pageObserver = null;
 let thumbObserver = null;
@@ -484,11 +485,18 @@ function wire() {
   // keyboard selection. Bind on document and cover both paths: pointerup for
   // the instant case, debounced selectionchange for drag + Shift+Arrow.
   const main = $("#rdrMain");
+  // Remember where the pointer last landed. selectionchange carries no
+  // coordinates, and its 120ms debounce lands AFTER pointerup — without this
+  // the second pass would overwrite the caret-exact word from the first with
+  // the inflated native selection text.
+  document.addEventListener('pointerdown', (e) => {
+    if (Number.isFinite(e.clientX)) lastPointer = { x: e.clientX, y: e.clientY };
+  }, true);
   document.addEventListener('pointerup', onSelection);
   document.addEventListener('selectionchange', () => {
     if (!overlay || overlay.classList.contains('hidden')) return;
     clearTimeout(selectionDebounce);
-    selectionDebounce = setTimeout(onSelection, 120);
+    selectionDebounce = setTimeout(() => onSelection(null), 120);
   });
   main.addEventListener('scroll', onMainScroll, { passive: true });
 
@@ -508,6 +516,28 @@ function wire() {
   window.addEventListener('resize', hideCtxMenu);
   document.addEventListener('mousedown', (e) => {
     if (!overlay.classList.contains('hidden') && !bar.contains(e.target)) hideHlBar();
+  });
+
+  // Dismiss the floating panels on any press outside them. The highlight bar
+  // and the Study AI launcher are exempt: they are the triggers that open
+  // these cards, so a press on them must not close what it is about to open.
+  document.addEventListener('mousedown', (e) => {
+    if (overlay.classList.contains('hidden')) return;
+    const t = e.target;
+    const onTrigger = bar.contains(t) ||
+      (t.closest && (t.closest('#rdrAiLaunch') || t.closest('#rdrQuickNote')));
+
+    const aiCard = overlay.querySelector('#rdrAiCard');
+    if (aiCard && !aiCard.classList.contains('hidden') &&
+        !aiCard.contains(t) && !onTrigger) {
+      closeAiCard();
+    }
+
+    const dictCard = overlay.querySelector('#rdrDictCard');
+    if (dictCard && !dictCard.classList.contains('hidden') &&
+        !dictCard.contains(t) && !onTrigger) {
+      closeDictCard();
+    }
   });
 
   bar.addEventListener('click', onHighlightBarClick);
@@ -1709,67 +1739,59 @@ function onTopicPanelClick(e) {
 // ── Selection & highlighting ─────────────────────────────────────────────────
 
 /**
- * Expand a selection Range out to whole-word boundaries.
+ * The word directly under a viewport point, via the caret API.
  *
- * pdf.js emits one absolutely-positioned span per glyph run, and a run can
- * break mid-word ("p" | "seudocode"). Chrome's double-click word-selection
- * then stops at the span edge, so the captured text loses the leading letter
- * and the dictionary looks up the wrong word. Walking the text layer's flat
- * text recovers the full word and hands back a Range that covers it too, so
- * the highlight geometry matches the text.
+ * A pdf.js text layer cannot be trusted for selection text: its spans are
+ * absolutely positioned and neighbouring runs overlap, so the browser's own
+ * selection happily returns a whole line when you clicked one word. The
+ * caret under the pointer is the only exact answer, so the dictionary reads
+ * from here instead of from sel.toString().
  *
- * Returns { range, text } or null when the selection is already word-aligned.
+ * Returns { word, range } or null.
  */
-function snapRangeToWord(pageEl, range) {
-  const layer = pageEl.querySelector('.rdr-text-layer');
-  if (!layer) return null;
-  const nodes = [];
-  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
-  let n;
-  while ((n = walker.nextNode())) nodes.push(n);
-  if (!nodes.length) return null;
+function wordAtPoint(x, y, pageEl) {
+  let node = null;
+  let off = 0;
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(x, y);
+    if (p && p.offsetNode) { node = p.offsetNode; off = p.offset; }
+  } else if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(x, y);
+    if (r) { node = r.startContainer; off = r.startOffset; }
+  }
+  if (!node) return null;
+  // The caret API sometimes hands back the span element rather than the text
+  // node sitting at that offset — descend to the child that owns the caret.
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const kids = node.childNodes;
+    const child = kids[Math.min(off, kids.length - 1)];
+    if (child && child.nodeType === Node.TEXT_NODE) { node = child; off = 0; }
+    else return null;
+  }
+  if (node.nodeType !== Node.TEXT_NODE || !pageEl.contains(node)) return null;
 
-  const base = new Map();
-  let flat = '';
-  for (const t of nodes) { base.set(t, flat.length); flat += t.data; }
-
-  const flatAt = (container, offset) => {
-    if (container.nodeType === Node.TEXT_NODE) {
-      const b = base.get(container);
-      return b == null ? null : b + offset;
-    }
-    // Element container — use its first text descendant.
-    for (const t of nodes) if (container.contains(t)) return base.get(t);
-    return null;
-  };
-
-  let s = flatAt(range.startContainer, range.startOffset);
-  let e = flatAt(range.endContainer, range.endOffset);
-  if (s == null || e == null || e <= s) return null;
-
+  const data = node.data;
   const WORD = /[A-Za-z0-9'\u2019\-]/;
-  const s0 = s, e0 = e;
-  while (s > 0 && WORD.test(flat[s - 1])) s--;
-  while (e < flat.length && WORD.test(flat[e])) e++;
-  if (s === s0 && e === e0) return null;
+  off = Math.max(0, Math.min(off, data.length));
+  let s = off;
+  let e = off;
+  // Clamped to THIS node on both sides, so the walk cannot cross into the
+  // next word even when the layer carries no space character between them.
+  while (s > 0 && WORD.test(data[s - 1])) s--;
+  while (e < data.length && WORD.test(data[e])) e++;
+  // A hyphen on either edge is punctuation: the word is "Breadth-First",
+  // not "-First". Trim it, then insist a real letter survives.
+  while (s < e && !/[A-Za-z0-9'\u2019]/.test(data[s])) s++;
+  while (e > s && !/[A-Za-z0-9'\u2019]/.test(data[e - 1])) e--;
+  if (e <= s || !/[A-Za-z]/.test(data.slice(s, e))) return null;
 
-  const locate = (pos) => {
-    for (const t of nodes) {
-      const b = base.get(t);
-      if (pos <= b + t.data.length) return { node: t, offset: Math.max(0, pos - b) };
-    }
-    const last = nodes[nodes.length - 1];
-    return { node: last, offset: last.data.length };
-  };
-
-  const a = locate(s), b = locate(e);
-  const r = document.createRange();
-  try { r.setStart(a.node, a.offset); r.setEnd(b.node, b.offset); }
+  const range = document.createRange();
+  try { range.setStart(node, s); range.setEnd(node, e); }
   catch { return null; }
-  return { range: r, text: flat.slice(s, e).trim() };
+  return { word: data.slice(s, e), range };
 }
 
-function onSelection() {
+function onSelection(e) {
   if (!overlay || overlay.classList.contains('hidden')) return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return hideHlBar();
@@ -1783,10 +1805,23 @@ function onSelection() {
   const pageEl = node.closest && node.closest('.rdr-page');
   if (!pageEl) return hideHlBar();
 
-  // Whole-word snap — see snapRangeToWord. Fixes "seudocode" → "pseudocode"
-  // for the dictionary and every AI action grounded on the selection.
-  const snapped = snapRangeToWord(pageEl, range);
-  if (snapped) { range = snapped.range; text = snapped.text; }
+  // Exact word under the pointer — survives the overlapping-span problem the
+  // native selection text suffers from. Kept separately from `text` so a
+  // deliberate phrase selection still reaches the AI actions intact.
+  const px = (e && Number.isFinite(e.clientX)) ? e.clientX : (lastPointer && lastPointer.x);
+  const py = (e && Number.isFinite(e.clientY)) ? e.clientY : (lastPointer && lastPointer.y);
+  const hit = Number.isFinite(px) ? wordAtPoint(px, py, pageEl) : null;
+  const exactWord = hit ? hit.word : '';
+
+  // No whole-word snap. It used to expand the selection by walking the
+  // FLATTENED text-layer string, which is unsafe: pdf.js separates words by
+  // geometry, not by space characters, so the flat text can read
+  // "Breadth-FirstSearch". The walk crossed from "Search" straight into its
+  // neighbour and the dictionary looked up "Breadth-First".
+  //
+  // `text` now stays exactly what the user selected (so AI actions still get
+  // a real phrase). The single-word lookup is resolved separately from the
+  // caret by wordAtPoint() below, which can never reach a neighbour.
 
   const pageRect = pageEl.getBoundingClientRect();
   const rects = Array.from(range.getClientRects())
@@ -1806,6 +1841,10 @@ function onSelection() {
     page: parseInt(pageEl.dataset.page, 10),
     rects,
     text: text.slice(0, 2000),
+    // The single word under the pointer, when we have one. The dictionary
+    // prefers this over `text` so it never looks up a neighbour of the word
+    // you actually clicked.
+    word: exactWord,
     anchor: rects[rects.length - 1],
     pageRect,
   };
@@ -2168,7 +2207,11 @@ async function onHighlightBarClick(e) {
     // Selection is deliberately NOT collapsed here. Clearing it on every
     // action is what made the reader feel like it "disables all selection" —
     // you pick a word, the card opens, and your highlight vanishes.
-    openDictCard(sel.text);
+    //
+    // `word` is the caret-exact word under the pointer. `text` is the native
+    // selection, which a pdf.js text layer routinely inflates to a whole
+    // line — so the word wins whenever we have it.
+    openDictCard(sel.word || sel.text);
     return;
   }
 

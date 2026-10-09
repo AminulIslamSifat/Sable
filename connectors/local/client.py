@@ -63,7 +63,8 @@ class LocalConnector:
         # Pop db_history from kwargs (passed by chat route for session seeding)
         db_history = kwargs.pop("db_history", None)
         if db_history and not history:
-            history = db_history
+            from connectors.common.history_budget import trim_history_messages
+            history = trim_history_messages(db_history)
 
         # Native tool calling: extract tools from kwargs
         tools = kwargs.pop("tools", None)

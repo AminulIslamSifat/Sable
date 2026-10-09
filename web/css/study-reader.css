@@ -606,21 +606,26 @@ body.rdr-open { overflow: hidden; }
 .rdr-hl-dict:hover { background: var(--accent-dim); }
 
 /* --- Dictionary card (pure lookup, no AI) --- */
+/* Geometry mirrors .rdr-ai-card exactly — one full-height side panel shared
+   by every Study AI / Dictionary entry point, so picking a word from the
+   highlight bar opens the same sized surface as a right-click Explain.
+   z-index sits one below the AI card so an AI action always wins the slot. */
 .rdr-dict-card {
-  /* Absolute (not fixed) to match the reader's own coordinate space, and
-     lifted clear of the Study AI + quick-note launchers at bottom:22px. */
-  position: absolute;
-  right: 22px;
-  bottom: 70px;
-  z-index: 1001;
-  width: min(400px, calc(100vw - 48px));
-  max-height: min(65vh, 560px);
+  position: fixed;
+  top: 65px;
+  right: 10px;
+  bottom: 10px;
+  left: auto;
+  z-index: 1099;
+  width: 550px;
+  max-width: calc(100vw - 20px);
+  max-height: none;
   display: flex;
   flex-direction: column;
   border-radius: 14px;
   background: var(--panel);
   border: 1px solid var(--border-soft);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.42);
   overflow: hidden;
 }
 .rdr-dict-card.hidden { display: none !important; }
@@ -1030,7 +1035,8 @@ body.rdr-open { overflow: hidden; }
 .rdr-ai-note-view .icon-lucide { width: 13px; height: 13px; }
 
 @media (max-width: 640px) {
-  .rdr-ai-card { right: 8px; left: 8px; width: auto; height: 60vh; }
+  .rdr-ai-card,
+  .rdr-dict-card { right: 8px; left: 8px; width: auto; height: 60vh; }
   .rdr-ai-config { right: 10px; left: 10px; width: auto; }
   .rdr-hl-ai { font-size: 11px; }
 }

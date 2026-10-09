@@ -98,7 +98,7 @@
       <h1 id="acctTitle">Welcome to Sable</h1>
       <p class="login-sub" id="acctSub">Sign in to your account</p>
 
-      <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--panel);border-radius:10px;padding:3px;border:1px solid var(--border);">
+      <div id="acctTabs" style="display:flex;gap:4px;margin-bottom:16px;background:var(--panel);border-radius:10px;padding:3px;border:1px solid var(--border);">
         <button id="acctTabSignin" type="button" class="setup-tab-btn active" style="flex:1;padding:8px 12px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;transition:all .2s;">Sign in</button>
         <button id="acctTabSignup" type="button" class="setup-tab-btn" style="flex:1;padding:8px 12px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:var(--text);transition:all .2s;">Create account</button>
       </div>
@@ -109,6 +109,10 @@
         <input type="password" id="acctPassword" class="login-input" placeholder="Password" autocomplete="current-password" style="margin-bottom:10px;">
         <button type="submit" id="acctSubmit" class="login-btn" style="width:100%;">Sign in</button>
       </form>
+
+      <p id="acctSwitch" style="display:none;text-align:center;margin-top:12px;font-size:12px;">
+        <a href="#" style="color:var(--text-dim);text-decoration:underline;">Use a different account</a>
+      </p>
 
       <div id="acctDivider" style="display:none;align-items:center;gap:10px;margin:14px 0;color:var(--text-dim);font-size:11px;">
         <div style="flex:1;height:1px;background:var(--border);"></div><span>or</span><div style="flex:1;height:1px;background:var(--border);"></div>
@@ -169,20 +173,6 @@
 
       <!-- Skip / continue -->
       <button id="setupSkipBtn" style="margin-top:16px;background:none;border:none;color:var(--text-dim);font-size:12px;cursor:pointer;text-decoration:underline;width:100%;text-align:center;">Skip for now</button>
-    </div>
-  </div>
-
-  <!-- Phase 3: Enter Pass (normal login) -->
-  <div id="loginOverlay" class="login-overlay hidden">
-    <div class="login-card">
-      <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
-      <h1>Sable</h1>
-      <p class="login-sub">Enter your access token to continue</p>
-      <form id="loginForm" class="login-form" autocomplete="off">
-        <input type="password" id="loginToken" class="login-input" placeholder="Access token" autofocus>
-        <button type="submit" id="loginBtn" class="login-btn">Unlock</button>
-      </form>
-      <p id="loginError" class="login-error hidden">Invalid token. Try again.</p>
     </div>
   </div>
 

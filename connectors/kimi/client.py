@@ -419,11 +419,13 @@ class KimiClient:
         # switch) so context isn't lost. Never serialized when an upstream
         # chat_id exists — the server chains there instead.
         if db_history and chat_id and not history:
-            history = [
+            from connectors.common.history_budget import trim_history_messages
+            _seeded = [
                 {"role": m["role"], "content": m["content"]}
                 for m in db_history
                 if m.get("role") in ("user", "assistant") and m.get("content")
             ]
+            history = trim_history_messages(_seeded)
             self._sessions[chat_id] = history
         # NOTE: we deliberately do NOT send message.parent_id. Empirically,
         # chat_id alone continues the conversation correctly (context preserved),

@@ -62,7 +62,9 @@ def _store_session(result: dict) -> dict:
     token = result.get("token")
     if not token:
         raise HTTPException(status_code=502, detail="bridge returned no session token")
-    _auth.set_auth_token(token)
+    email = (result.get("user") or {}).get("email", "")
+    # Additive: registers this browser's session without touching any other.
+    _auth.set_auth_token(token, email=email)
     return result
 
 
@@ -139,9 +141,20 @@ async def account_me(authorization: str | None = Header(None)) -> dict:
 
 
 @router.post("/api/account/logout")
-async def account_logout() -> dict:
-    """Clear the local session. Bridge sessions are stateless — nothing to revoke."""
-    _auth.clear_auth_token()
+async def account_logout(authorization: str | None = Header(None)) -> dict:
+    """Revoke ONLY this browser's session. Other browsers stay logged in.
+
+    Bridge sessions are stateless (they simply expire), so there's nothing to
+    revoke server-side over there — we just drop this token locally.
+    """
+    token = ""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+    if token:
+        _auth.revoke_token(token)
+    else:
+        # No token presented — treat as a full local logout.
+        _auth.clear_auth_token()
     return {"status": "logged_out"}
 
 

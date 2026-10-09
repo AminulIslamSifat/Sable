@@ -164,7 +164,7 @@
    * happens to sit behind the overlay.
    */
   function pickAuthGate() {
-    const phases = ['#phaseAccount', '#phaseSetup', '#loginOverlay'];
+    const phases = ['#phaseAccount', '#phaseSetup'];
     for (const sel of phases) {
       const el = document.querySelector(sel);
       if (!el || !isVisible(el)) continue;
@@ -443,7 +443,7 @@
     const body = document.body;
     if (body) obs.observe(body, { attributes: true, attributeFilter: ['class', 'data-mode'] });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode'] });
-    ['#loginOverlay', '#phaseSetup', '#settingsOverlay', '#libraryOverlay'].forEach((sel) => {
+    ['#phaseAccount', '#phaseSetup', '#settingsOverlay', '#libraryOverlay'].forEach((sel) => {
       const el = document.querySelector(sel);
       if (el) obs.observe(el, { attributes: true, attributeFilter: ['class', 'style'] });
     });

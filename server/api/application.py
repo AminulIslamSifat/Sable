@@ -372,7 +372,8 @@ async def auth_middleware(request: Request, call_next):
     if not path.startswith("/api/") or any(path.startswith(p) for p in AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
-    authorized = auth_header.startswith("Bearer ") and auth_header[7:] == _auth_mod.AUTH_TOKEN
+    _presented_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+    authorized = bool(_presented_token) and _auth_mod.is_valid_token(_presented_token)
     if not authorized and (
         path == "/api/logs"
         or path.endswith("/agent-events")
@@ -390,21 +391,21 @@ async def auth_middleware(request: Request, call_next):
         # read-only-GET tradeoff as /thumb above.
         or path.startswith("/api/study/cover/file/")
     ):
-        authorized = request.query_params.get("token", "") == _auth_mod.AUTH_TOKEN
+        authorized = _auth_mod.is_valid_token(request.query_params.get("token", ""))
     if not authorized:
         _client = request.client
         _origin = f"{_client.host}:{_client.port}" if _client else "unknown"
         _presented = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-        _expected = _auth_mod.AUTH_TOKEN or ""
         _mark = " (no auth header)" if not auth_header else (
             f" (presented={_presented[:8]}… len={len(_presented)}"
-            f" expected={_expected[:8]}… len={len(_expected)}"
-            f" match={_presented == _expected})"
+            f" sessions={len(_auth_mod.VALID_TOKENS)}"
+            f" primary={'set' if _auth_mod.AUTH_TOKEN else 'none'}"
+            f" valid={_auth_mod.is_valid_token(_presented)})"
         )
         import sys as _sys
         print(f"[AUTH-DEBUG] 401 {request.method} {path} from {_origin}"
               f" header={auth_header!r} {_mark}"
-              f" file_token={(_auth_mod.AUTH_TOKEN or '')[:8]}…",
+              f" sessions={len(_auth_mod.VALID_TOKENS)}",
               file=_sys.stderr, flush=True)
         logger.warning(
             "401 UNAUTHORIZED  %s %s  <- %s%s",

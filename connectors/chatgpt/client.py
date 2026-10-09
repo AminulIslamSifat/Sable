@@ -282,11 +282,13 @@ class ChatGPTClient:
                     self._chat_instr_ver[chat_id] = _ver
         history = self._sessions.get(chat_id, []) if chat_id else []
         if db_history and chat_id and not history:
-            history = [
+            from connectors.common.history_budget import trim_history_messages
+            _seeded = [
                 {"role": m["role"], "content": m["content"]}
                 for m in db_history
                 if m.get("role") in ("user", "assistant") and m.get("content")
             ]
+            history = trim_history_messages(_seeded)
         if is_fresh and history:
             hist_txt = "\n".join(f"{h['role']}: {h['content']}" for h in history[-10:])
             prompt = f"{hist_txt}\n\nUser: {prompt}"

@@ -81,7 +81,7 @@ SHELL = pick_shell()
 
 @router.websocket("/ws/terminal")
 async def terminal_ws(ws: WebSocket) -> None:
-    if ws.query_params.get("token", "") != _auth_mod.AUTH_TOKEN:
+    if not _auth_mod.is_valid_token(ws.query_params.get("token", "")):
         await ws.close(code=4001)
         return
     await ws.accept()

@@ -801,6 +801,10 @@ class ZaiClient:
                 ]
                 if prior and prior[-1].get("role") == "user":
                     prior.pop()
+                # Bound the embedded history — a deep agentic chat would
+                # otherwise ship the entire message table into /chats/new.
+                from connectors.common.history_budget import trim_history_messages
+                prior = trim_history_messages(prior)
                 embed.extend(prior)
 
             if embed:

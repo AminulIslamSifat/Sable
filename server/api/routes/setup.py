@@ -53,17 +53,8 @@ async def setup_status() -> dict[str, Any]:
     the frontend will loop between setup/login because setup says 'done'.
     """
     import server.auth as _auth
-    _mem = getattr(_auth, "AUTH_TOKEN", None)
-    _file_tok = ""
-    if _AUTH_TOKEN_FILE.exists():
-        _file_tok = _AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    has_token = bool(_mem) and (_mem == _file_tok)
-    if not has_token:
-        logger.warning(
-            "setup/status: token mismatch — memory=%s file=%s",
-            "set" if _mem else "None",
-            "set" if _file_tok else "None",
-        )
+    # Any live credential counts — primary install token OR any account session.
+    has_token = _auth.has_any_token()
     has_account = _has_any_account()
 
     # Check if any API provider has keys configured

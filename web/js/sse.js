@@ -221,7 +221,7 @@
       copyBtn.title = "Copy";
       copyBtn.addEventListener("click", () => {
         const md = msgDiv.querySelector(".md-content");
-        const text = md ? md.innerText : "";
+        const text = md ? (md.dataset.raw || md.innerText) : "";
         navigator.clipboard.writeText(text).then(() => {
           copyBtn.innerHTML = '<i data-lucide="check"></i>';
           activateLucideIcons(copyBtn);
@@ -1554,6 +1554,8 @@
         // Final render with full mermaid + math support — only runs when this answer
         // segment is truly done (stream end or skill interleave boundary).
         if (answerContent && raw && !_isSpecialCard) {
+          // Stash raw markdown for the copy button before final render
+          answerContent.dataset.raw = raw;
           answerContent.innerHTML = renderMarkdown(raw);
           pinScrollIfAtBottom();
           renderMermaidDiagrams(answerContent);
@@ -2075,7 +2077,7 @@
             copyBtn.title = "Copy";
             copyBtn.addEventListener("click", () => {
               const md = botEl.querySelector(".md-content");
-              const text = md ? md.innerText : "";
+              const text = md ? (md.dataset.raw || md.innerText) : "";
               navigator.clipboard.writeText(text).then(() => {
                 copyBtn.innerHTML = '<i data-lucide="check"></i>';
                 activateLucideIcons(copyBtn);
