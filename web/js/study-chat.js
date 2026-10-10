@@ -56,6 +56,19 @@
     return newThread(docId);
   }
 
+  /** Mint a thread under `docId` WITHOUT making it that document's active
+   *  thread. The reader's answer card needs its own conversation per press,
+   *  but must not hijack the thread the Study AI popup is showing — and the id
+   *  must keep the `study-<docId>-` shape, because the backend links a chat to
+   *  its document with the regex `^study-([0-9a-f]{32})-` and the sidebar
+   *  groups by the same prefix. A synthetic namespace here would silently
+   *  orphan every card thread from its document. */
+  function newDetachedThread(docId) {
+    const tid = threadPrefix(docId) + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    try { localStorage.setItem(DOCMAP_KEY + tid, docId); } catch { /* private mode */ }
+    return tid;
+  }
+
   /** Every thread for a document, newest first, from the global chat list. */
   function listThreads(docId) {
     const list = (typeof chatList !== 'undefined' && chatList) || [];
@@ -128,7 +141,9 @@
     if (!text || !text.trim()) return;
     // Remember which document/note this thread belongs to, so opening it from
     // the sidebar and typing there routes back through the study bridge.
-    try { localStorage.setItem(DOCMAP_KEY + threadId, docId); } catch { /* private mode */ }
+    // `docMapId` lets a surface whose map key is synthetic (the answer card)
+    // still record the REAL document, so a reopened thread stays grounded.
+    try { localStorage.setItem(DOCMAP_KEY + threadId, opts.docMapId || docId); } catch { /* private mode */ }
 
     const controller = startStream(threadId);
     busyByThread[threadId] = true;
@@ -254,7 +269,7 @@
   }
 
   window.studyChat = {
-    threadPrefix, activeThread, setActiveThread, newThread, ensureThread, listThreads,
+    threadPrefix, activeThread, setActiveThread, newThread, newDetachedThread, ensureThread, listThreads,
     docForThread, uploadBlob, dataUrlToBlob,
     loadMessages, renderMessages, send, stop, isBusy, subscribe, onBusy,
     loadModels, setConfig, configPayload, currentCaps,

@@ -802,6 +802,23 @@ body.rdr-open { overflow: hidden; }
 }
 .rdr-ai-pin:hover { transform: scale(1.15); opacity: 1; }
 .rdr-ai-pin .icon-lucide { width: 12px; height: 12px; }
+/* Study-note pins sit beside the answer pins and read as notes, not answers.
+   They are press-and-drag, so touch-action must not hand the gesture to the
+   scroller — otherwise a drag scrolls the page instead of moving the pin. */
+.rdr-note-pin {
+  background: color-mix(in srgb, #d29922 85%, #000);
+  opacity: 0.85;
+}
+.rdr-note-pin:hover { opacity: 1; }
+/* BOTH pin kinds are draggable, so the affordance and the gesture opt-out
+   live on the shared class, not just on note pins. The drag is VERTICAL only
+   (x is the shared margin column), so the cursor says so. Without
+   touch-action: none a drag scrolls the page instead of moving the pin. */
+.rdr-ai-pin {
+  cursor: ns-resize;
+  touch-action: none;
+}
+.rdr-ai-pin:active { cursor: ns-resize; }
 
 /* --- Floating answer card --- */
 /* Geometry mirrors .rdr-ai-launch .sa-popup exactly (full-height side panel,
@@ -1416,6 +1433,7 @@ body.rdr-open { overflow: hidden; }
 }
 .sa-attach-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
 .sa-attach-btn .icon-lucide { width: 16px; height: 16px; }
+.sa-file-input { display: none; }
 .sa-input {
   flex: 1;
   min-width: 0;
@@ -1780,6 +1798,19 @@ body.rdr-open { overflow: hidden; }
   width: 100%;
   max-width: 100%;
   align-self: stretch;
+}
+/* The answer card hosts a full shared surface (its own thread + composer), so
+   the surface — not the card body — owns the scroll and the padding. Without
+   this the surface collapses to content height and the composer floats mid-card. */
+.rdr-ai-card-body:has(> .sa-view) {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.rdr-ai-card-body > .sa-view {
+  flex: 1;
+  min-height: 0;
 }
 .sa-thread .empty,
 .rdr-ai-card-body .empty {

@@ -855,7 +855,7 @@
       api: (path, o) => apiGet(path, o),
       // A note has no pages/PDF of its own — the composer is the only input.
       // New chat is enabled: the bridge creates a fresh thread per note.
-      caps: { page: false, pdf: false, selection: false, paste: false, newChat: true, newChatPerAction: true },
+      caps: { page: false, pdf: false, selection: false, paste: false, saveNote: false, newChat: true, newChatPerAction: true },
       buildContext: ({ text, context, ground }) => {
         const action = (context && context.action) || 'ask';
         // Snapshot before the first edit of a turn so Revert can restore it.
@@ -978,6 +978,9 @@
 
     host.innerHTML = '<div class="sn-reader-loading">Loading notes…</div>';
     const items = await notesForDoc(docId);
+    // The user may have opened a note editor while we were awaiting the fetch
+    // (e.g. by pressing a page pin). Repainting here would blow it away.
+    if (host.querySelector('#snEditorOverlay')) return;
 
     const list = items.length ? items.map((n) => `
       <article class="sn-reader-note" data-sn-open="${esc(n.id)}" role="button" tabindex="0">
@@ -1092,6 +1095,12 @@
     };
     host.querySelector('[data-sn-cap-open]').onclick = () => {
       const content = bodyEl.value.trim();
+      // Reveal the host pane FIRST. The editor mounts into the reader's Notes
+      // pane, which is `hidden` while the user is on the Doc tab — so opening
+      // the editor without switching tabs mounted it into a display:none
+      // container and appeared to do nothing at all. (The page-pin click path
+      // already switches tabs before calling openEditor for this reason.)
+      if (ctx.revealPane) { try { ctx.revealPane(); } catch { /* non-fatal */ } }
       ctx.closePopup();
       openEditor(null, {
         kind: 'reader', mount: ctx.getPaneHost(),

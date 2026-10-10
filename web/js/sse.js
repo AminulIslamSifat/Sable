@@ -2611,14 +2611,23 @@
             if (evt.message === "feeding_skill_results") {
               ui.nextSkillRound();
             } else {
-              const _bsTurn = streamPane?.querySelector('.turn:last-child');
+              // The status card is a TRANSIENT element: it is created by
+              // addBotStreaming and is NOT a skill_event, so it is absent from
+              // the DB. A mid-stream re-render (host.innerHTML = '') destroys
+              // the .turn that hosts it, and every later status update was then
+              // dropped on the floor — the card sat at "working…" with no steps
+              // while the real pipeline message went nowhere. Fall back to the
+              // pane so the card survives the turn wrapper being rebuilt.
+              const _bsTurn = streamPane?.querySelector('.turn:last-child') || streamPane;
               if (_bsTurn) handleBackendStatusEvent(evt, _bsTurn);
             }
           } else if (evt.type === "account_switch") {
-            const _ascTurn = streamPane?.querySelector('.turn:last-child');
+            // Same transient-card problem as `status` above: fall back to the
+            // pane so a mid-stream re-render cannot orphan the card.
+            const _ascTurn = streamPane?.querySelector('.turn:last-child') || streamPane;
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
           } else if (evt.type === "token_rotation") {
-            const _trTurn = streamPane?.querySelector('.turn:last-child');
+            const _trTurn = streamPane?.querySelector('.turn:last-child') || streamPane;
             if (_trTurn) handleTokenRotationEvent(evt, _trTurn);
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
@@ -2667,8 +2676,10 @@
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
-            // Update backend status card to "Done" then collapse after a beat
-            const _lastTurn = streamPane?.querySelector('.turn:last-child');
+            // Update backend status card to "Done" then collapse after a beat.
+            // Same fallback as the `status` branch: the card may have been
+            // reparented to the pane by a mid-stream rebuild.
+            const _lastTurn = streamPane?.querySelector('.turn:last-child') || streamPane;
             if (_lastTurn) {
               const _bsCard = _lastTurn.querySelector('.backend-status-card');
               if (_bsCard) {

@@ -328,6 +328,7 @@ def _build_context(
     selection: str,
     query: str = "",
     topic_scope: bool = False,
+    pages: list[int] | None = None,
 ) -> str:
     """Slice the document text to fit the requested scope within the budget.
 
@@ -353,9 +354,19 @@ def _build_context(
         return f"[Page {page}]\n{ctx}"
 
     if scope == "page":
-        if 1 <= page <= len(page_text):
-            return f"[Page {page}]\n{(page_text[page - 1] or '').strip()[:_MAX_CTX_CHARS]}"
-        return ""
+        # Multi-page scope: the reader may have staged several pages (e.g. a
+        # question that spans pages 12–14). Slice every requested page and
+        # share the budget across them, so no single page crowds out the rest.
+        wanted = [p for p in (pages or []) if isinstance(p, int) and 1 <= p <= len(page_text)]
+        if not wanted:
+            wanted = [page] if 1 <= page <= len(page_text) else []
+        if not wanted:
+            return ""
+        per_page = max(1, _MAX_CTX_CHARS // len(wanted))
+        return "\n\n".join(
+            f"[Page {p}]\n{(page_text[p - 1] or '').strip()[:per_page]}"
+            for p in wanted
+        )
 
     doc_id = str(meta.get("id") or "")
 
@@ -571,10 +582,13 @@ def build_study_turn(
     # Only a genuine question widens to the whole topic; page/selection/action
     # scopes stay pinned to the document the reader has open.
     topic_scope = scope == "doc" and action in ("", "ask")
+    _pages = [p for p in (ctx.get("pages") or []) if isinstance(p, int)]
     context = _build_context(
-        meta, scope, page, selection, query=user_message, topic_scope=topic_scope
+        meta, scope, page, selection, query=user_message,
+        topic_scope=topic_scope, pages=_pages,
     )
-    blocks = [f'Document: "{meta.get("title", "")}" (Page {page})']
+    _page_label = ", ".join(str(p) for p in _pages) if len(_pages) > 1 else str(page)
+    blocks = [f'Document: "{meta.get("title", "")}" (Page {_page_label})']
     if context:
         blocks.append("Document context:\n---\n" + context + "\n---")
     if selection:
@@ -1262,8 +1276,10 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
         "",
     )
     topic_scope = scope == "doc" and action in ("", "ask")
+    _pages = [p for p in (payload.get("pages") or []) if isinstance(p, int)]
     context = _build_context(
-        meta, scope, page, selection, query=last_user, topic_scope=topic_scope
+        meta, scope, page, selection, query=last_user,
+        topic_scope=topic_scope, pages=_pages,
     )
 
     blocks = [f'Document: "{meta.get("title", "")}"']

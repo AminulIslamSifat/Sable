@@ -98,6 +98,15 @@
     if (!tid) { if (stillCurrent()) paint(host, []); return; }
     const msgs = await window.studyChat.loadMessages(tid);
     if (!stillCurrent()) return;
+    // setThread() may have installed an override while we were awaiting the
+    // fetch. The check at the top of this function ran BEFORE the await, so it
+    // cannot see it. Honour the override instead of overwriting it with the
+    // (empty) DB thread.
+    if (override[docId]) {
+      cache[docId] = override[docId].slice();
+      paint(host, override[docId]);
+      return;
+    }
     cache[docId] = msgs;
     paint(host, msgs);
   }
@@ -110,11 +119,34 @@
   }
   function setThread(docId, turns) {
     delete liveDirty[docId];
+    // Invalidate any renderThread that is already in flight. buildSurface()
+    // kicks off an async DB load; when that resolves AFTER setThread it would
+    // clobber the override and repaint the empty thread — so a saved thread
+    // flashed on screen and was then wiped. Bumping the render token makes
+    // stillCurrent() reject it.
+    renderGen[docId] = (renderGen[docId] || 0) + 1;
     override[docId] = (turns || []).map((t) => ({ role: t.role, content: t.content }));
     cache[docId] = override[docId].slice();
     if (activeHost[docId]) paint(activeHost[docId], override[docId]);
     emitView(docId);
   }
+  /** Release every in-memory map entry for a surface key. Called when an
+   *  ephemeral surface (the reader's answer card) goes away: the maps are keyed
+   *  by a monotonic id, so without this they grow by one dead entry per press
+   *  for the life of the tab. The DB thread is deliberately left alone. */
+  function releaseSurface(docId) {
+    if (!docId) return;
+    delete activeHost[docId];
+    delete override[docId];
+    delete cache[docId];
+    delete surfaceCtx[docId];
+    delete liveDirty[docId];
+    delete renderGen[docId];
+    delete docBusy[docId];
+    delete busySubs[docId];
+    delete viewSubs[docId];
+  }
+
   function resetThread(docId) {
     override[docId] = null;
     delete liveDirty[docId];
@@ -142,21 +174,34 @@
     // whole point: one surface, different grounding payload.
     if (typeof ctx.buildTurn === 'function') return ctx.buildTurn(ctx, opts || {});
     const docId = ctx.getDocId();
+    // A surface may live under a synthetic key (the answer card, so it never
+    // shares the Study AI thread) while still grounding on a real document.
+    // getDocId() keys the per-surface maps; getGroundDocId() keys the request.
+    const groundId = (typeof ctx.getGroundDocId === 'function' && ctx.getGroundDocId()) || docId;
     const sctx = surfaceCtx[docId] || {};
     const selection = (opts.selection != null ? opts.selection : (sctx.getSelection && sctx.getSelection())) || '';
     const page = opts.page || (sctx.getCurrentPage ? sctx.getCurrentPage() : 1);
     const scope = opts.scope || (selection ? 'selection' : 'doc');
-    let text = (opts.question || opts.label || opts.action || '').trim();
-    if (!text) text = 'Ask about this document';
-    // Surface the grounding in the sent bubble so the selection is visible in
-    // the saved thread instead of vanishing into the request only.
+    // The visible instruction: the user's own question for "ask", otherwise a
+    // natural sentence for the preset. Never the bare action code.
+    let body = (opts.question || '').trim();
+    if (!body) {
+      body = (opts.action && opts.action !== 'ask')
+        ? (opts.label || opts.action)
+        : 'Ask about this document';
+    }
+    // Mirror the composer's shape exactly: the quoted selection leads, the
+    // instruction follows. The action path used to put the label first and the
+    // quote second, so the same turn looked different depending on how it was
+    // started — that inconsistency is the whole bug.
+    let text = body;
     if (scope === 'selection' && selection) {
-      text += '\n\n> ' + selection.replace(/\n/g, '\n> ').slice(0, 400);
+      text = '> ' + selection.replace(/\n/g, '\n> ').slice(0, 400) + '\n\n' + body;
     }
     return adaptTurn(ctx, {
       text,
       context: {
-        doc_id: docId,
+        doc_id: groundId,
         action: opts.action || 'ask',
         scope,
         page,
@@ -165,6 +210,15 @@
       },
       page, selection, scope, ground: false,
     });
+  }
+
+  /** The REAL document id for a surface. A surface whose map key is synthetic
+   *  (the answer card) still belongs to a real document, and that is what gets
+   *  recorded against the thread so reopening it from the sidebar stays
+   *  grounded instead of degrading to a free-form study chat. */
+  function docMapIdFor(ctx, docId) {
+    if (typeof ctx.getGroundDocId === 'function') return ctx.getGroundDocId() || docId;
+    return docId;
   }
 
   async function runTurn(ctx, opts) {
@@ -177,6 +231,7 @@
     emitBusy(docId, true);
     await window.studyChat.send({
       docId,
+      docMapId: docMapIdFor(ctx, docId),
       threadId: threadIdFor(docId) || window.studyChat.ensureThread(docId),
       text,
       context,
@@ -188,7 +243,22 @@
     // reader's subscription it drives) do NOT repaint from the DB, which is
     // what made every finished turn flash back in as a reloaded dump.
     if (host) liveDirty[docId] = { tid: threadIdFor(docId), host };
+    await refreshCache(docId);
     emitView(docId);
+  }
+
+  /** Re-read this doc's thread from the DB into the local cache.
+   *  The live-DOM guard in renderThread skips the DB repaint (and with it the
+   *  cache write) once a turn has streamed, so getThread() would otherwise
+   *  hand back a stale list — which is exactly why "Save thread" reported
+   *  "Nothing to save yet" with a finished answer on screen. */
+  async function refreshCache(docId) {
+    try {
+      const tid = threadIdFor(docId);
+      if (!tid) return;
+      const msgs = await window.studyChat.loadMessages(tid);
+      if (Array.isArray(msgs) && msgs.length) cache[docId] = msgs;
+    } catch { /* cache is best-effort */ }
   }
 
   function askAction(ctx, opts) { return runTurn(ctx, opts || {}); }
@@ -217,7 +287,7 @@
     // the note surface. The interaction — thread, composer, attachments, tools —
     // is identical; only the grounding payload and these labels change.
     const caps = Object.assign(
-      { page: true, pdf: true, selection: true, paste: true, newChat: true },
+      { page: true, pdf: true, image: true, selection: true, paste: true, newChat: true, saveNote: true },
       ctx.caps || {},
     );
     const title = (ctx.getTitle && ctx.getTitle()) || 'Study AI';
@@ -245,6 +315,7 @@
               '</div>' +
             '</div>'
           : '') +
+        (caps.saveNote ? '<button class="sa-icon-btn" data-sa="save-note" title="Save answer as note"><i data-lucide="notebook-pen" class="icon-lucide"></i></button>' : '') +
         (caps.newChat ? '<button class="sa-icon-btn" data-sa="new" title="New chat"><i data-lucide="plus" class="icon-lucide"></i></button>' : '') +
         (compact ? '<button class="sa-icon-btn" data-sa="close" title="Close"><i data-lucide="x" class="icon-lucide"></i></button>' : '') +
       '</div>' +
@@ -253,6 +324,8 @@
       '<div class="sa-composer">' +
         (caps.page ? '<button class="sa-attach-btn" data-sa="page" title="Attach current page"><i data-lucide="file-image" class="icon-lucide"></i></button>' : '') +
         (caps.pdf ? '<button class="sa-attach-btn" data-sa="pdf" title="Attach whole document"><i data-lucide="file-text" class="icon-lucide"></i></button>' : '') +
+        (caps.image ? '<button class="sa-attach-btn" data-sa="image" title="Attach images"><i data-lucide="image-plus" class="icon-lucide"></i></button>' +
+                      '<input type="file" class="sa-file-input" data-sa-file accept="image/*" multiple hidden>' : '') +
         '<input class="sa-input" data-sa-input type="text" placeholder="' + escAttr(placeholder) + '">' +
         '<button class="sa-send" data-sa="send" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>' +
         '<button class="sa-stop" data-sa="stop" title="Stop" style="display:none;"><i data-lucide="square" class="icon-lucide"></i></button>' +
@@ -263,6 +336,7 @@
     const input = el.querySelector('[data-sa-input]');
     const sendBtn = el.querySelector('[data-sa="send"]');
     const stopBtn = el.querySelector('[data-sa="stop"]');
+    const fileInput = el.querySelector('[data-sa-file]');
 
     const view = {
       // Staged attachments. Study grounding is resolved server-side from the
@@ -328,24 +402,29 @@
       const sctx = surfaceCtx[docId] || {};
       const page = pageArg || (sctx.getCurrentPage ? sctx.getCurrentPage() : 1);
       const caps = currentCaps();
+      // Pages ACCUMULATE. Re-attaching a page that is already staged is a
+      // no-op; attaching a new page appends instead of replacing the rest.
+      if (view.pending.some((a) => a.kind === 'page' && a.page === page)) return;
       const item = { kind: 'page', label: 'Page ' + page, page };
-      view.pending = view.pending.filter((a) => a.kind !== 'page');
       view.pending.push(item);
       if (caps.image && sctx.getPageImage) {
         item.uploading = true;
         view.renderAttachments();
-        try {
-          const dataUrl = await sctx.getPageImage(page);
-          if (dataUrl) {
-            item.dataUrl = dataUrl;
-            const blob = window.studyChat.dataUrlToBlob(dataUrl);
-            if (blob) {
-              const up = await window.studyChat.uploadBlob(blob, 'page-' + page + '.png');
-              if (up) item.file = { path: up.path };
+        item.ready = (async () => {
+          try {
+            const dataUrl = await sctx.getPageImage(page);
+            if (dataUrl) {
+              item.dataUrl = dataUrl;
+              const blob = window.studyChat.dataUrlToBlob(dataUrl);
+              if (blob) {
+                const up = await window.studyChat.uploadBlob(blob, 'page-' + page + '.png');
+                if (up) item.file = { path: up.path };
+              }
             }
-          }
-        } catch { /* fall back to text scope */ }
-        item.uploading = false;
+          } catch { /* fall back to text scope */ }
+          item.uploading = false;
+          view.renderAttachments();
+        })();
       }
       view.renderAttachments();
     }
@@ -361,18 +440,23 @@
       view.renderAttachments();
     }
 
-    /** Stage an image from a paste/drop: preview immediately, upload in place. */
+    /** Stage an image from a paste/drop/pick: preview immediately, upload in
+     *  place. Returns a promise that resolves when the upload settles, so a
+     *  batch of images can be awaited before the turn is sent. */
     async function stageImageBlob(blob, name) {
       if (!blob) return;
       const item = { kind: 'image', label: name || 'Image', uploading: true };
       view.pending.push(item);
       view.renderAttachments();
-      const dataUrl = await blobToDataUrl(blob);
-      if (dataUrl) item.dataUrl = dataUrl;
-      const up = await window.studyChat.uploadBlob(blob, name || 'pasted-image.png');
-      if (up) item.file = { path: up.path };
-      item.uploading = false;
-      view.renderAttachments();
+      item.ready = (async () => {
+        const dataUrl = await blobToDataUrl(blob);
+        if (dataUrl) { item.dataUrl = dataUrl; view.renderAttachments(); }
+        const up = await window.studyChat.uploadBlob(blob, name || 'pasted-image.png');
+        if (up) item.file = { path: up.path };
+        item.uploading = false;
+        view.renderAttachments();
+      })();
+      return item.ready;
     }
 
     function syncBusy(busy) {
@@ -380,9 +464,48 @@
       stopBtn.style.display = busy ? '' : 'none';
     }
 
+    /** Attach the latest answer to the current selection as a study note.
+     *  Creates a note (via /api/study/notes/capture) whose reference is this
+     *  document + page + selection, with the answer as the body. The reader
+     *  then shows a pin for it on the page. */
+    async function saveAsNote() {
+      const sctx = surfaceCtx[docId] || {};
+      const turns = cache[docId] || override[docId] || [];
+      const lastAnswer = [...turns].reverse()
+        .find((t) => t.role === 'assistant' && String(t.content || '').trim());
+      if (!lastAnswer) return toast('Nothing to save yet', 'error');
+      const sel = (sctx.getSelection && sctx.getSelection()) || '';
+      const page = (sctx.getCurrentPage && sctx.getCurrentPage()) || 1;
+      const answer = String(lastAnswer.content || '').trim();
+      const quoted = sel ? '> ' + sel.replace(/\n/g, '\n> ').slice(0, 2000) + '\n\n' : '';
+      const body = {
+        doc_id: docId,
+        doc_title: (ctx.getTitle && ctx.getTitle()) || 'Document',
+        page,
+        text: sel,
+        content: quoted + answer,
+      };
+      try {
+        await ctx.api('/api/study/notes/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        toast('Saved as note', 'success');
+        // Let the reader redraw its note pins + Notes pane.
+        window.dispatchEvent(new CustomEvent('study-notes-changed'));
+      } catch (err) {
+        toast('Could not save note: ' + err.message, 'error');
+      }
+    }
+
     async function sendCurrent() {
       const text = input.value.trim();
       if (!text) return;
+      // Wait for any in-flight attachment uploads to settle — otherwise a fast
+      // Send after picking several images would drop the ones still uploading.
+      const inflight = view.pending.filter((a) => a.ready).map((a) => a.ready);
+      if (inflight.length) await Promise.allSettled(inflight);
       input.value = '';
       const sctx = surfaceCtx[docId] || {};
       const pending = view.pendingTurn;
@@ -391,7 +514,10 @@
       // page chip → page scope, otherwise fall back to the live selection.
       const staged = view.pending.slice();
       const stagedPdf = staged.find((a) => a.kind === 'pdf');
-      const stagedPage = staged.find((a) => a.kind === 'page');
+      // Every staged page, in the order the reader attached them.
+      const stagedPages = staged.filter((a) => a.kind === 'page');
+      const pages = stagedPages.map((a) => a.page).filter((n) => Number.isFinite(n));
+      const stagedPage = stagedPages[0] || null;
       // Real uploaded attachments (page image / pasted image). The server
       // resolves these paths per-model via the /api/chat file pipeline.
       const files = staged.filter((a) => a.file && a.file.path).map((a) => ({ path: a.file.path }));
@@ -399,9 +525,9 @@
       const selection = (pending && pending.selection) != null
         ? pending.selection
         : ((sctx.getSelection && sctx.getSelection()) || '');
-      const page = (pending && pending.page) || (stagedPage && stagedPage.page)
+      const page = (pending && pending.page) || stagedPage && stagedPage.page
         || (sctx.getCurrentPage ? sctx.getCurrentPage() : 1);
-      const scope = (pending && pending.scope) || (stagedPdf ? 'doc' : (stagedPage ? 'page' : (selection ? 'selection' : 'doc')));
+      const scope = (pending && pending.scope) || (stagedPdf ? 'doc' : (stagedPages.length ? 'page' : (selection ? 'selection' : 'doc')));
       // Ground checkbox (note surface only) — read live before clearing chips.
       const groundEl = el.querySelector('[data-sa-ground]');
       const ground = !!(groundEl && groundEl.checked);
@@ -411,7 +537,9 @@
       // bubble records the attachment even after the chip row is cleared.
       let visible = text;
       if (stagedPdf) visible = '[Whole document]\n' + text;
-      else if (stagedPage) visible = `[Page ${page}]\n` + text;
+      else if (pages.length) {
+        visible = (pages.length > 1 ? `[Pages ${pages.join(', ')}]\n` : `[Page ${pages[0]}]\n`) + text;
+      }
       else if (scope === 'selection' && selection) visible = '> ' + selection.replace(/\n/g, '\n> ').slice(0, 400) + '\n\n' + text;
       // Adapter hook: let a non-document surface (note) reshape the visible
       // text and study_context. Everything else (thread, stream, tool cards)
@@ -420,6 +548,9 @@
         doc_id: docId,
         action: (pending && pending.action) || 'ask',
         scope, page, selection,
+        // Multi-page grounding: the backend slices EVERY listed page, not just
+        // `page`. Omitted for other scopes so the payload stays unchanged.
+        ...(scope === 'page' && pages.length ? { pages } : {}),
         ...configPayload(),
       };
       if (typeof ctx.buildContext === 'function') {
@@ -435,6 +566,7 @@
       try {
         await window.studyChat.send({
           docId,
+          docMapId: docMapIdFor(ctx, docId),
           threadId: threadIdFor(docId) || window.studyChat.ensureThread(docId),
           text: visible,
           context,
@@ -448,6 +580,7 @@
       // Keep the live DOM as-is (see runTurn): repainting from the DB here is
       // what made finished turns look reloaded rather than streamed.
       liveDirty[docId] = { tid: threadIdFor(docId), host: body };
+      await refreshCache(docId);
       if (typeof window._sableLoadChats === 'function') window._sableLoadChats();
     }
 
@@ -476,10 +609,12 @@
       else if (act === 'stop') stopStream(docId);
       else if (act === 'page') view.stagePage();
       else if (act === 'pdf') view.stageDoc();
+      else if (act === 'image') { if (fileInput) fileInput.click(); }
       else if (act === 'actions') {
         const menu = el.querySelector('[data-sa-menu]');
         if (menu) menu.classList.toggle('hidden');
       }
+      else if (act === 'save-note') { saveAsNote(); }
       else if (act === 'new') { resetThread(docId); }
       else if (act === 'close' && opts && opts.onClose) opts.onClose();
     });
@@ -499,14 +634,27 @@
     input.addEventListener('paste', (e) => {
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
+      const blobs = [];
       for (const item of items) {
         if (item.type && item.type.startsWith('image/')) {
           const blob = item.getAsFile();
-          if (blob) { e.preventDefault(); view.stageImageBlob(blob, 'pasted-image.png'); }
-          return;
+          if (blob) blobs.push(blob);
         }
       }
+      if (!blobs.length) return;
+      e.preventDefault();
+      blobs.forEach((b, i) => view.stageImageBlob(b, 'pasted-image-' + (i + 1) + '.png'));
     });
+
+    // File-picker path: stage EVERY picked image, not just the first. This is
+    // the only gesture that lets the user attach several files at once.
+    if (fileInput) {
+      fileInput.addEventListener('change', () => {
+        const picked = Array.from(fileInput.files || []);
+        fileInput.value = '';
+        picked.forEach((f, i) => view.stageImageBlob(f, f.name || ('image-' + (i + 1) + '.png')));
+      });
+    }
 
     // Drag-and-drop images onto the surface.
     el.addEventListener('dragover', (e) => e.preventDefault());
@@ -528,6 +676,14 @@
   function createPane(ctx) {
     const { el, view } = buildSurface(ctx, { compact: false });
     return { el, view };
+  }
+
+  /** Build a surface and hand back its element + view WITHOUT mounting it into
+   *  a floating popup. Used by the reader's answer card, which hosts the exact
+   *  same composer/thread UI inline — so each answer card gets its own thread
+   *  instead of sharing (and clobbering) the document's Study AI thread. */
+  function createSurface(ctx, opts) {
+    return buildSurface(ctx, Object.assign({ compact: true }, opts || {}));
   }
 
   /**
@@ -653,7 +809,7 @@
   }
 
   window.studyAI = {
-    mountFloating, mountSurface, createPane, resetThread, setThread, getThread,
+    mountFloating, mountSurface, createPane, createSurface, resetThread, setThread, getThread, refreshCache, releaseSurface,
     subscribe, renderThread, updateStream, loadModels, setConfig, configPayload,
     askAction, askFollowup, stopStream, isBusy, onBusy, currentCaps,
   };

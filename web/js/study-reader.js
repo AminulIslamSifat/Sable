@@ -58,6 +58,14 @@ let topicSearchBusy = false;
 let topicDebounce = null;
 let topicGen = 0;           // bumped on every open() — invalidates in-flight work
 let pendingSelection = null;
+// Timestamp until which selection detection stays muted. A press on the
+// highlight bar must not immediately rebuild it — see dismissHlBar().
+let hlBarSuppressedUntil = 0;
+// The exact selection text the bar was last dismissed for. Detection refuses to
+// re-show the bar for the SAME still-alive selection, so pressing Define and
+// then clicking inside the AI popup cannot resurrect the bar. Cleared whenever
+// the selection collapses, so re-selecting the same word works again.
+let hlBarDismissedText = '';
 let built = false;
 
 // ── AI state ─────────────────────────────────────────────────────────────────
@@ -66,6 +74,7 @@ let aiModels = [];                // [{id,label,thinking_modes}]
 let aiPersonas = [];              // [name, ...]
 let aiCurrent = null;             // card metadata: {action, scope, page, selection, rects, question, model}
 let aiNotes = [];                 // saved answers for this doc
+let docNotes = [];                // study notes anchored to this doc (pins)
 let aiConfigLoaded = false;
 let isRemote = false;   // true when reading a Drive doc not yet in the library
 let lastRemoteSaved = false;  // did the server auto-ingest this remote download?
@@ -407,6 +416,14 @@ function build() {
 function wire() {
   const $ = (id) => overlay.querySelector(id);
   const bar = $('#rdrHlBar');
+  // Mute detection for the whole press. Bound on pointerdown (which precedes
+  // the document's pointerup) so the mute is in place before detection runs;
+  // the click handler then does the actual hide.
+  bar.addEventListener('pointerdown', () => {
+    muteHlBarDetection(400);
+    // Remember WHICH selection was acted on, so it can never re-raise the bar.
+    hlBarDismissedText = (pendingSelection && pendingSelection.text) || '';
+  }, true);
 
   $("#rdrBack").addEventListener('click', close);
   $("#rdrPrev").addEventListener('click', () => scrollToPage(currentPage - 1));
@@ -627,9 +644,12 @@ function wire() {
   document.addEventListener('keydown', onKeydown);
   window.addEventListener('resize', debounce(() => { if (isOpen()) relayout(); }, 200));
 
-  // A note created/edited/deleted anywhere refreshes the Notes pane live.
+  // A note created/edited/deleted anywhere refreshes the Notes pane live AND
+  // re-pins the page markers (a note saved from the Study AI popup must show
+  // up on its page immediately).
   window.addEventListener('study-notes-changed', () => {
     if (isOpen() && readerTab === 'notes') renderNotesPane();
+    if (isOpen()) loadDocNotes();
   });
 }
 
@@ -808,6 +828,7 @@ async function open(docId, opts) {
   if (isRemote) await adoptRemoteDoc();
   aiNotes = meta.ai_notes || [];
   if (!isRemote) loadAiConfig();
+  if (!isRemote) loadDocNotes();
   // Load this document's topic siblings for the Topic side panel.
   if (!isRemote) loadTopicSiblings();
   // Anything still remote at this point genuinely has no library record to hang
@@ -916,13 +937,15 @@ function teardown() {
   clearTimeout(docCleanupTimer);
   for (const rec of pageEls) releaseCanvas(rec);
   if (pdfDoc) { try { pdfDoc.destroy(); } catch {} pdfDoc = null; }
-  if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
+  // The answer card owns its own surface; drop it with the document.
+  try { destroyAiCard(); } catch { /* not yet declared on first open */ }
   for (const pg of pageCache.values()) { try { pg.cleanup(); } catch { /* noop */ } }
   pageCache.clear();
   pageEls = [];
   pendingSelection = null;
   aiCurrent = null;
   aiNotes = [];
+  docNotes = [];
   activeRenders = 0;
   // AI pane/popup are per-document; drop them so the next open rebuilds.
   if (aiPane && aiPane.view && aiPane.view.dispose) { try { aiPane.view.dispose(); } catch {} }
@@ -1793,12 +1816,25 @@ function wordAtPoint(x, y, pageEl) {
 
 function onSelection(e) {
   if (!overlay || overlay.classList.contains('hidden')) return;
+  // Muted right after a bar press. Without this, the document-level pointerup
+  // AND the 120ms selectionchange debounce both re-ran detection, found the
+  // still-alive text selection, and popped the bar straight back up — which is
+  // why it kept disturbing you after every Define / Ask / Meaning press.
+  if (Date.now() < hlBarSuppressedUntil) return;
   const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return hideHlBar();
+  // A collapsed selection means the user clicked away — that is a genuinely
+  // fresh start, so forget which selection the bar was dismissed for.
+  if (!sel || sel.isCollapsed || !sel.rangeCount) {
+    hlBarDismissedText = '';
+    return hideHlBar();
+  }
 
   let range = sel.getRangeAt(0);
   let text = sel.toString().trim();
   if (!text) return hideHlBar();
+  // Same selection we already acted on: stay dismissed. This is what keeps the
+  // bar from creeping back over the AI popup after every Define / Ask press.
+  if (text === hlBarDismissedText) return hideHlBar();
 
   let node = range.startContainer;
   if (node.nodeType === 3) node = node.parentNode;
@@ -1876,6 +1912,15 @@ function hideHlBar() {
   const bar = overlay.querySelector('#rdrHlBar');
   if (bar) bar.classList.add('hidden');
   pendingSelection = null;
+}
+
+/** Mute re-detection briefly. Called on pointerdown — BEFORE the click handler
+ *  runs — so the mute is already in place when the document's pointerup and
+ *  the selectionchange debounce fire. Deliberately does NOT clear
+ *  pendingSelection: the click handler still needs it to know what was
+ *  selected. hideHlBar() clears it afterwards. */
+function muteHlBarDetection(ms) {
+  hlBarSuppressedUntil = Date.now() + (ms || 400);
 }
 
 // ── Document right-click menu ────────────────────────────────────────────────
@@ -2315,11 +2360,118 @@ function layoutHighlights() {
 // ── AI: on-page answer pins ──────────────────────────────────────────────────
 // Saved answers don't clutter the document — each one leaves a small sparkle
 // marker on the page. Press it to reopen the answer; press elsewhere to ignore.
+/** Load the study notes anchored to this document, so each one can leave a
+ *  pin on its page. Without this a note saved from the reader was invisible on
+ *  the document itself — it only existed in the Notes pane. */
+async function loadDocNotes() {
+  if (!meta || isRemote) { docNotes = []; return; }
+  try {
+    const items = await api('/api/study/notes?doc_id=' + encodeURIComponent(meta.id));
+    docNotes = Array.isArray(items) ? items : [];
+  } catch { docNotes = []; }
+  layoutAiNotes();
+}
+
+/** Wire a pin as press-and-drag. A plain press still fires `onPress`; a drag
+ *  moves the pin and remembers where it was put. Used by BOTH pin kinds — the
+ *  answer pins used to be click-only, so only the note pin could be moved. */
+function makePinDraggable(pin, posKey, onPress, rec, PW, PH, PIN, PAD) {
+  let start = null;
+  let moved = false;
+  let cancelled = false;
+  pin.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    // A second finger landing mid-drag must not restart the gesture and
+    // clobber the baseline.
+    if (start) return;
+    e.preventDefault();
+    try { pin.setPointerCapture(e.pointerId); } catch { /* stale pointer id */ }
+    dragActive = true;
+    cancelled = false;
+    start = {
+      y: e.clientY,
+      top: parseFloat(pin.style.top) || 0,
+    };
+    moved = false;
+  });
+  pin.addEventListener('pointermove', (e) => {
+    if (!start) return;
+    const dy = e.clientY - start.y;
+    // VERTICAL only. x is the shared margin column, so a horizontal drag is
+    // not a gesture — letting pins move sideways is exactly what misaligned
+    // the two kinds in the first place. A few pixels of slop keeps a shaky
+    // click from registering as a drag.
+    if (!moved && Math.abs(dy) < 4) return;
+    moved = true;
+    const maxY = Math.max(PAD, PH - PIN - PAD);
+    pin.style.top = Math.max(PAD, Math.min(start.top + dy, maxY)) + 'px';
+    pin.style.cursor = 'grabbing';
+  });
+  const finish = (e, wasCancelled) => {
+    if (!start) return;
+    try { pin.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+    pin.style.cursor = '';
+    dragActive = false;
+    if (moved) {
+      // Remember as a fraction of the page box, so it survives zoom + resize.
+      // Only y is persisted; x is the shared column and is recomputed on every
+      // layout, so it can never drift between the two pin kinds.
+      pinPositions[posKey] = {
+        page: rec.n,
+        y: (parseFloat(pin.style.top) || 0) / PH,
+      };
+      savePinPositions();
+    } else if (!wasCancelled && !cancelled) {
+      // Press without movement = the pin's normal action. A CANCELLED pointer
+      // (browser gesture, scroll takeover) must NOT fall through here — that
+      // turned an aborted touch into a spurious open.
+      try { onPress(); } catch { /* action is best-effort */ }
+    }
+    start = null;
+    moved = false;
+    cancelled = false;
+    // A rebuild was requested while we were dragging — honour it now that the
+    // gesture is over and the node is safe to replace.
+    if (pendingPinRelayout) { pendingPinRelayout = false; layoutAiNotes(); }
+  };
+  pin.addEventListener('pointerup', (e) => finish(e, false));
+  pin.addEventListener('pointercancel', (e) => { cancelled = true; finish(e, true); });
+  // Belt and braces: if capture is lost without an up/cancel (the element was
+  // detached mid-drag), settle the gesture so `dragActive` can't stick true.
+  pin.addEventListener('lostpointercapture', (e) => finish(e, true));
+}
+
+/** True while a note pin is being dragged. `layoutAiNotes` rebuilds pins with
+ *  `layer.innerHTML = ''`, which would destroy the node mid-gesture and strand
+ *  the drag — so a rebuild is deferred until the gesture settles. */
+let dragActive = false;
+let pendingPinRelayout = false;
+
+/** Where each note pin was dragged to, keyed by note id. Persisted per
+ *  browser, like the other reader view state. */
+let pinPositions = {};
+try { pinPositions = JSON.parse(localStorage.getItem('sable_note_pins') || '{}') || {}; }
+catch { pinPositions = {}; }
+function savePinPositions() {
+  try { localStorage.setItem('sable_note_pins', JSON.stringify(pinPositions)); } catch { /* private mode */ }
+}
+
 function layoutAiNotes() {
   if (!meta || !pageEls.length) return;
+  // Never tear down pins mid-drag: the dragged node would be destroyed, its
+  // pointermove would stop, and the position would never be saved. Re-run once
+  // the gesture settles instead.
+  if (dragActive) { pendingPinRelayout = true; return; }
   const byPage = {};
   for (const n of aiNotes) {
     if (n.page) (byPage[n.page] = byPage[n.page] || []).push(n);
+  }
+  // Study notes pin to the page named by their first document reference.
+  const notesByPage = {};
+  for (const n of docNotes) {
+    const ref = (n.refs || []).find((r) => r && r.doc_id === meta.id);
+    const pg = (ref && ref.page) || n.page || 0;
+    if (pg) (notesByPage[pg] = notesByPage[pg] || []).push({ note: n, ref });
   }
   pageEls.forEach((rec) => {
     const layer = rec.el.querySelector('.rdr-ai-layer');
@@ -2334,22 +2486,77 @@ function layoutAiNotes() {
     const PW = rec.el.clientWidth || 1;
     const PH = rec.el.clientHeight || 1;
     const PIN = 20, PAD = 4, STEP = 23;
+    // ONE column for both pin kinds. They used to sit in two different columns
+    // (answers at the far edge, notes nudged left by PIN + 4), which read as a
+    // ragged double row. Same x for everything; only y varies.
     const x = Math.max(PAD, PW - PIN - PAD);
+
+    // Build ONE ordered list of pins per page: both kinds, sorted together by
+    // their anchor's y. Stacking them in a single pass is what keeps them from
+    // overlapping, and lets an answer pin and a note pin share the column
+    // without either kind being pushed out of alignment.
+    const items = [];
+    for (const note of notes) {
+      items.push({
+        kind: 'answer',
+        posKey: 'ai:' + note.id,
+        anchor: (note.rects && note.rects[0]) || { y: 0.03 },
+        title: `${AI_ACTION_LABELS[note.action] || 'AI'} — press to view`,
+        icon: 'sparkles',
+        cls: 'rdr-ai-pin',
+        onPress: () => viewSavedNote(note.id),
+      });
+    }
+    for (const { note, ref } of notesByPage[rec.n] || []) {
+      items.push({
+        kind: 'note',
+        posKey: 'note:' + note.id,
+        anchor: (ref && ref.rects && ref.rects[0]) || { y: 0.03 },
+        title: `Note — ${note.title || 'Untitled'}`,
+        icon: 'sticky-note',
+        cls: 'rdr-ai-pin rdr-note-pin',
+        onPress: () => {
+          setReaderTab('notes');
+          if (window.studyNotes) {
+            window.studyNotes.openEditor(note.id, { kind: 'reader', mount: notesPaneHost() });
+          }
+        },
+      });
+    }
+    items.sort((a, b) => (a.anchor.y || 0) - (b.anchor.y || 0));
+
     let prevY = -Infinity;
-    notes.forEach((note) => {
-      const anchor = (note.rects && note.rects[0]) || { y: 0.03 };
+    items.forEach((item) => {
+      // A pin the user has dragged keeps its saved offset — but only on the
+      // page it was dragged on. The fraction is page-relative, so replaying it
+      // on a different page would drop the pin somewhere arbitrary.
+      // Fall back to the pre-namespace key (a bare note id) so positions saved
+      // before pins were unified still apply instead of snapping back.
+      const raw = pinPositions[item.posKey]
+        || (item.kind === 'note' ? pinPositions[item.posKey.slice(5)] : null);
+      const saved = (raw && (!raw.page || raw.page === rec.n)) ? raw : null;
       // Centre on the anchor's line, then push clear of the previous pin.
-      let y = anchor.y * PH - PIN / 2;
+      let y = (item.anchor.y || 0.03) * PH - PIN / 2;
       y = Math.max(PAD, Math.min(y, PH - PIN - PAD));
       if (y < prevY + STEP) y = Math.min(prevY + STEP, PH - PIN - PAD);
       prevY = y;
+      // x is ALWAYS the shared column. A saved x — whether from before the
+      // columns were unified or from a horizontal drag — would reintroduce the
+      // misalignment, so it is deliberately ignored. Pins move vertically only.
+      const px = x;
+      // y IS restored, clamped: the saved fraction is only valid for the page
+      // box it was captured against, and a shorter box would put the pin below
+      // the page (which clips overflow).
+      const py = saved ? Math.max(PAD, Math.min(saved.y * PH, PH - PIN - PAD)) : y;
       const pin = document.createElement('button');
-      pin.className = 'rdr-ai-pin';
-      pin.style.left = `${x}px`;
-      pin.style.top = `${y}px`;
-      pin.title = `${AI_ACTION_LABELS[note.action] || 'AI'} — press to view`;
-      pin.innerHTML = '<i data-lucide="sparkles" class="icon-lucide"></i>';
-      pin.addEventListener('click', (e) => { e.stopPropagation(); viewSavedNote(note.id); });
+      pin.className = item.cls;
+      pin.style.left = `${px}px`;
+      pin.style.top = `${py}px`;
+      pin.title = item.title;
+      pin.innerHTML = `<i data-lucide="${item.icon}" class="icon-lucide"></i>`;
+      // Both kinds drag. The pin only fires its action on a press that did not
+      // move, so a drag never opens anything.
+      makePinDraggable(pin, item.posKey, item.onPress, rec, PW, PH, PIN, PAD);
       layer.appendChild(pin);
     });
   });
@@ -2442,13 +2649,23 @@ function toggleAiConfig() {
 }
 
 // ── AI: running an answer ────────────────────────────────────────────────────
-// The card is a COMPACT VIEW of the document's shared Study AI thread — the
-// same store the Chat pane and floating popup use — so a question asked here
-// shows up there too, and vice-versa. Rendering, streaming and the SSE loop
-// all live in study-ai.js; this file only drives the card chrome.
+// The card owns its OWN thread — one per Define / Ask / Explain press — and is
+// deliberately isolated from the document's Study AI thread (the Chat pane and
+// floating popup). It reuses the shared surface for rendering, streaming and
+// the SSE loop, but under a synthetic map key, so a question asked here never
+// appears in the Study AI popup and vice-versa.
 
-let aiUnsub = null;   // detaches the card's subscription to the shared thread
-let aiBusyUnsub = null; // detaches the card's busy-state mirror (Send ⇄ Stop)
+// ── Answer card: its OWN thread, separate from Study AI ──────────────────────
+// Every Define / Ask / Explain press gets a FRESH thread, so answers never pile
+// onto one another. The card also never touches the document's Study AI thread:
+// the floating popup and the Chat pane keep that one to themselves.
+//
+// The trick is that a surface is keyed by ctx.getDocId() — so the card hands
+// back a UNIQUE synthetic key (e.g. "card7-<docId>") instead of the real doc
+// id. Its thread, host and cache all live under that key, while
+// ctx.getGroundDocId() still returns the real document for the request.
+let aiCard = null;       // { el, view, key } — the mounted card surface
+let aiCardSeq = 0;       // monotonic, so every card gets a unique thread key
 
 /** Context object study-ai.js needs from the reader. */
 function aiCtx() {
@@ -2463,35 +2680,76 @@ function aiCtx() {
   };
 }
 
-/** Show the card bound to the shared thread, replacing any prior binding. */
-function showAiCard(title, model) {
+/** Context for ONE answer card, keyed away from the Study AI thread.
+ *
+ *  Two namespaces are in play and they must NOT be confused:
+ *    - `key`          → the in-memory map key (threads, caches, busy flags).
+ *                       Synthetic and unique per card, so a card never touches
+ *                       the Study AI popup's thread.
+ *    - `docId`        → the REAL document. Thread ids are minted under it, the
+ *                       request grounds on it, and the sidebar groups by it.
+ *
+ *  A thread id is `study-<docId>-<rand>`. The backend links a chat to its
+ *  document with `^study-([0-9a-f]{32})-`, so a thread minted under `key`
+ *  would be orphaned from its document the moment it was persisted. */
+function aiCardCtx(key) {
+  const docId = (meta && meta.id) || '';
+  let tid = '';
+  return {
+    getDocId: () => key,
+    getGroundDocId: () => docId,
+    getTitle: () => (meta && meta.title) || 'Document',
+    getCurrentPage: () => currentPage,
+    getSelection: () => (pendingSelection && pendingSelection.text) || (noteAnchor && noteAnchor.text) || '',
+    api: (path, opts) => api(path, opts),
+    toast: (m, t) => toast(m, t),
+    // One thread per card, minted on demand. `newDetachedThread` (rather than
+    // ensureThread) keeps this from becoming the document's ACTIVE thread —
+    // otherwise the next Study AI popup would reopen this one-off answer.
+    threadId: () => (tid || (tid = window.studyChat.newDetachedThread(docId))),
+    // A focused answer card: no page/PDF/image attachments, no second "new
+    // chat" button (the card header owns that), no study-note button (the
+    // Study AI popup owns that).
+    caps: { page: false, pdf: false, image: false, paste: false, saveNote: false, newChat: false },
+  };
+}
+
+/** Drop the mounted card surface. The thread it created stays in the DB. */
+function destroyAiCard() {
+  if (!aiCard) return;
+  const key = aiCard.key;
+  if (aiCard.view && aiCard.view.dispose) { try { aiCard.view.dispose(); } catch { /* noop */ } }
+  if (key && window.studyAI && window.studyAI.releaseSurface) {
+    try { window.studyAI.releaseSurface(key); } catch { /* noop */ }
+  }
+  aiCard = null;
+}
+
+/** Show the answer card. `forceNew` starts a brand-new thread — which is what
+ *  every Define / Ask / Explain press does, so consecutive answers stay in
+ *  separate conversations instead of stacking onto one. */
+function showAiCard(title, model, forceNew) {
   const card = overlay.querySelector('#rdrAiCard');
+  const body = overlay.querySelector('#rdrAiCardBody');
   card.classList.remove('hidden');
   overlay.querySelector('#rdrAiCardTitle').textContent = title || 'Study AI';
   overlay.querySelector('#rdrAiCardModel').textContent = model || (aiConfig?.model || '');
-  overlay.querySelector('#rdrAiFollowup').value = '';
-  if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
-  const body = overlay.querySelector('#rdrAiCardBody');
-  const docId = (meta && meta.id) || '';
-  if (window.studyAI) {
-    window.studyAI.renderThread(body, docId);
-    // Re-render on every store change; patch the last bubble during a stream.
-    const sub = () => window.studyAI.renderThread(body, docId);
-    sub.updateStream = (t) => window.studyAI.updateStream(body, t);
-    aiUnsub = window.studyAI.subscribe(docId, sub);
-    // Mirror the shared busy state onto this card's composer so a turn started
-    // anywhere (card, popup, pane) shows Stop here too.
-    if (window.studyAI.onBusy) {
-      if (aiBusyUnsub) { try { aiBusyUnsub(); } catch { /* noop */ } }
-      const send = overlay.querySelector('#rdrAiFollowupSend');
-      const stop = overlay.querySelector('#rdrAiStop');
-      aiBusyUnsub = window.studyAI.onBusy(docId, (busy) => {
-        if (send) send.style.display = busy ? 'none' : '';
-        if (stop) stop.style.display = busy ? '' : 'none';
-      });
-    }
-  }
-  if (window.lucide) window.lucide.createIcons();
+  if (!forceNew && aiCard) { if (window.lucide) window.lucide.createIcons(); return; }
+  // Replacing the card must also stop whatever the old one was streaming —
+  // otherwise its SSE loop keeps writing into a detached host.
+  if (aiCard && window.studyAI) { try { window.studyAI.stopStream(aiCard.key); } catch { /* noop */ } }
+  destroyAiCard();
+  body.innerHTML = '';
+  if (!window.studyAI) return;
+  const key = 'card' + (++aiCardSeq) + '-' + ((meta && meta.id) || 'doc');
+  const built = window.studyAI.createSurface(aiCardCtx(key), { onClose: closeAiCard });
+  aiCard = { el: built.el, view: built.view, key };
+  body.appendChild(built.el);
+  // The card's legacy follow-up footer is redundant now that the mounted
+  // surface carries its own composer — hide it so there is exactly one input.
+  const foot = overlay.querySelector('.rdr-ai-card-foot');
+  if (foot) foot.style.display = 'none';
+  if (window.lucide) window.lucide.createIcons({ nodes: card.querySelectorAll('[data-lucide]') });
 }
 
 // Async because the ask action opens a dialog. Callers are event handlers that
@@ -2515,8 +2773,11 @@ async function runAi({ action, scope, page = 0, selection = '', rects = null, qu
     action, scope, page, selection, rects, question,
     model: aiConfig?.model || '',
   };
-  showAiCard(AI_ACTION_LABELS[action] || 'AI', aiCurrent.model);
-  window.studyAI.askAction(aiCtx(), {
+  // ALWAYS a fresh thread, so this answer never joins the previous one — and
+  // never joins the Study AI thread either (the card key isolates it).
+  showAiCard(AI_ACTION_LABELS[action] || 'AI', aiCurrent.model, true);
+  if (!aiCard) return;
+  window.studyAI.askAction(aiCardCtx(aiCard.key), {
     action: action,
     label: AI_ACTION_LABELS[action] || action,
     question: question,
@@ -2527,9 +2788,8 @@ async function runAi({ action, scope, page = 0, selection = '', rects = null, qu
 }
 
 function closeAiCard() {
-  if (window.studyAI && meta) window.studyAI.stopStream(meta.id);
-  if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
-  if (aiBusyUnsub) { try { aiBusyUnsub(); } catch { /* noop */ } aiBusyUnsub = null; }
+  if (window.studyAI && aiCard) window.studyAI.stopStream(aiCard.key);
+  destroyAiCard();
   overlay.querySelector('#rdrAiCard').classList.add('hidden');
   aiCurrent = null;
 }
@@ -2610,19 +2870,19 @@ function closeDictCard() {
   if (card) card.classList.add('hidden');
 }
 
-/** Start a fresh thread in the card, keeping the current document anchors. */
+/** Start a fresh thread in the card, keeping the current document anchors.
+ *  The card's key is unique per card, so this never disturbs Study AI. */
 function newAiChat() {
-  if (!meta || !window.studyAI) return;
-  window.studyAI.stopStream(meta.id);
-  window.studyAI.resetThread(meta.id);
-  overlay.querySelector('#rdrAiFollowup').value = '';
+  if (!meta || !window.studyAI || !aiCard) return;
+  window.studyAI.stopStream(aiCard.key);
+  window.studyAI.resetThread(aiCard.key);
   aiCurrent = null;
 }
 
 function sendFollowup() {
   const input = overlay.querySelector('#rdrAiFollowup');
   const q = input.value.trim();
-  if (!q || !meta || !window.studyAI) return;
+  if (!q || !meta || !window.studyAI || !aiCard) return;
   input.value = '';
   if (!aiCurrent) {
     aiCurrent = { action: 'ask', scope: 'doc', page: currentPage, selection: '', rects: null, question: q, model: aiConfig?.model || '' };
@@ -2631,7 +2891,7 @@ function sendFollowup() {
     aiCurrent.action = 'ask';
   }
   overlay.querySelector('#rdrAiCardTitle').textContent = 'Ask';
-  window.studyAI.askFollowup(aiCtx(), q, {
+  window.studyAI.askFollowup(aiCardCtx(aiCard.key), q, {
     action: 'ask', scope: aiCurrent.scope, page: aiCurrent.page, selection: aiCurrent.selection,
   });
 }
@@ -2640,8 +2900,16 @@ function sendFollowup() {
 
 async function saveAiNote() {
   if (!meta) return;
-  // The turns live in the shared thread now, not on aiCurrent.
-  const turns = (window.studyAI && window.studyAI.getThread(meta.id)) || [];
+  // The card owns its own thread, keyed by aiCard.key — NOT the document's
+  // Study AI thread. Pull it fresh from the DB first: a streamed turn never
+  // repaints from the DB (that guard is what stops the "reloaded" flash), so
+  // the local cache can still be empty with a finished answer on screen.
+  const key = (aiCard && aiCard.key) || '';
+  if (window.studyAI && window.studyAI.refreshCache && key) {
+    try { await window.studyAI.refreshCache(key); } catch { /* best-effort */ }
+  }
+  // The turns live in the card's thread now, not on aiCurrent.
+  const turns = (key && window.studyAI && window.studyAI.getThread(key)) || [];
   if (!turns.some((t) => t.role === 'assistant' && t.content)) {
     return toast('Nothing to save yet', 'error');
   }
@@ -2686,9 +2954,11 @@ function viewSavedNote(id) {
     selection: note.text, rects: note.rects, question: note.question,
     model: note.model,
   };
-  // Load the saved thread into the shared store, then show it in the card.
-  if (window.studyAI && meta) window.studyAI.setThread(meta.id, turns);
-  showAiCard(AI_ACTION_LABELS[note.action] || note.action, note.model || '');
+  // Open a FRESH card and load the saved thread into ITS key. Reusing the
+  // current card (or the shared Study AI thread) would replace whatever the
+  // user was already looking at with this saved answer.
+  showAiCard(AI_ACTION_LABELS[note.action] || note.action, note.model || '', true);
+  if (aiCard && window.studyAI) window.studyAI.setThread(aiCard.key, turns);
 }
 
 // ── Doc / Chat toggle + Study AI pane ────────────────────────────────────────
@@ -2771,6 +3041,9 @@ function toggleNotePopup() {
     // (hideHlBar clears pendingSelection), so prefer it when present.
     getPendingSelection: () => noteAnchor || pendingSelection,
     getPaneHost: notesPaneHost,
+    // The editor mounts into the Notes pane, which is hidden on the Doc tab —
+    // switch to it first or the editor opens invisibly.
+    revealPane: () => setReaderTab('notes'),
     closePopup: closeNotePopup,
   });
 }

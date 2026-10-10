@@ -532,14 +532,49 @@
   display: none !important;
 }
 /* Opens up-and-left from the floating launcher. */
+/* Geometry mirrors .rdr-ai-launch .sa-popup exactly — same full-height side
+   panel — so the quick-note taker and Study AI read as one family of surfaces
+   instead of a tiny card next to a giant one. */
 .rdr-note-pop {
-  position: absolute; right: 22px; bottom: 58px; z-index: 61;
-  width: 340px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 12px; overflow: hidden;
-  box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+  position: fixed;
+  top: 65px;
+  right: 10px;
+  bottom: 10px;
+  left: auto;
+  width: 550px;
+  max-width: calc(100vw - 20px);
+  z-index: 71;
+  background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: 16px; overflow: hidden;
+  display: flex; flex-direction: column;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
 }
+/* The capture form fills the panel so the textarea takes all the slack and the
+   footer sits on the bottom edge. Every level needs an explicit `flex: 1` +
+   `min-height: 0`: a column flex child defaults to flex-grow 0, so it sizes to
+   its content and leaves the rest of the panel empty — which is exactly why the
+   Save button floated mid-panel with dead space beneath it. */
 .sn-cap { display: flex; flex-direction: column; }
+.rdr-note-pop > .sn-cap {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+.rdr-note-pop .sn-cap-body {
+  flex: 1 1 auto;
+  min-height: 200px;
+  height: auto;
+  resize: none;
+  /* panels.css declares a GLOBAL `textarea { max-height: 200px }` and it was
+     clamping this box no matter what flex height was set — which is why the
+     input stayed short and the footer floated with dead space beneath it.
+     Same override the note editor's body already carries. */
+  max-height: none;
+}
+/* The footer is the last row — never let it grow. */
+.rdr-note-pop .sn-cap-foot { flex: 0 0 auto; }
+.rdr-note-pop .sn-cap-head,
+.rdr-note-pop .sn-cap-anchor { flex: 0 0 auto; }
 .sn-cap-head {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 13px; border-bottom: 1px solid var(--border-soft);
