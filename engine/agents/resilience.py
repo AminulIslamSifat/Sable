@@ -549,48 +549,6 @@ class MainChatGuard:
         "3. Explain what is failing and ask for guidance"
     )
 
-    # Default (tag-based) malformed warnings
-    MALFORMED_NO_OPEN = (
-        _GUARD_PFX + "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
-        "Wrap tool calls in <action>...</action> tags."
-    )
-
-    MALFORMED_NO_CLOSE = (
-        _GUARD_PFX + "[FORMAT WARNING] Found an opening tag without a closing tag. "
-        "Every <action> block must be properly closed with </action>."
-    )
-
-    MALFORMED_JSON_OUTSIDE = (
-        _GUARD_PFX + "[FORMAT WARNING] Tool call JSON was found outside <action> tags. "
-        "All tool calls MUST be wrapped in <action>[...]</action>."
-    )
-
-    MALFORMED_INVALID_JSON = (
-        _GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
-        "Fix the JSON syntax inside <action> tags and try again."
-    )
-
-    # DeepSeek-specific warnings (uses <action> tags per _TOOL_FORMAT_QWEN)
-    _DEEPSEEK_MALFORMED_NO_OPEN = (
-        _GUARD_PFX + "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
-        "Wrap tool calls in <action>...</action> tags."
-    )
-
-    _DEEPSEEK_MALFORMED_NO_CLOSE = (
-        _GUARD_PFX + "[FORMAT WARNING] Found an opening tag without a closing tag. "
-        "Every <action> block must be properly closed with </action>."
-    )
-
-    _DEEPSEEK_MALFORMED_JSON_OUTSIDE = (
-        _GUARD_PFX + "[FORMAT WARNING] Tool call JSON was found outside <action> tags. "
-        "All tool calls MUST be wrapped in <action>[...]</action>."
-    )
-
-    _DEEPSEEK_MALFORMED_INVALID_JSON = (
-        _GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
-        "Fix the JSON syntax inside <action> tags and try again."
-    )
-
     def __init__(self, provider: str | None = None):
         self._provider = provider
         self._command_history: list[str] = []
@@ -600,23 +558,58 @@ class MainChatGuard:
         self._malformed_warned: bool = False
         self._incomplete_warned: bool = False
 
+    def _format_tags(self) -> tuple[str, str, str]:
+        """Resolve (open_tag, close_tag, example) for the ACTIVE tool format.
+
+        Reads the SAME resolver the system prompt uses, so the guard's guidance
+        always matches whatever wrapper the model was told to emit — including a
+        user override from the settings UI. Falls back to the <action> style.
+        """
+        try:
+            from connectors.common.instruction_builder import get_tool_format_tags
+            return get_tool_format_tags(self._provider)
+        except Exception:
+            _ao, _ac = "<action>", "</action>"
+            return (_ao, _ac, _ao + '[{"name": "tool_name", "arguments": {...}}]' + _ac)
+
+    def _wrapper_phrase(self) -> str:
+        """Human phrase for the active wrapper (or bare-array wording if tagless)."""
+        open_tag, close_tag, _ = self._format_tags()
+        if open_tag and close_tag:
+            return f"{open_tag}...{close_tag}"
+        return "a bare JSON array (no wrapper tags)"
+
     def _get_malformed_warning(self, kind: str) -> str:
-        """Return provider-appropriate malformed warning message."""
-        if self._provider == "deepseek":
-            mapping = {
-                "no_open": self._DEEPSEEK_MALFORMED_NO_OPEN,
-                "no_close": self._DEEPSEEK_MALFORMED_NO_CLOSE,
-                "json_outside": self._DEEPSEEK_MALFORMED_JSON_OUTSIDE,
-                "invalid_json": self._DEEPSEEK_MALFORMED_INVALID_JSON,
-            }
-        else:
-            mapping = {
-                "no_open": self.MALFORMED_NO_OPEN,
-                "no_close": self.MALFORMED_NO_CLOSE,
-                "json_outside": self.MALFORMED_JSON_OUTSIDE,
-                "invalid_json": self.MALFORMED_INVALID_JSON,
-            }
-        return mapping.get(kind, self.MALFORMED_INVALID_JSON)
+        """Return a format-correct malformed warning for the active tool format.
+
+        Dynamically reflects the model's instructed wrapper (settings override or
+        per-provider default) instead of hardcoding <action>.
+        """
+        open_tag, close_tag, example = self._format_tags()
+        wrapper = self._wrapper_phrase()
+
+        if kind == "no_open":
+            return (
+                self._GUARD_PFX + "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
+                f"Wrap tool calls in {wrapper}."
+            )
+        if kind == "no_close":
+            _close = close_tag or "its matching close tag"
+            _open = open_tag or "tool call"
+            return (
+                self._GUARD_PFX + "[FORMAT WARNING] Found an opening tag without a closing tag. "
+                f"Every {_open} block must be properly closed with {_close}."
+            )
+        if kind == "json_outside":
+            return (
+                self._GUARD_PFX + "[FORMAT WARNING] Tool call JSON was found outside the required wrapper. "
+                f"All tool calls MUST be wrapped as {wrapper}. Example: {example}"
+            )
+        # invalid_json (and any unknown kind)
+        return (
+            _GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
+            f"Fix the JSON syntax inside {wrapper} and try again."
+        )
 
     def record_command(self, tag_name: str, tag_content: str) -> None:
         """Record a command execution for loop detection."""
@@ -662,6 +655,15 @@ class MainChatGuard:
         """
         if self._malformed_warned:
             return None
+        # Native function-calling / no-prompt-format modes emit bare JSON (or no
+        # text tool calls at all). There is no text wrapper to validate, so skip —
+        # otherwise we'd flag the model's CORRECT output as malformed.
+        try:
+            from connectors.common.instruction_builder import get_tool_format_name
+            if get_tool_format_name(self._provider) in ("native", "none"):
+                return None
+        except Exception:
+            pass
         import re as _re
         # Support both <action> and <tool_call wrappers
         open_pat = r"<\s*(?:action|tool_call)\s*>"
@@ -729,22 +731,13 @@ class MainChatGuard:
                         len(raw_text), block[:200], raw_text[:300],
                     )
                     self._malformed_warned = True
-                    if self._provider == "deepseek":
-                        return (
-                            self._GUARD_PFX + '[FORMAT WARNING] Invalid JSON in tool call.\n'
-                            + _diagnose_json_failure(block) + '\n\n'
-                            + 'Fix the JSON syntax inside <action> tags and try again.'
-                        )
-                    else:
-                        diagnosis = _diagnose_json_failure(block)
-                        tc_open = chr(60) + 'tool_call' + chr(62)
-                        tc_close = chr(60) + '/tool_call' + chr(62)
-                        fmt_ex = chr(123) + chr(34) + 'name' + chr(34) + ': ' + chr(34) + 'tool' + chr(34) + chr(125)
-                        return (
-                            self._GUARD_PFX + '[FORMAT WARNING] Invalid JSON in ' + tc_open + ' block.' + chr(10)
-                            + diagnosis + chr(10) + chr(10)
-                            + 'Expected: ' + tc_open + fmt_ex + tc_close
-                        )
+                    wrapper = self._wrapper_phrase()
+                    _example = self._format_tags()[2]
+                    return (
+                        self._GUARD_PFX + f"[FORMAT WARNING] Invalid JSON in tool call ({wrapper}).\n"
+                        + _diagnose_json_failure(block) + "\n\n"
+                        + f"Fix the JSON syntax inside {wrapper} and try again. Example: {_example}"
+                    )
 
         return None
 

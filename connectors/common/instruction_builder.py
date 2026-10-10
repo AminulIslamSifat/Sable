@@ -313,6 +313,83 @@ def get_tool_format(provider: str | None = None) -> str:
     return ""
 
 
+# Human-readable wrapper info per named format: (open_tag, close_tag, example).
+# Consumers that render format-correct guidance (e.g. the resilience guard's
+# malformed warnings) read this instead of hardcoding "<action>".
+_NAMED_FORMAT_DESCRIPTIONS: dict[str, tuple[str, str, str]] = {
+    "qwen_json": (
+        _ACTION_OPEN,
+        _ACTION_CLOSE,
+        _ACTION_OPEN + '[{"name": "tool_name", "arguments": {...}}]' + _ACTION_CLOSE,
+    ),
+    "hermes": (
+        _TC_OPEN,
+        _TC_CLOSE,
+        _TC_OPEN + '<invoke name="tool_name"><parameter name="arg">value</parameter></invoke>' + _TC_CLOSE,
+    ),
+    "dsml": (
+        "<\uff5cDSML\uff5ctool_calls>",
+        "</\uff5cDSML\uff5ctool_calls>",
+        "a DSML tool_calls block",
+    ),
+    "mimo": (
+        _TC_OPEN,
+        _TC_CLOSE,
+        _TC_OPEN + "<function=tool_name><parameter=arg>value</parameter></function>" + _TC_CLOSE,
+    ),
+    "native": (
+        "[",
+        "]",
+        '[{"name": "tool_name", "arguments": {...}}]',
+    ),
+    "none": ("", "", "native API function calling"),
+    # Empty name = no override set; fall back to the qwen/action style.
+    "": (
+        _ACTION_OPEN,
+        _ACTION_CLOSE,
+        _ACTION_OPEN + '[{"name": "tool_name", "arguments": {...}}]' + _ACTION_CLOSE,
+    ),
+}
+
+# Reverse-map so provider -> format NAME is derived, never hand-maintained.
+_FORMAT_STR_TO_NAME: dict[str, str] = {v: k for k, v in _NAMED_TOOL_FORMATS.items()}
+_PROVIDER_FORMAT_NAMES: dict[str, str] = {
+    p: _FORMAT_STR_TO_NAME.get(f, "") for p, f in _PROVIDER_TOOL_FORMATS.items()
+}
+
+
+def get_tool_format_name(provider: str | None = None) -> str:
+    """Return the NAME of the active tool format (e.g. ``qwen_json``, ``hermes``).
+
+    Same resolution order as :func:`get_tool_format`, but returns the settings
+    key so consumers can render format-correct guidance without parsing prose.
+    """
+    try:
+        _settings_path = Path(__file__).resolve().parent.parent.parent / "system" / "settings.json"
+        if _settings_path.is_file():
+            import json as _json
+            _settings = _json.loads(_settings_path.read_text(encoding="utf-8"))
+            _override = _settings.get("tool_call_format", "")
+            if _override and _override in _NAMED_TOOL_FORMATS:
+                return _override
+    except Exception:
+        pass
+
+    if provider and provider in _PROVIDER_FORMAT_NAMES:
+        return _PROVIDER_FORMAT_NAMES[provider]
+    return ""
+
+
+def get_tool_format_tags(provider: str | None = None) -> tuple[str, str, str]:
+    """Return ``(open_tag, close_tag, example)`` for the active tool format.
+
+    Empty ``open_tag``/``close_tag`` means the format uses no text wrapper
+    (bare JSON array for ``native``, or no prompt format at all for ``none``).
+    """
+    _name = get_tool_format_name(provider)
+    return _NAMED_FORMAT_DESCRIPTIONS.get(_name, _NAMED_FORMAT_DESCRIPTIONS[""])
+
+
 def build_instructions(
     project_id: str | None = None,
     provider: str | None = None,

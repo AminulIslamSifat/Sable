@@ -64,6 +64,20 @@ logger = logging.getLogger("sable.chatgpt_ghost")
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 CHATGPT_URL = "https://chatgpt.com/"
 
+# ChatGPT migrated the composer (~2026-10) from `<textarea id="prompt-textarea">`
+# to a ProseMirror contenteditable div (role="textbox", aria-label="Ask ChatGPT").
+# Match BOTH so a gradual A/B rollout can never break the ghost again.
+COMPOSER_SEL = (
+    '#prompt-textarea, '
+    'div.ProseMirror[contenteditable="true"], '
+    'div[role="textbox"][contenteditable="true"]'
+)
+# JS-side mirror of COMPOSER_SEL (querySelector accepts a comma list).
+_JS_COMPOSER_SEL = (
+    '#prompt-textarea, div.ProseMirror[contenteditable="true"], '
+    'div[role="textbox"][contenteditable="true"]'
+)
+
 # This ghost browser runs HEADED (ProfileHub.acquire(force_headed=True)).
 _LAUNCH_ARGS = [
     "--no-sandbox",
@@ -136,7 +150,7 @@ JS_HIJACK_INSTALL = r"""
     // before the SPA read it, the send was aborted, and /f/conversation/prepare
     // fired with NO POST /f/conversation following. Intermittent by design.
     try {
-      const _el = document.querySelector('#prompt-textarea');
+      const _el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
       if (_el) {
         _el.focus();
         document.execCommand('selectAll', false, null);
@@ -236,7 +250,7 @@ JS_SEND = r"""
 async ({ prompt }) => {
   window.__ghostPrompt = prompt;
   window.__ghostSentAt = null;
-  const el = document.querySelector('#prompt-textarea');
+  const el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
   if (!el) throw new Error('composer not found');
   // Type the REAL prompt so the SPA renders the correct user bubble — the old
   // 'sent' decoy leaked into the UI as a corrupted message. The fetch hook
@@ -498,7 +512,7 @@ class ChatGPTGhostSession:
         if self._page is None:
             raise RuntimeError("chatgpt ghost not started")
         try:
-            await self._page.wait_for_selector("#prompt-textarea", timeout=20000)
+            await self._page.wait_for_selector(COMPOSER_SEL, timeout=20000)
         except Exception:
             raise RuntimeError("chatgpt composer never appeared — not logged in?")
         try:
@@ -533,7 +547,7 @@ class ChatGPTGhostSession:
             raise RuntimeError("chatgpt ghost page closed")
         try:
             await self._page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=20000)
-            await self._page.wait_for_selector("#prompt-textarea", timeout=20000)
+            await self._page.wait_for_selector(COMPOSER_SEL, timeout=20000)
             await self._install_hijack()
         except Exception as exc:
             logger.warning("[chatgpt:%s] fresh-chat navigation failed: %s",
