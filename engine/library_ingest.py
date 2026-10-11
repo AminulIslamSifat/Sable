@@ -327,6 +327,53 @@ def _write_bytes_atomic(target: Path, data: bytes) -> None:
     tmp.replace(target)
 
 
+# LibreOffice stamps a generic /Title into the PDF metadata when the source
+# Office file has no real title property set: "PowerPoint Presentation",
+# "Microsoft Word - report.docx", and so on. Trusting that verbatim is why an
+# uploaded deck lands in the library as "PowerPoint Presentation" instead of
+# its own name. Strip the app wrapper, and treat the bare app labels as "no
+# title" so the filename wins.
+_GENERIC_META_TITLES = frozenset({
+    "untitled", "unknown", "document", "presentation", "spreadsheet",
+    "powerpoint presentation", "microsoft powerpoint", "word document",
+    "microsoft word document", "excel spreadsheet", "microsoft excel",
+    "microsoft office word", "office document", "presentation1",
+    "slide 1", "slides",
+})
+
+_OFFICE_TITLE_PREFIX = re.compile(
+    r"^microsoft\s+(powerpoint|word|excel|office)\s*[-–—:]\s*", re.IGNORECASE
+)
+_OFFICE_TITLE_SUFFIX = re.compile(
+    r"\s*[-–—]\s*(powerpoint|word|excel|presentation|document|slides?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def clean_meta_title(raw_title: str, filename: str) -> str:
+    """Resolve a usable title from PDF metadata, falling back to the filename.
+
+    Handles the three shapes LibreOffice emits: a bare app label (generic),
+    a prefixed one ("Microsoft PowerPoint - deck.pptx"), and a suffixed one
+    ("deck - PowerPoint"). A real title is passed through untouched.
+    """
+    title = (raw_title or "").strip()
+    if not title:
+        return Path(filename).stem
+
+    title = _OFFICE_TITLE_PREFIX.sub("", title)
+    title = _OFFICE_TITLE_SUFFIX.sub("", title).strip()
+
+    # "Microsoft PowerPoint - deck.pptx" -> strip the now-trailing extension.
+    ext = ext_of(filename)
+    if ext and title.lower().endswith(ext):
+        title = title[: -len(ext)].strip()
+
+    if not title or title.lower() in _GENERIC_META_TITLES:
+        return Path(filename).stem
+    return title
+
+
 def ingest_bytes(
     raw: bytes,
     filename: str,
@@ -383,9 +430,7 @@ def ingest_bytes(
     ensure_dirs()
     doc_id = uuid.uuid4().hex
 
-    title = (extracted.get("meta_title") or "").strip()
-    if not title or title.lower() in {"untitled", "unknown"}:
-        title = Path(filename).stem
+    title = clean_meta_title(extracted.get("meta_title") or "", filename)
 
     (LIBRARY_PDF_DIR / f"{doc_id}.pdf").write_bytes(pdf_bytes)
     if converted:

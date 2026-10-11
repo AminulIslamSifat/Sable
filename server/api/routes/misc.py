@@ -28,6 +28,36 @@ from server.logging_setup import _log_buffer
 
 router = APIRouter()
 
+
+@router.get("/api/search/image")
+def search_image(q: str, count: int = 1) -> dict[str, Any]:
+    """Resolve a text query to an image URL via SearXNG.
+
+    Used by the rich-component frontend to resolve `image_query` fields at
+    render time. Returns {"image": null} when nothing is found so the caller
+    can draw a placeholder instead of a broken image.
+    """
+    query = (q or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="q is required")
+    try:
+        from engine.search import searxng_image_results
+        results = searxng_image_results(query, count=max(1, min(count, 8)))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("search_image failed for %r: %s", query, exc)
+        results = []
+    if not results:
+        return {"image": None, "thumbnail": None, "results": []}
+    top = results[0]
+    return {
+        "image": top.get("image"),
+        "thumbnail": top.get("thumbnail"),
+        "title": top.get("title", ""),
+        "source": top.get("url", ""),
+        "results": results,
+    }
+
+
 @router.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sable — render_component preview</title>
+<link rel="stylesheet" href="/static/css/variables.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/chat.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/render-components.css?v=11">
+<style>
+  html, body { margin: 0; background: var(--bg, #0f0d14); }
+  .pv-shell { max-width: 860px; margin: 0 auto; padding: 32px 20px 120px; }
+  .pv-head { margin-bottom: 28px; }
+  .pv-head h1 { font-family: var(--font-body); font-size: 20px; color: var(--text, #f1edf8); margin: 0 0 6px; }
+  .pv-head p { color: var(--muted, #aaa1bb); font-size: 13px; margin: 0; font-family: var(--font-body); }
+  .pv-case { margin-bottom: 40px; }
+  .pv-tag {
+    display: inline-block; font-family: var(--font-mono, monospace); font-size: 11px;
+    color: var(--accent-text, #b49aff); border: 1px solid var(--border, #2a2720);
+    border-radius: 999px; padding: 2px 10px; margin-bottom: 12px;
+  }
+  .pv-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .pv-controls button {
+    font-family: var(--font-body); font-size: 12px; cursor: pointer;
+    background: var(--panel, #191622); color: var(--text-dim, #c4c4c8);
+    border: 1px solid var(--border, #2a2720); border-radius: 8px; padding: 7px 14px;
+  }
+  .pv-controls button:hover { border-color: var(--accent, #b49aff); color: var(--text, #f1edf8); }
+  .pv-msg { margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="pv-shell">
+  <div class="pv-head">
+    <h1>render_component — visual stress test</h1>
+    <p>Real CSS + real JS, no server round-trip. Every case renders into a <code>.md-content</code> like production does.</p>
+  </div>
+  <div class="pv-controls">
+    <button data-theme="">Theme: default</button>
+    <button data-theme="light">light</button>
+    <button data-theme="dark">dark</button>
+  </div>
+  <div id="cases"></div>
+</div>
+
+<script src="/static/js/render-components.js?v=11"></script>
+<script>
+const CASES = [
+  { tag: "layout + box + row + grid", payload: { components: [ { type: "layout", data: {
+    state: { mode: "Balanced" },
+    nodes: [
+      { kind: "title", text: "Agent workspace", size: "xl" },
+      { kind: "text", text: "Composed layout with live state.", tone: "muted" },
+      { kind: "row", gap: 10, children: [
+        { kind: "box", border: true, title: "Planner", children: [ { kind: "text", text: "ready" } ] },
+        { kind: "box", border: true, title: "Executor", children: [ { kind: "text", text: "running" } ] },
+      ]},
+      { kind: "grid", columns: 3, gap: 10, children: [
+        { kind: "stat", label: "Agents", value: "03", delta: "+1" },
+        { kind: "stat", label: "Tasks", value: "128", delta: "+12%" },
+        { kind: "stat", label: "Health", value: "98%" },
+      ]},
+      { kind: "segmented-control", state: "mode", options: ["Fast","Balanced","Thorough"] },
+      { kind: "when", state: "mode", equals: "Balanced", children: [ { kind: "text", text: "Balanced mode selected.", tone: "accent" } ] },
+    ]
+  }}]}},
+
+  { tag: "atoms: text / title / badge / code / list", payload: { components: [ { type: "layout", data: { nodes: [
+    { kind: "title", text: "Atoms" },
+    { kind: "text", text: "Regular body text with {inline} interpolation." },
+    { kind: "row", gap: 8, children: [
+      { kind: "badge", text: "neutral" },
+      { kind: "badge", text: "accent", tone: "accent" },
+      { kind: "badge", text: "tip", tone: "tip" },
+      { kind: "badge", text: "warning", tone: "warning" },
+      { kind: "badge", text: "danger", tone: "danger" },
+    ]},
+    { kind: "code", text: "uv run python server.py --reload" },
+    { kind: "list", ordered: true, children: [ "Parse request", "Choose tools", "Execute", "Return" ] },
+    { kind: "divider" },
+    { kind: "quote", text: "Ship the simplest thing that works.", cite: "— Sifat" },
+  ]}}]}},
+
+  { tag: "callout / table / kv / flow", payload: { components: [ { type: "layout", data: { nodes: [
+    { kind: "callout", tone: "tip", title: "Cache busted", body: "Assets now load with ?v=11." },
+    { kind: "callout", tone: "warning", title: "Watch out", body: "Old ?v=9 was being served from disk cache." },
+    { kind: "table", columns: ["Node","Status","Owner"], rows: [["layout","ok","maria"],["box","ok","maria"],["chart","wip","sifat"]] },
+    { kind: "kv", title: "Runtime", pairs: { Engine: "uv", Shell: "fish", Terminal: "kitty" } },
+    { kind: "flow", steps: ["Orient","Plan","Execute","Verify","Report"] },
+  ]}}]}},
+
+  { tag: "progress / checklist / toggle / button", payload: { components: [ { type: "layout", data: {
+    state: { done: false, picked: [] },
+    nodes: [
+      { kind: "progress", label: "Weekly goal", value: 72 },
+      { kind: "checklist", items: [ { text: "De-scope CSS", done: true }, { text: "Fix display font", done: true }, { text: "Loud failures", done: false } ] },
+      { kind: "toggle", title: "Details", children: [ { kind: "text", text: "Hidden until opened." } ] },
+      { kind: "row", gap: 8, children: [
+        { kind: "button", text: "Primary", tone: "accent" },
+        { kind: "button", text: "Danger", tone: "danger" },
+        { kind: "button", text: "Ghost" },
+      ]},
+    ]
+  }}]}},
+
+  { tag: "chart / timeline / tabs / media / hero", payload: { components: [ { type: "layout", data: { nodes: [
+    { kind: "chart", data: [ {x:"Mon",v:24},{x:"Tue",v:38},{x:"Wed",v:31},{x:"Thu",v:52},{x:"Fri",v:44},{x:"Sat",v:67},{x:"Sun",v:58} ], series: [ { dataKey: "v", label: "Tasks" } ], xKey: "x" },
+    { kind: "timeline", items: [ { title: "Orient", text: "Read the room.", tone: "accent" }, { title: "Execute", text: "Patch it." }, { title: "Report", text: "Ship it." } ] },
+    { kind: "tabs", tabs: [ { label: "Overview", content: "Tab one body." }, { label: "Details", content: "Tab two body." } ] },
+    { kind: "media", title: "Sable", subtitle: "agentic chat platform", text: "Left image, right content." },
+    { kind: "hero", title: "Render the response", subtitle: "not just the text", text: "Hero block with gradient top." },
+  ]}}]}},
+
+  { tag: "loud failure — unknown node kinds", payload: { components: [ { type: "layout", data: { nodes: [
+    { kind: "text", text: "Below: nodes with no renderer. They should be VISIBLE, not silently dropped." },
+    { kind: "totally_made_up_kind", text: "this kind does not exist" },
+    { kind: "another_bogus", text: "nor does this one" },
+  ]}}, { type: "unknown_top_level_type", data: { text: "top-level type with no FLAT entry" } } ]}},
+
+  { tag: "flat components (legacy path)", payload: { components: [
+    { type: "card", data: { title: "Flat card", body: "Rendered via FLAT registry.", bullets: ["one","two"] } },
+    { type: "callout", data: { tone: "info", title: "Flat callout", body: "Also FLAT." } },
+    { type: "keyvalue", data: { title: "Flat kv", pairs: { a: "1", b: "2" } } },
+    { type: "flow", data: { steps: ["alpha","beta","gamma"] } },
+  ]}},
+];
+
+const host = document.getElementById("cases");
+let rendered = 0, failed = 0;
+
+CASES.forEach((c) => {
+  const caseEl = document.createElement("div");
+  caseEl.className = "pv-case";
+  const tag = document.createElement("div");
+  tag.className = "pv-tag";
+  tag.textContent = c.tag;
+  caseEl.appendChild(tag);
+
+  const msg = document.createElement("div");
+  msg.className = "pv-msg";
+  const content = document.createElement("div");
+  content.className = "md-content";
+  msg.appendChild(content);
+  caseEl.appendChild(msg);
+  host.appendChild(caseEl);
+
+  try {
+    const root = window.SableComponents.render(c.payload, content);
+    if (root) rendered++; else failed++;
+  } catch (e) {
+    failed++;
+    content.appendChild(Object.assign(document.createElement("pre"), {
+      textContent: "THREW: " + e.message, style: "color:#ff6b81"
+    }));
+  }
+});
+
+// theme switcher — variables.css scopes themes on :root[data-theme]
+document.querySelectorAll(".pv-controls button").forEach((b) => {
+  b.addEventListener("click", () => {
+    const t = b.dataset.theme;
+    if (t) document.documentElement.setAttribute("data-theme", t);
+    else document.documentElement.removeAttribute("data-theme");
+  });
+});
+
+const banner = document.createElement("div");
+banner.style.cssText = "position:fixed;bottom:0;left:0;right:0;padding:8px 16px;font-family:monospace;font-size:12px;background:#191622;color:#b49aff;border-top:1px solid #2a2720;z-index:99";
+banner.textContent = `rendered ${rendered} / ${CASES.length} cases · ${failed} failed · rc-root rules present: ${document.styleSheets.length} sheets`;
+document.body.appendChild(banner);
+</script>
+</body>
+</html>

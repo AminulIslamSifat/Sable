@@ -1743,6 +1743,9 @@ async def chat(request: ChatRequest):
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
                 round_answer_parts: list[str] = []
+                # Ordered text/ui_block for this round so history replays in the
+                # exact order they were emitted (was: all text, then all tools).
+                round_flow: list[dict[str, Any]] = []
                 _round_raw_parts: list[str] = []  # per-round raw text for guard checks
                 pending_thinking: list[str] = []
                 parser = _get_skill_engine().create_parser()
@@ -1789,6 +1792,10 @@ async def chat(request: ChatRequest):
                             if chunk:
                                 answer_parts.append(chunk)
                                 round_answer_parts.append(chunk)
+                                if round_flow and round_flow[-1].get("type") == "round_text":
+                                    round_flow[-1]["text"] += chunk
+                                else:
+                                    round_flow.append({"type": "round_text", "text": chunk})
                                 yield sse({"type": "answer", "text": chunk})
                         elif itype == "tag_found":
                             # Meta tags: intercept before skill dispatch
@@ -1949,6 +1956,15 @@ async def chat(request: ChatRequest):
                             round_skill_events.append(_pe_end)
                             yield sse({"type": "skill_output", "name": "action_parse", "text": f"⚠️ {_pe_reason}", "id": _pe_id})
                             yield sse(_pe_end)
+                        elif itype == "ui_block":
+                            # Rich UI block — a response format, not a tool.
+                            # Forward straight to the frontend; no skill lifecycle,
+                            # no tool feedback, turn never pauses. Record it in
+                            # round_flow so it persists and replays in order.
+                            _ui_payload = item.get("payload")
+                            if _ui_payload:
+                                round_flow.append({"type": "ui_block", "payload": _ui_payload})
+                            yield sse({"type": "ui_block", "payload": _ui_payload})
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
@@ -1981,6 +1997,10 @@ async def chat(request: ChatRequest):
                         _title_buf = ""
                         answer_parts.append(leftover)
                         round_answer_parts.append(leftover)
+                        if round_flow and round_flow[-1].get("type") == "round_text":
+                            round_flow[-1]["text"] += leftover
+                        else:
+                            round_flow.append({"type": "round_text", "text": leftover})
                         yield sse({"type": "answer", "text": leftover})
                 files_for_round = resolved_files if round_index == 0 else None
                 # For non-API models (Qwen/scraper): upload pending skill images to Qwen OSS
@@ -3147,7 +3167,12 @@ async def chat(request: ChatRequest):
                 if round_thinking_text:
                     skill_events.append({"type": "round_thinking", "text": round_thinking_text})
                 round_text = "".join(round_answer_parts)
-                if round_text:
+                # Persist text + inline UI in emission order so the whole turn
+                # replays as one coherent card. Falls back to a single round_text
+                # blob when no inline UI was emitted this round.
+                if round_flow:
+                    skill_events.extend(round_flow)
+                elif round_text:
                     skill_events.append({"type": "round_text", "text": round_text})
                 if round_skill_events:
                     skill_events.extend(round_skill_events)

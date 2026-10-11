@@ -77,6 +77,53 @@ KNOWN_TAGS = (
 # Params that map to the content field for handler compatibility.
 _CONTENT_PARAM_KEYS = ("body", "content", "command")
 
+# Presentation tags a model may write BARE (no <action>/<tool_call> wrapper)
+# with a markup body, e.g. <render_component>...</render_component>. These are
+# NOT skills — they are a response format. The parser turns the body into a
+# native `ui_block` event the frontend renders directly; nothing goes through
+# the skill engine, middleware, or tool feedback.
+_BARE_TAG_NAMES = ("render_component",)
+
+
+def _find_bare_open(buf: str):
+    """Locate the first bare markup tag. Returns (name, start, end) or None."""
+    low = buf.lower()
+    best = None
+    for name in _BARE_TAG_NAMES:
+        needle = "<" + name
+        i = 0
+        while True:
+            j = low.find(needle, i)
+            if j < 0:
+                break
+            k = j + len(needle)
+            while k < len(buf) and buf[k].isspace():
+                k += 1
+            if k < len(buf) and buf[k] == ">":
+                if best is None or j < best[1]:
+                    best = (name, j, k + 1)
+                break
+            i = j + 1
+    return best
+
+
+def _find_bare_close(buf: str, name: str, start: int):
+    """Locate the closing tag for a bare markup tag. Returns (start, end) or None."""
+    low = buf.lower()
+    needle = "</" + name
+    i = start
+    while True:
+        j = low.find(needle, i)
+        if j < 0:
+            return None
+        k = j + len(needle)
+        while k < len(buf) and buf[k].isspace():
+            k += 1
+        if k < len(buf) and buf[k] == ">":
+            return (j, k + 1)
+        i = j + 1
+
+
 def parse_attrs(raw) -> dict[str, str]:
     """Compatibility stub. With JSON format, attrs are already a dict.
     If called with a string (legacy), return empty dict."""
@@ -435,6 +482,42 @@ class SkillParser:
 
         while True:
             if not self._in_action:
+                # --- Bare markup tags (<render_component> ... </render_component>) ---
+                # The model may write presentation tags bare, with no <action>
+                # wrapper. Intercept them here so the markup body reaches the
+                # handler instead of leaking into the transcript as raw text.
+                _bare = _find_bare_open(self.buf)
+                if _bare is not None:
+                    _bname, _bs, _be = _bare
+                    _bclose = _find_bare_close(self.buf, _bname, _be)
+                    if _bclose is not None:
+                        _bcs, _bce = _bclose
+                        _bbefore = self.buf[:_bs]
+                        _bbody = self.buf[_be:_bcs]
+                        self.buf = self.buf[_bce:]
+                        if _bbefore.strip():
+                            yield {"type": "text", "text": self._strip_orphan_tags(_bbefore)}
+                        _plog(f"BARE_TAG: {_bname} body_len={len(_bbody)}")
+                        # Rich UI block — a response format, not a tool. Parse
+                        # it here and emit a native event; never route it through
+                        # the skill engine.
+                        if _bname == "render_component":
+                            try:
+                                from engine.ui_format import parse_ui_block
+                                _ui = parse_ui_block(_bbody, {})
+                            except Exception:
+                                _ui = None
+                            if _ui:
+                                yield {"type": "ui_block", "payload": _ui}
+                            continue
+                        yield {"type": "tag_found", "name": _bname, "attrs": {}, "content": _bbody}
+                        continue
+                    # Incomplete — emit preceding prose, hold from the tag on.
+                    if _bs > 0:
+                        yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_bs])}
+                        self.buf = self.buf[_bs:]
+                    break
+
                 # Strip orphaned closing tag fragments that arrive after
                 # partial extraction already consumed the tool call.
                 # Handle both complete closing tags and partial suffixes
@@ -630,10 +713,15 @@ class SkillParser:
                             c in "\uff5c|_" for c in tail
                         )
                         _legacy_prefixes = ("action", "tool_call", "tool_calls", "calls", "invoke", "parameter")
+                        # Bare presentation tags (render_component) must also be
+                        # held when split across chunks — else the opening half
+                        # flushes as prose and the block never parses.
+                        _bare_prefixes = _BARE_TAG_NAMES
                         _open_match = (
                             tail == ""
                             or _is_dsml_delimiters_only
                             or any(p.startswith(tail) or tail.startswith(p) for p in _legacy_prefixes if tail)
+                            or any(p.startswith(tail) or tail.startswith(p) for p in _bare_prefixes if tail)
                             or any(_tail_norm.startswith(p) or p.startswith(_tail_norm)
                                    for p in _dsml_prefixes if _tail_norm)
                         )
@@ -643,6 +731,8 @@ class SkillParser:
                                         (_close_tail == ""
                                          or any(p.startswith(_close_tail) or _close_tail.startswith(p)
                                                 for p in _legacy_prefixes if _close_tail)
+                                         or any(p.startswith(_close_tail) or _close_tail.startswith(p)
+                                                for p in _bare_prefixes if _close_tail)
                                          or any(_close_tail_norm.startswith(p) or p.startswith(_close_tail_norm)
                                                 for p in _dsml_prefixes if _close_tail_norm)))
                         if _open_match or _close_match:

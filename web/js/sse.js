@@ -289,6 +289,8 @@
       const cards = {};
       const cardOutputCounts = {};
       let group = null;
+      let lastTextBubble = null;   // bubble that inline UI/text merges into
+      let lastWasUi = false;       // last event was an inline UI segment
       let _histSkillPath = "";
       // During history load, skip per-event MathJax/Mermaid/Lucide —
       // loadMessages does a single pass over the whole pane after all events
@@ -300,6 +302,8 @@
       for (const evt of events) {
         if (evt.type === "round_thinking") {
           group = null;
+          lastTextBubble = null;
+          lastWasUi = false;
           const wrap = document.createElement("div");
           wrap.className = "thinking-wrap";
           wrap.innerHTML = `
@@ -311,8 +315,6 @@
           _actIcons(wrap);
         } else if (evt.type === "round_text") {
           if (evt.text && evt.text.trim()) {
-            const textDiv = document.createElement("div");
-            textDiv.className = "msg bot";
             const content = document.createElement("div");
             content.className = "md-content";
             content.innerHTML = renderMarkdown(evt.text);
@@ -323,11 +325,38 @@
               renderMathJax(content);
             }
             _actIcons(content);
-            textDiv.appendChild(content);
-            pane.appendChild(textDiv);
-            _attachBotToolbar(textDiv);
+            if (lastWasUi && lastTextBubble) {
+              // Continuation of the same card after an inline UI segment.
+              lastTextBubble.appendChild(content);
+            } else {
+              const textDiv = document.createElement("div");
+              textDiv.className = "msg bot";
+              textDiv.appendChild(content);
+              pane.appendChild(textDiv);
+              _attachBotToolbar(textDiv);
+              lastTextBubble = textDiv;
+            }
+            lastWasUi = false;
           }
+        } else if (evt.type === "ui_block") {
+          // Rich UI block — merge into the preceding text bubble as an inline
+          // segment so history replays as one coherent card, matching live.
+          if (!lastTextBubble) {
+            lastTextBubble = document.createElement("div");
+            lastTextBubble.className = "msg bot";
+            pane.appendChild(lastTextBubble);
+          }
+          const uiSeg = document.createElement("div");
+          uiSeg.className = "md-content ui-block";
+          lastTextBubble.appendChild(uiSeg);
+          if (window.SableComponents) {
+            try { window.SableComponents.render(evt.payload, uiSeg); } catch (e) {}
+          }
+          _actIcons(uiSeg);
+          lastWasUi = true;
         } else if (evt.type === "skill_start") {
+          lastTextBubble = null;
+          lastWasUi = false;
           if (evt.name === "ask_user") continue;
           if (!group) {
             group = document.createElement("div");
@@ -502,10 +531,123 @@
     }
 
     // ── Ask User MCQ Card ──
+    // ── ask_user batching ──
+    // Multiple ask_user cards can arrive in one round. The user must answer
+    // ALL of them before the model gets any feedback — otherwise the model
+    // replies to the first answer while the rest are still unanswered.
+    // Mirrors the _approvalBatches pattern above.
+    const _askBatches = new Map(); // chatId → { pending: Set, answers: Map<cardId, string> }
+    let _askCardSeq = 0;
+
+    function _askBatchKey() {
+      return (typeof streamChatId !== "undefined" && streamChatId) || (typeof activeChatId !== "undefined" && activeChatId) || "default";
+    }
+
+    function _getOrCreateAskBatch() {
+      const k = _askBatchKey();
+      if (!_askBatches.has(k)) _askBatches.set(k, { pending: new Set(), answers: new Map() });
+      return _askBatches.get(k);
+    }
+
+    function _registerAskCard(cardId) {
+      const b = _getOrCreateAskBatch();
+      b.pending.add(cardId);
+      b.answers.delete(cardId);
+      _updateAskProgress();
+    }
+
+    function _resolveAskCard(cardId, answer) {
+      const b = _getOrCreateAskBatch();
+      b.pending.delete(cardId);
+      b.answers.set(cardId, answer);
+      _updateAskProgress();
+
+      // All answered? Send one combined user turn.
+      if (b.pending.size === 0 && b.answers.size > 0) {
+        const ordered = Array.from(b.answers.values());
+        _askBatches.delete(_askBatchKey());
+        const combined = ordered.length === 1
+          ? ordered[0]
+          : ordered.map((a, i) => `${i + 1}. ${a}`).join("\n");
+        inputEl.value = combined;
+        sendMessage();
+      }
+    }
+
+    // ── Native rich UI block renderer ──
+    // A `ui_block` event carries the parsed payload. Draw it inline in the
+    // message flow — no tool card, no skill chip. Used by both the live
+    // stream and history replay.
+    function renderUiBlock(payload, container) {
+      if (!payload || !container || !window.SableComponents) return null;
+      try {
+        const block = document.createElement("div");
+        block.className = "msg bot";
+        const content = document.createElement("div");
+        content.className = "md-content";
+        block.appendChild(content);
+        container.appendChild(block);
+        window.SableComponents.render(payload, content);
+        _actIcons(content);
+        return block;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // ── Interactivity bridge for UI-block nodes ──
+    // render-components.js lives in its own IIFE and can't see inputEl /
+    // sendMessage / isStreaming. It calls through this small, defensive
+    // surface so a click inside a rendered component becomes a real turn.
+    window.SableInteract = {
+      send(text) {
+        try {
+          if (typeof isStreaming === "function" && isStreaming()) return false;
+          if (!inputEl) return false;
+          inputEl.value = String(text == null ? "" : text);
+          sendMessage();
+          return true;
+        } catch (e) { return false; }
+      },
+      fill(text) {
+        try {
+          if (!inputEl) return false;
+          inputEl.value = String(text == null ? "" : text);
+          if (typeof inputEl.focus === "function") inputEl.focus();
+          return true;
+        } catch (e) { return false; }
+      },
+      busy() {
+        try { return typeof isStreaming === "function" ? !!isStreaming() : false; }
+        catch (e) { return false; }
+      },
+    };
+
+    function _updateAskProgress() {
+      const b = _getOrCreateAskBatch();
+      const total = b.pending.size + b.answers.size;
+      document.querySelectorAll(".ask-user-card").forEach((card) => {
+        if (card.classList.contains("answered")) return;
+        let hint = card.querySelector(".ask-user-batch-hint");
+        if (total > 1) {
+          if (!hint) {
+            hint = document.createElement("div");
+            hint.className = "ask-user-batch-hint";
+            card.appendChild(hint);
+          }
+          hint.textContent = `${b.answers.size}/${total} answered — answer all to send`;
+        } else if (hint) {
+          hint.remove();
+        }
+      });
+    }
+
     function renderAskUserCard(payload, container) {
       const { question, options, multi, default: def } = payload;
       const card = document.createElement("div");
       card.className = "ask-user-card";
+      const cardId = "ask-" + (++_askCardSeq);
+      card.dataset.askId = cardId;
 
       const qEl = document.createElement("div");
       qEl.className = "ask-user-question";
@@ -529,9 +671,9 @@
         chosen.className = "ask-user-chosen";
         chosen.textContent = "→ " + answer;
         card.appendChild(chosen);
-        // Send as normal user message
-        inputEl.value = answer;
-        sendMessage();
+        const hint = card.querySelector(".ask-user-batch-hint");
+        if (hint) hint.remove();
+        _resolveAskCard(cardId, answer);
       }
 
       options.forEach((opt, i) => {
@@ -562,6 +704,7 @@
       });
 
       container.appendChild(card);
+      _registerAskCard(cardId);
       scrollBottom();
       return card;
     }
@@ -1106,6 +1249,29 @@
     function addBotStreaming(pane = activePane, chatId = activeChatId) {
       clearPaneEmptyState(pane);
 
+      // A fresh turn begins. Any ask_user card left unanswered from a previous
+      // turn is stale — mark it visually and drop it from the batch so it can
+      // never block the questions about to arrive in THIS turn.
+      (function _sweepStaleAskCards() {
+        const b = _askBatches.get(_askBatchKey());
+        if (b && b.pending.size) {
+          document.querySelectorAll(".ask-user-card").forEach((card) => {
+            if (card.classList.contains("answered") || card.classList.contains("stale")) return;
+            card.classList.add("stale");
+            card.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
+            if (!card.querySelector(".ask-user-stale-note")) {
+              const note = document.createElement("div");
+              note.className = "ask-user-stale-note";
+              note.textContent = "skipped — a newer message was sent";
+              card.appendChild(note);
+            }
+            const hint = card.querySelector(".ask-user-batch-hint");
+            if (hint) hint.remove();
+          });
+        }
+        _askBatches.delete(_askBatchKey());
+      })();
+
       // Capture the chat this turn belongs to — typewriter ticks and scroll
       // calls will bail if the user has switched away before they fire.
       const turnChatId = chatId;
@@ -1344,16 +1510,26 @@
         skillRounds[skillRounds.length - 1].push(evt);
       }
 
+      // Open a fresh text segment inside the current bubble. A turn is ONE
+      // .msg.bot holding ordered .md-content segments (text / inline UI / text)
+      // so the whole answer reads as a single coherent card.
+      function _openAnswerSegment() {
+        answerContent = document.createElement("div");
+        answerContent.className = "md-content";
+        answerEl.appendChild(answerContent);
+        raw = "";
+        _ansInFence = false;
+      }
       function ensureAnswer() {
-        if (answerEl) return;
+        if (answerEl) {
+          if (!answerContent) _openAnswerSegment();
+          return;
+        }
         answerEl = document.createElement("div");
         answerEl.className = "msg bot streaming msg-enter";
-        const content = document.createElement("div");
-        content.className = "md-content";
-        answerEl.appendChild(content);
-        answerContent = content;
-        raw = "";
         turn.appendChild(answerEl);
+        answerContent = null;
+        _openAnswerSegment();
         lastCommandGroup = null;
       }
 
@@ -1567,7 +1743,17 @@
         // content shrinks by 1.5em. Re-pin in the same tick or that shrink
         // reads as a jump at the exact moment the response finishes.
         pinScrollIfAtBottom();
-        if (!_isSpecialCard && !raw.trim()) answerEl.remove();
+        // Drop a trailing empty text segment left after an inline UI block.
+        if (answerContent && answerContent.parentNode === answerEl
+            && !raw.trim() && !answerContent.childNodes.length) {
+          answerContent.remove();
+        }
+        // Keep the bubble if it holds an inline UI block or earlier text;
+        // only remove a genuinely empty one.
+        const _hasInlineUi = !!answerEl.querySelector(".ui-block");
+        if (!_isSpecialCard && !raw.trim() && !_hasInlineUi && !answerEl.textContent.trim()) {
+          answerEl.remove();
+        }
         answerEl = null;
         answerContent = null;
         raw = "";
@@ -1670,6 +1856,34 @@
           hidePending();
           closeCurrentThinking();
           renderAskUserCard(payload, turn);
+        },
+        addComponent(payload) {
+          // Rich UI is message content. Append it as an inline segment inside
+          // the SAME bubble as the surrounding text, then open a fresh text
+          // segment below for any continued prose. One bubble, one card.
+          hidePending();
+          closeCurrentThinking();
+          _flushAnswerQueue();            // drain pending typewriter text
+          ensureAnswer();
+          if (raw && raw.trim()) {
+            answerContent.dataset.raw = raw;
+            answerContent.innerHTML = renderMarkdown(raw);
+            renderMermaidDiagrams(answerContent);
+            renderMathJax(answerContent);
+            activateLucideIcons(answerContent);
+          } else if (answerContent && !answerContent.childNodes.length) {
+            answerContent.remove();      // no leading prose — no blank gap
+          }
+          const uiSeg = document.createElement("div");
+          uiSeg.className = "md-content ui-block";
+          answerEl.appendChild(uiSeg);
+          if (window.SableComponents) {
+            try { window.SableComponents.render(payload, uiSeg); }
+            catch (e) { uiSeg.remove(); }
+          }
+          activateLucideIcons(uiSeg);
+          _openAnswerSegment();          // fresh segment for continued text
+          scrollBottom();
         },
         addEvent(text) {
           hidePending();
@@ -2777,6 +2991,16 @@
             // user — same path the reload case uses.
             window.dispatchEvent(new CustomEvent('study-doc-changed', { detail: evt }));
 
+          } else if (evt.type === "ui_block") {
+            // Rich UI block — a response format, not a tool. Append it as an
+            // inline segment in the SAME bubble as the surrounding text.
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            if (typeof ui.addComponent === "function") {
+              ui.addComponent(evt.payload);
+            } else {
+              renderUiBlock(evt.payload, streamPane);
+            }
+            scrollBottom();
           } else if (evt.type === "permission_request") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             // Bind the banner to the stream's chat, but only surface it if the

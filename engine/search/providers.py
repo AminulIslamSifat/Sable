@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import concurrent.futures
 from typing import List, Optional
 from urllib.parse import urljoin, urlparse, parse_qs
 
@@ -143,6 +144,168 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str 
         if html_results:
             logger.info("SearXNG HTML fallback returned %d results for: %s", len(html_results), query)
         return html_results
+
+
+# Engines that return icons, logos, or art — never useful for "show me X".
+# SearXNG aggregates these alongside real image engines, and they pollute the
+# top of nearly every query (lucide icons, Art Institute paintings, etc).
+_JUNK_IMAGE_ENGINES = frozenset({
+    "lucide", "artic", "devicon", "fontawesome", "material",
+    "material icons", "iconify", "simple icons", "openclipart",
+})
+
+# URL fragments that mark an icon/vector asset rather than a photo.
+_JUNK_IMAGE_URL_HINTS = (
+    "lucide-static",
+    "devicon",
+    "devicons",
+    "/icons/",
+    "iconify",
+    "simpleicons.org",
+    "fontawesome",
+    "artic.edu/iiif",
+)
+
+
+def _is_junk_image(result: dict, img_url: str) -> bool:
+    """True when a result is an icon/logo/museum-art asset, not a real image."""
+    eng = str(result.get("engine", "")).strip().lower()
+    if eng in _JUNK_IMAGE_ENGINES:
+        return True
+    url = (img_url or "").lower()
+    return any(h in url for h in _JUNK_IMAGE_URL_HINTS)
+
+
+# Reject anything bigger than this — a multi-MB GIF stalls the card on a cold
+# link and looks identical to a broken image.
+_MAX_IMAGE_BYTES = 2_500_000
+_IMG_PROBE_TIMEOUT = 5.0
+
+
+def _probe_image(url: str) -> dict:
+    """Check a URL really serves an image and isn't oversized.
+
+    Uses a streamed GET so only headers are read — the body is never
+    downloaded. HEAD is unreliable: plenty of CDNs 403 it while serving GET.
+    """
+    try:
+        with httpx.stream(
+            "GET", url, timeout=_IMG_PROBE_TIMEOUT,
+            follow_redirects=True, headers={"User-Agent": WEB_FETCH_USER_AGENT},
+        ) as r:
+            ct = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+            size = int(r.headers.get("content-length") or 0)
+            return {"ok": r.status_code < 400 and ct.startswith("image/"),
+                    "content_type": ct, "size": size}
+    except Exception:
+        return {"ok": False, "content_type": "", "size": 0}
+
+
+def searxng_image_results(query: str, count: int = 5) -> List[dict]:
+    """Image search via SearXNG. Returns [{title, image, thumbnail, url}].
+
+    The general parser in searxng_search_api drops img_src/thumbnail, so image
+    lookups need their own path. Falls back to an empty list on any failure —
+    the caller renders a placeholder rather than a broken image.
+
+    Icon/art engines (lucide, artic, devicon) are filtered out; they otherwise
+    occupy the top slots for almost every product/component query.
+    """
+    count = max(1, min(int(count or 5), 12))
+    instance = _get_search_instance()
+    params = {
+        "q": query,
+        "format": "json",
+        "language": "en",
+        "categories": "images",
+        "safesearch": _safesearch_for("searxng"),
+    }
+    try:
+        response = httpx.get(
+            f"{instance}/search",
+            params=params,
+            headers={"User-Agent": WEB_FETCH_USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.warning("SearXNG image search failed for %r: %s", query, e)
+        return []
+
+    # Collect a wider candidate set first — SearXNG hands back plenty of
+    # hotlink-blocked (403) and rate-limited (429) URLs that serve HTML error
+    # pages, which the browser cannot decode as an image.
+    raw: List[dict] = []
+    seen: set[str] = set()
+    raw_cap = max(count * 4, 20)
+    for r in data.get("results", []):
+        img = r.get("img_src") or r.get("thumbnail")
+        if not img:
+            continue
+        # Some engines return protocol-relative URLs (//host/path).
+        if img.startswith("//"):
+            img = "https:" + img
+        if _is_junk_image(r, img):
+            continue
+        # Same asset often surfaces via several engines — keep one copy.
+        key = img.split("?")[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        thumb = r.get("thumbnail") or img
+        if thumb.startswith("//"):
+            thumb = "https:" + thumb
+        raw.append({
+            "title": r.get("title", ""),
+            "image": img,
+            "thumbnail": thumb,
+            "url": r.get("url", ""),
+        })
+        if len(raw) >= raw_cap:
+            break
+
+    if not raw:
+        return []
+
+    # Validate in parallel with EARLY EXIT — stop the moment `count` candidates
+    # pass, instead of waiting on every probe. Slow hosts hang until the
+    # timeout, and with a wide candidate set that turned a 2s search into 15s.
+    picked: dict[int, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        futs = {ex.submit(_probe_image, it["image"]): i for i, it in enumerate(raw)}
+        for fut in concurrent.futures.as_completed(futs):
+            i = futs[fut]
+            try:
+                probe = fut.result()
+            except Exception:
+                continue
+            if not probe["ok"]:
+                logger.debug("drop dead image (%s): %s",
+                             probe["content_type"] or "-", raw[i]["image"][:70])
+                continue
+            if probe["size"] and probe["size"] > _MAX_IMAGE_BYTES:
+                logger.debug("drop oversized image (%d B): %s",
+                             probe["size"], raw[i]["image"][:70])
+                continue
+            picked[i] = probe
+            if len(picked) >= count:
+                for f in futs:
+                    f.cancel()
+                break
+
+    # Preserve SearXNG's ranking order in the output.
+    out: List[dict] = []
+    for i in sorted(picked):
+        item = dict(raw[i])
+        item["content_type"] = picked[i]["content_type"]
+        item["size"] = picked[i]["size"]
+        out.append(item)
+
+    logger.info("SearXNG image search: %d/%d passed validation for: %s",
+                len(out), len(raw), query)
+    return out
+
 
 # ── SearXNG HTML fallback ──
 

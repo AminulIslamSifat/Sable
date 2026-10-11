@@ -494,6 +494,19 @@ const AgentPanel = {
           if (typeof activateLucideIcons === "function") activateLucideIcons(card);
           cards[evt.id] = card;
         }
+      } else if (evt.type === "ui_block") {
+        try {
+          const block = document.createElement("div");
+          block.className = "msg bot";
+          const content = document.createElement("div");
+          content.className = "md-content";
+          block.appendChild(content);
+          this.bodyEl.appendChild(block);
+          if (window.SableComponents) {
+            window.SableComponents.render(evt.payload, content);
+          }
+          if (typeof activateLucideIcons === "function") activateLucideIcons(content);
+        } catch (e) { /* presentation only */ }
       } else if (evt.type === "skill_output") {
         if (evt.name === "ask_user") continue;
         const card = cards[evt.id];

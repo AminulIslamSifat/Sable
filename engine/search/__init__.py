@@ -15,10 +15,12 @@ from .core import (
     update_search_config,
     invalidate_search_cache as invalidate_cache,
 )
+from .providers import searxng_image_results
 
 __all__ = [
     "search",
     "searxng_search_results",
+    "searxng_image_results",
     "comprehensive_web_search",
     "get_search_config",
     "update_search_config",

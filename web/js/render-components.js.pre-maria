@@ -1,0 +1,1461 @@
+// ── render_component — inline visual blocks in the chat flow ────────────────
+// A small reactive runtime, not just a JSON→DOM mapper.
+//
+//   1. flat types (image, card, table, callout, chart, flow, keyvalue)
+//   2. `layout` — a RECURSIVE node tree the model composes freely
+//   3. STATE — a layout may declare `state` and bind nodes to it. Mutating
+//      state re-renders that layout in place. This is what makes a card able
+//      to change itself (mode pickers, checklists, expandables, progress).
+//
+// No raw HTML, no eval. `{key}` interpolation is resolved by path lookup only
+// (never executed). Every string still lands via textContent.
+
+(function () {
+  "use strict";
+
+  // ── helpers ───────────────────────────────────────────────────────────────
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = String(text);
+    return n;
+  }
+  function arr(v) { return Array.isArray(v) ? v : []; }
+  function str(v, fb) { return (typeof v === "string" && v.trim()) ? v : (fb || ""); }
+  function num(v, fb, min, max) {
+    const n = Number(v);
+    if (!isFinite(n)) return fb;
+    return Math.max(min, Math.min(max, n));
+  }
+  const TONES = ["neutral", "accent", "note", "info", "tip", "warning", "danger"];
+  // The model writes node kinds from BOTH the markup vocabulary and the older
+  // JSON vocabulary. Normalise them so a card/box, keyvalue/kv, etc. all land
+  // on the same renderer instead of silently returning null.
+  const KIND_ALIAS = {
+    card: "box", panel: "box", section: "box",
+    keyvalue: "kv", "key-value": "kv",
+    metric: "stat", kpi: "stat",
+    bar: "progress", meter: "progress",
+    hstack: "row", vstack: "col",
+    heading: "title",
+    paragraph: "text", label: "text", span: "text", p: "text",
+    checkbox: "check", switch: "toggle", collapse: "toggle", accordion: "toggle",
+    radio: "choices", options: "choices",
+    chip: "chips", img: "image", pic: "image",
+    quote: "quote", blockquote: "quote",
+    pre: "code", codeblock: "code",
+    timeline: "timeline", steps: "flow",
+    "grid-item": "griditem", "griditem": "griditem", "grid-cell": "griditem",
+    "segmented-control": "segmented-control", segmented: "segmented-control",
+    tabs: "segmented-control", tabbar: "segmented-control",
+    btn: "button", cta: "button",
+    hr: "divider", separator: "divider",
+    avatar: "image", pic: "image",
+    "brain-circuit": "icon",
+  };
+  function normKind(node) {
+    const raw = String(node.kind || node.type || "").toLowerCase();
+    return KIND_ALIAS[raw] || raw;
+  }
+  const TONE_ALIAS = { success: "tip", ok: "tip", error: "danger", warn: "warning", primary: "accent", secondary: "neutral" };
+  function tone(v, fb) {
+    let t = String(v || "").toLowerCase();
+    t = TONE_ALIAS[t] || t;
+    return TONES.includes(t) ? t : (fb || "neutral");
+  }
+  function caption(text) { return text ? el("div", "rc-cap", text) : null; }
+
+  // Design-token aliases — the model writes ChatGPT-flavoured tokens
+  // (`surface-secondary`, `success`, `lg`, `xl`) that do not exist as CSS vars.
+  const BG_TOKENS = {
+    surface: "color-mix(in srgb, var(--panel) 65%, transparent)",
+    "surface-secondary": "color-mix(in srgb, var(--panel-2) 72%, transparent)",
+    "surface-tertiary": "color-mix(in srgb, var(--panel) 55%, transparent)",
+    "surface-elevated": "color-mix(in srgb, var(--panel-2) 85%, transparent)",
+    panel: "var(--panel)",
+    "panel-2": "var(--panel-2)",
+    accent: "var(--accent-dim)",
+    success: "color-mix(in srgb, var(--ok) 18%, transparent)",
+    danger: "color-mix(in srgb, var(--danger) 18%, transparent)",
+    info: "color-mix(in srgb, var(--accent) 18%, transparent)",
+    transparent: "transparent",
+  };
+  const RADIUS_TOKENS = {
+    none: "0", sm: "6px", md: "8px",
+    lg: "var(--radius-lg, 14px)", xl: "16px", "2xl": "20px",
+    "3xl": "24px", full: "999px",
+  };
+  const COLOR_TOKENS = {
+    primary: "var(--text)", secondary: "var(--text-dim)", muted: "var(--muted)",
+    accent: "var(--accent-text)", success: "var(--ok)", danger: "var(--danger)",
+    warning: "#ffb86b", info: "var(--accent-text)", white: "#ffffff", black: "#000000",
+  };
+  function resolveBg(v) {
+    if (v == null || v === "") return "";
+    const s = String(v);
+    return BG_TOKENS[s] || s;
+  }
+  function resolveRadius(v) {
+    if (v == null || v === "") return "";
+    const s = String(v);
+    if (RADIUS_TOKENS[s]) return RADIUS_TOKENS[s];
+    if (/^\d+(?:\.\d+)?$/.test(s)) return s + "px";
+    return s;
+  }
+  function resolveSpace(v) {
+    if (v == null || v === "") return "";
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0 && n <= 12) return (n * 4) + "px";
+    return String(v);
+  }
+  function resolveColorToken(v) {
+    if (v == null || v === "") return "";
+    const s = String(v);
+    return COLOR_TOKENS[s] || s;
+  }
+
+  const ICON_SIZES = { xs: 12, sm: 14, md: 18, lg: 24, xl: 32, "2xl": 40, "3xl": 52 };
+  const SAFE_COLOR = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,20})$/;
+
+  // ── state context ─────────────────────────────────────────────────────────
+  // A context carries a mutable state object plus the redraw hook. Every node
+  // builder receives it. Layouts own one; flat components get a shared no-op.
+  function noopContext() {
+    return {
+      state: {},
+      scope: {},
+      set() {}, toggle() {}, setIndex() {}, push() {}, flush() {},
+    };
+  }
+  function makeContext(initial) {
+    const ctx = {
+      state: Object.assign({}, initial || {}),
+      scope: {},
+      _draw: null,
+      flush() { if (typeof ctx._draw === "function") ctx._draw(); },
+      set(key, value) { ctx.state[key] = value; ctx.flush(); },
+      toggle(key) { ctx.state[key] = !ctx.state[key]; ctx.flush(); },
+      setIndex(key, i, value) {
+        const a = Array.isArray(ctx.state[key]) ? ctx.state[key].slice() : [];
+        a[i] = value; ctx.state[key] = a; ctx.flush();
+      },
+      push(key, value) {
+        const a = Array.isArray(ctx.state[key]) ? ctx.state[key].slice() : [];
+        a.push(value); ctx.state[key] = a; ctx.flush();
+      },
+    };
+    return ctx;
+  }
+
+  // ── interpolation ─────────────────────────────────────────────────────────
+  // {name} / {item.title} / {index} — resolved by lookup against the local
+  // scope first, then layout state. Never evaluated. Unresolved tokens are
+  // left verbatim so a stray brace can't blank the text.
+  function getPath(path, ctx) {
+    const parts = String(path).split(".");
+    const scope = ctx && ctx.scope ? ctx.scope : {};
+    let cur;
+    if (Object.prototype.hasOwnProperty.call(scope, parts[0])) {
+      cur = scope;
+    } else {
+      cur = (ctx && ctx.state) ? ctx.state : {};
+    }
+    for (const p of parts) {
+      if (cur == null) return undefined;
+      cur = cur[p];
+    }
+    return cur;
+  }
+  function interp(s, ctx) {
+    if (typeof s !== "string" || s.indexOf("{") === -1) return s;
+    return s.replace(/\{([a-zA-Z0-9_.]+)\}/g, (m, path) => {
+      const v = getPath(path, ctx);
+      return (v == null) ? m : String(v);
+    });
+  }
+  function resolve(v, ctx) { return (typeof v === "string") ? interp(v, ctx) : v; }
+
+  // ── interactivity ─────────────────────────────────────────────────────────
+  function fireAction(action, node, ctx) {
+    const a = (action && typeof action === "object") ? action : null;
+    if (!a) return;
+    // local state mutation (no round-trip)
+    if (a.set && typeof a.set === "object" && ctx) {
+      Object.keys(a.set).forEach((k) => ctx.set(k, a.set[k]));
+      return;
+    }
+    if (a.toggle && ctx) { ctx.toggle(a.toggle); return; }
+    const I = window.SableInteract;
+    if (!I) return;
+    if (a.send != null && typeof I.send === "function") {
+      if (typeof I.busy === "function" && I.busy()) return;
+      I.send(resolve(a.send, ctx));
+    } else if (a.fill != null && typeof I.fill === "function") {
+      I.fill(resolve(a.fill, ctx));
+    }
+  }
+  function bindAction(nodeEl, node, ctx) {
+    const a = node.action || (node.send != null ? { send: node.send } : null);
+    if (!a) return nodeEl;
+    nodeEl.classList.add("rc-clickable");
+    nodeEl.addEventListener("click", (e) => { e.preventDefault(); fireAction(a, node, ctx); });
+    return nodeEl;
+  }
+
+  const MAX_DEPTH = 18;
+  const MAX_CHILDREN = 120;
+  const MAX_EACH = 200;
+
+  // ── flat renderers ────────────────────────────────────────────────────────
+  function renderImage(data) {
+    const images = arr(data.images);
+    if (!images.length) return null;
+    const wrap = el("div", "rc-image " + (images.length === 1 ? "single" : "multi"));
+    if (images.length === 1) {
+      const im = images[0];
+      const img = document.createElement("img");
+      img.className = "rc-image-single";
+      img.alt = im.title || data.query || "";
+      img.loading = "lazy";
+      img.onerror = () => img.replaceWith(el("div", "rc-image-empty", "image unavailable"));
+      img.src = im.image || im.thumbnail;
+      wrap.appendChild(img);
+      const cap = caption(data.caption) || (im.title ? caption(im.title) : null);
+      if (cap) wrap.appendChild(cap);
+    } else {
+      const strip = el("div", "rc-image-strip");
+      images.forEach((im) => {
+        const card = el("div", "rc-image-card");
+        const img = document.createElement("img");
+        img.alt = im.title || data.query || "";
+        img.loading = "lazy";
+        img.onerror = () => card.replaceWith(el("div", "rc-image-empty", "n/a"));
+        img.src = im.thumbnail || im.image;
+        card.appendChild(img);
+        if (im.title) card.title = im.title;
+        strip.appendChild(card);
+      });
+      wrap.appendChild(strip);
+      const cap = caption(data.caption);
+      if (cap) wrap.appendChild(cap);
+    }
+    return wrap;
+  }
+
+  function renderCard(data) {
+    const card = el("div", "rc-card");
+    if (data.title) card.appendChild(el("div", "rc-card-title", data.title));
+    if (data.body) card.appendChild(el("div", "rc-card-body", data.body));
+    const bullets = arr(data.bullets);
+    if (bullets.length) {
+      const ul = el("ul", "rc-card-bullets");
+      bullets.forEach((b) => ul.appendChild(el("li", null, b)));
+      card.appendChild(ul);
+    }
+    return card;
+  }
+
+  function renderTable(data) {
+    const cols = arr(data.columns);
+    const rows = arr(data.rows);
+    if (!cols.length) return null;
+    const wrap = el("div", "rc-table-wrap");
+    const table = el("table", "rc-table");
+    const thead = el("thead");
+    const htr = el("tr");
+    cols.forEach((c) => htr.appendChild(el("th", null, typeof c === "object" ? c.label : c)));
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = el("tbody");
+    rows.forEach((r) => {
+      const tr = el("tr");
+      arr(r).forEach((cell) => tr.appendChild(el("td", null, cell)));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    const cap = caption(data.caption);
+    if (cap) wrap.appendChild(cap);
+    return wrap;
+  }
+
+  function renderCallout(data) {
+    const t = tone(data.tone, "note");
+    const box = el("div", "rc-callout rc-tone-" + t);
+    if (data.title) box.appendChild(el("div", "rc-callout-title", data.title));
+    // The model writes the callout body under `body`, `text`, or `content`.
+    const body = data.body != null ? data.body : (data.text != null ? data.text : data.content);
+    if (body) box.appendChild(el("div", "rc-callout-body", body));
+    return box;
+  }
+
+  function renderChart(data) {
+    // Accept two shapes:
+    //   1. DIL/ChatGPT: { data:[{xKey, dataKey1,...}], series:[{dataKey,label}], xKey, meta }
+    //   2. legacy:      { labels:[...], series:[{value}] }
+    let labels, cols, footer;
+    if (arr(data.data).length && arr(data.series).length && data.xKey) {
+      const rows = arr(data.data);
+      labels = rows.map((r) => String(r[data.xKey]));
+      cols = arr(data.series).map((s) => ({
+        key: s.dataKey, label: s.label || s.dataKey,
+        values: rows.map((r) => Number(r[s.dataKey]) || 0),
+      }));
+      footer = data.meta && data.meta.footer;
+    } else {
+      labels = arr(data.labels);
+      cols = arr(data.series).map((s, i) => ({
+        key: "s" + i, label: s.label || "",
+        values: labels.map((_, j) => Number((arr(data.series)[j] || {}).value) || 0),
+      }));
+    }
+    if (!labels.length || !cols.length) return null;
+
+    const wrap = el("div", "rc-chart");
+    const allVals = cols.flatMap((c) => c.values);
+    const max = Math.max(1, ...allVals);
+    const ticks = [max, Math.round(max * 0.66), Math.round(max * 0.33), 0];
+
+    const grid = el("div", "rc-vchart");
+    const axis = el("div", "rc-vaxis");
+    ticks.forEach((t) => axis.appendChild(el("div", "rc-vtick", String(t))));
+    grid.appendChild(axis);
+
+    const plot = el("div", "rc-vplot");
+    const lines = el("div", "rc-vlines");
+    for (let i = 0; i < ticks.length; i++) lines.appendChild(el("div", "rc-vline"));
+    plot.appendChild(lines);
+
+    const bars = el("div", "rc-vbars");
+    labels.forEach((lab, i) => {
+      const col = el("div", "rc-vcol");
+      const stack = el("div", "rc-vstack");
+      const v = cols[0].values[i];
+      const bar = el("div", "rc-vbar");
+      bar.style.height = Math.round((v / max) * 100) + "%";
+      stack.appendChild(bar);
+      col.appendChild(stack);
+      col.appendChild(el("div", "rc-vlabel", lab));
+      bars.appendChild(col);
+    });
+    plot.appendChild(bars);
+    grid.appendChild(plot);
+    wrap.appendChild(grid);
+
+    if (footer) wrap.appendChild(el("div", "rc-cap", footer));
+    else { const cap = caption(data.caption); if (cap) wrap.appendChild(cap); }
+    return wrap;
+  }
+
+  function renderFlow(data) {
+    const steps = arr(data.steps);
+    if (!steps.length) return null;
+    const wrap = el("div", "rc-flow");
+    steps.forEach((s, i) => {
+      const node = el("div", "rc-flow-node" + (i === steps.length - 1 ? " rc-flow-last" : ""));
+      node.appendChild(el("span", "rc-flow-idx", String(i + 1)));
+      node.appendChild(el("span", null, typeof s === "object" ? str(s.label || s.text) : s));
+      wrap.appendChild(node);
+      if (i < steps.length - 1) wrap.appendChild(el("div", "rc-flow-arrow", "↓"));
+    });
+    const cap = caption(data.caption);
+    if (cap) wrap.appendChild(cap);
+    return wrap;
+  }
+
+  function renderKeyValue(data) {
+    const pairs = (data.pairs && typeof data.pairs === "object") ? data.pairs : null;
+    if (!pairs) return null;
+    const wrap = el("div", "rc-kv-wrap");
+    if (data.title) wrap.appendChild(el("div", "rc-kv-title", data.title));
+    const list = el("div", "rc-kv");
+    Object.keys(pairs).forEach((k) => {
+      const row = el("div", "rc-kv-row");
+      row.appendChild(el("div", "rc-kv-key", k));
+      row.appendChild(el("div", "rc-kv-val", pairs[k]));
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+    const cap = caption(data.caption);
+    if (cap) wrap.appendChild(cap);
+    return wrap;
+  }
+
+  // ── recursion ─────────────────────────────────────────────────────────────
+  function renderChildren(node, depth, container, ctx) {
+    // The model may nest under `children` or under an array-valued `content`.
+    const list = arr(node.children).length ? arr(node.children)
+      : (Array.isArray(node.content) ? node.content : []);
+    let n = 0;
+    for (const c of list) {
+      if (n >= MAX_CHILDREN) break;
+      const r = renderNode(c, depth + 1, ctx);
+      if (r) { container.appendChild(r); n++; }
+    }
+    return container;
+  }
+
+  function renderNode(node, depth, ctx) {
+    ctx = ctx || noopContext();
+    if (!node || typeof node !== "object" || depth > MAX_DEPTH) return null;
+    // A node with children is structural — never route it to a flat leaf
+    // renderer, or the children are silently dropped. Only childless leaves
+    // (and explicit {data:{...}} wrappers) use the flat renderers.
+    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+    if (node.data && typeof node.data === "object" && !node.kind && !node.children) {
+      const ft = String(node.type || "").toLowerCase();
+      if (FLAT[ft]) return FLAT[ft](node.data);
+    }
+    if (!hasChildren && !node.kind && node.type && FLAT[node.type]) {
+      return FLAT[node.type](node);
+    }
+    const kind = normKind(node);
+    const fn = NODES[kind];
+    if (!fn) return null;
+    try { return fn(node, depth, ctx); } catch (e) { return null; }
+  }
+
+  // ── node vocabulary ───────────────────────────────────────────────────────
+  const NODES = {
+    // ── containers ──
+    row(node, depth, ctx) {
+      const d = el("div", "rc-row");
+      d.dataset.align = ["start", "center", "end", "stretch", "baseline"].includes(node.align) ? node.align : "start";
+      d.dataset.justify = ["start", "center", "end", "between"].includes(node.justify) ? node.justify : "start";
+      if (node.wrap) d.dataset.wrap = "1";
+      if (node.gap != null) d.style.gap = num(node.gap, 12, 0, 64) + "px";
+      return renderChildren(node, depth, d, ctx);
+    },
+    col(node, depth, ctx) {
+      const d = el("div", "rc-col");
+      if (node.gap != null) d.style.gap = num(node.gap, 10, 0, 64) + "px";
+      return renderChildren(node, depth, d, ctx);
+    },
+    grid(node, depth, ctx) {
+      const d = el("div", "rc-grid");
+      const cols = num(node.columns != null ? node.columns : node.cols, 2, 1, 8);
+      d.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0, 1fr))";
+      if (node.gap != null) d.style.gap = num(node.gap, 12, 0, 64) + "px";
+      return renderChildren(node, depth, d, ctx);
+    },
+    group(node, depth, ctx) { return renderChildren(node, depth, el("div", "rc-group"), ctx); },
+    box(node, depth, ctx) {
+      const d = el("div", "rc-box rc-tone-" + tone(node.tone, "neutral"));
+      const bg = resolveBg(node.background || node.bg);
+      if (bg) d.style.background = bg;
+      if (node.flex != null && node.flex !== "") {
+        const f = String(node.flex);
+        d.style.flex = (f === "1" || f === "true") ? "1 1 0%" : (/^[0-9.]+$/.test(f) ? f + " 1 0%" : f);
+      }
+      if (node.width != null || node.w != null) d.style.width = resolveSpace(node.width != null ? node.width : node.w);
+      if (node.size && /^[0-9]+(px|rem|em|%)$/.test(String(node.size))) {
+        d.style.width = String(node.size);
+        d.style.height = String(node.size);
+      }
+      if (node.minHeight) d.style.minHeight = resolveSpace(node.minHeight);
+      // A box is a "card" when it opts in with `border` or paints a background.
+      // Otherwise it is a pure layout wrapper and must not draw chrome — that
+      // is what keeps nested flex boxes (agent rows, etc.) clean.
+      const isCard = node.border === true || !!bg;
+      if (node.border === false || !isCard) d.style.border = "none";
+      const rad = resolveRadius(node.radius);
+      if (rad) d.style.borderRadius = rad;
+      const pad = resolveSpace(node.padding != null ? node.padding : node.pad);
+      if (pad) d.style.padding = pad;
+      else if (!isCard) d.style.padding = "0";
+      if (node.align) d.style.alignItems = { start: "flex-start", center: "center", end: "flex-end", stretch: "stretch", baseline: "baseline" }[node.align] || "";
+      if (node.justify) d.style.justifyContent = { start: "flex-start", center: "center", end: "flex-end", between: "space-between" }[node.justify] || "";
+      if (node.gap != null) d.style.gap = num(node.gap, 10, 0, 48) + "px";
+      if (node.title) d.appendChild(el("div", "rc-box-title", interp(String(node.title), ctx)));
+      const body = el("div", "rc-box-body");
+      if (node.gap != null) body.style.gap = num(node.gap, 10, 0, 48) + "px";
+      renderChildren(node, depth, body, ctx);
+      // A plain string body/text with no children still belongs in the box.
+      if (!body.childNodes.length) {
+        const t = node.body != null ? node.body : node.text;
+        if (typeof t === "string" && t.trim()) body.appendChild(el("div", "rc-text", interp(t, ctx)));
+      }
+      d.appendChild(body);
+      return d;
+    },
+    griditem(node, depth, ctx) {
+      const d = el("div", "rc-griditem");
+      return renderChildren(node, depth, d, ctx);
+    },
+
+    // ── reactive primitives ──
+    when(node, depth, ctx) {
+      // {kind:"when", state:"mode", equals:"Fast", children:[...], else:[...]}
+      // test: equals (strict) | truthy (bool) | default truthiness.
+      const cur = getPath(node.state || node.test || "", ctx);
+      let pass;
+      if (node.equals !== undefined) pass = cur === node.equals;
+      else if (node.notEquals !== undefined) pass = cur !== node.notEquals;
+      else if (node.truthy !== undefined) pass = node.truthy ? !!cur : !cur;
+      else pass = !!cur;
+      const branch = pass ? node.children : (node.else || []);
+      const holder = el("div", "rc-when");
+      let n = 0;
+      for (const c of arr(branch)) {
+        if (n >= MAX_CHILDREN) break;
+        const r = renderNode(c, depth + 1, ctx);
+        if (r) { holder.appendChild(r); n++; }
+      }
+      return holder.childNodes.length ? holder : null;
+    },
+    each(node, depth, ctx) {
+      // {kind:"each", over:"items", as:"item", template:{...}}
+      const list = arr(node.over ? getPath(node.over, ctx) : node.items);
+      const holder = el("div", "rc-each");
+      const asName = str(node.as, "item");
+      list.slice(0, MAX_EACH).forEach((item, i) => {
+        const childCtx = Object.create(ctx);
+        childCtx.scope = Object.assign({}, ctx.scope, { [asName]: item, index: i, first: i === 0, last: i === list.length - 1 });
+        const tpl = node.template || node.children;
+        if (Array.isArray(tpl)) {
+          for (const c of tpl) { const r = renderNode(c, depth + 1, childCtx); if (r) holder.appendChild(r); }
+        } else {
+          const r = renderNode(tpl, depth + 1, childCtx);
+          if (r) holder.appendChild(r);
+        }
+      });
+      return holder.childNodes.length ? holder : null;
+    },
+    pressable(node, depth, ctx) {
+      // Clickable container. Binds to state (radio-style) or fires an action.
+      const d = el("div", "rc-pressable");
+      const key = node.state || node.bind;
+      if (key) {
+        const selected = ctx.state[key] === node.value;
+        d.dataset.selected = selected ? "1" : "0";
+        if (node.border !== false) d.classList.add("rc-pressable-bordered");
+        d.addEventListener("click", () => ctx.set(key, node.value));
+      } else if (node.action || node.send != null) {
+        bindAction(d, node, ctx);
+      }
+      if (node.gap != null) d.style.gap = num(node.gap, 8, 0, 32) + "px";
+      return renderChildren(node, depth, d, ctx);
+    },
+    checklist(node, depth, ctx) {
+      // {kind:"checklist", state:"checks", items:[...]}
+      const items = arr(node.items);
+      const key = node.state || "checks";
+      const vals = Array.isArray(ctx.state[key]) ? ctx.state[key] : [];
+      const wrap = el("div", "rc-checklist");
+      const head = el("div", "rc-checklist-head");
+      if (node.title) head.appendChild(el("div", "rc-checklist-title", node.title));
+      const done = items.filter((_, i) => !!vals[i]).length;
+      head.appendChild(el("div", "rc-checklist-count", done + "/" + items.length));
+      wrap.appendChild(head);
+      items.forEach((it, i) => {
+        const label = (it && typeof it === "object") ? str(it.text || it.label) : str(it);
+        const on = !!vals[i];
+        const row = el("button", "rc-check" + (on ? " rc-check-on" : ""));
+        row.type = "button";
+        const box = el("span", "rc-check-box");
+        box.textContent = on ? "\u2713" : "";
+        row.appendChild(box);
+        row.appendChild(el("span", "rc-check-label", label));
+        row.addEventListener("click", () => ctx.setIndex(key, i, !on));
+        wrap.appendChild(row);
+      });
+      if (node.caption) wrap.appendChild(caption(node.caption));
+      return wrap;
+    },
+
+    // ── composites ──
+    hero(node, depth, ctx) {
+      const wrap = el("div", "rc-hero");
+      const top = el("div", "rc-hero-top rc-tone-" + tone(node.tone, "accent"));
+      const src = resolve(str(node.src), ctx) || (arr(node.images)[0] && (arr(node.images)[0].image || arr(node.images)[0].thumbnail));
+      if (src) {
+        const img = document.createElement("img");
+        img.src = src; img.loading = "lazy"; img.alt = "";
+        top.dataset.hasImage = "1"; top.appendChild(img);
+      }
+      const overlay = el("div", "rc-hero-overlay");
+      if (node.title) overlay.appendChild(el("div", "rc-hero-title", interp(String(node.title), ctx)));
+      if (node.subtitle) overlay.appendChild(el("div", "rc-hero-sub", interp(String(node.subtitle), ctx)));
+      if (arr(node.badges).length) {
+        const bc = el("div", "rc-chips rc-hero-badges");
+        arr(node.badges).forEach((b) => bc.appendChild(el("span", "rc-badge rc-tone-accent", interp(typeof b === "object" ? str(b.text) : String(b), ctx))));
+        overlay.appendChild(bc);
+      }
+      top.appendChild(overlay);
+      wrap.appendChild(top);
+      const body = el("div", "rc-hero-body");
+      if (node.text) body.appendChild(el("div", "rc-text", interp(String(node.text), ctx)));
+      renderChildren(node, depth, body, ctx);
+      if (arr(node.actions).length) {
+        const ac = el("div", "rc-hero-actions");
+        arr(node.actions).forEach((a) => {
+          const b = NODES.button(a && typeof a === "object" ? a : { label: a }, depth, ctx);
+          if (b) ac.appendChild(b);
+        });
+        body.appendChild(ac);
+      }
+      wrap.appendChild(body);
+      return wrap;
+    },
+    media(node, depth, ctx) {
+      const wrap = el("div", "rc-media");
+      if (str(node.side, "left") === "right") wrap.dataset.side = "right";
+      const pic = el("div", "rc-media-pic");
+      const src = resolve(str(node.src), ctx) || (arr(node.images)[0] && (arr(node.images)[0].image || arr(node.images)[0].thumbnail));
+      if (src) {
+        const img = document.createElement("img");
+        img.src = src; img.loading = "lazy"; img.alt = str(node.title, "");
+        pic.appendChild(img);
+      } else if (node.emoji) {
+        pic.appendChild(el("span", "rc-media-emoji", node.emoji));
+      } else {
+        pic.appendChild(el("div", "rc-media-ph", ""));
+      }
+      wrap.appendChild(pic);
+      const body = el("div", "rc-media-body");
+      if (node.title) body.appendChild(el("div", "rc-media-title", interp(String(node.title), ctx)));
+      if (node.subtitle) body.appendChild(el("div", "rc-media-sub", interp(String(node.subtitle), ctx)));
+      if (arr(node.badges).length) {
+        const bc = el("div", "rc-chips");
+        arr(node.badges).forEach((b) => bc.appendChild(el("span", "rc-badge rc-tone-accent", interp(typeof b === "object" ? str(b.text) : String(b), ctx))));
+        body.appendChild(bc);
+      }
+      if (node.text) body.appendChild(el("div", "rc-text", interp(String(node.text), ctx)));
+      renderChildren(node, depth, body, ctx);
+      if (arr(node.actions).length) {
+        const ac = el("div", "rc-hero-actions");
+        arr(node.actions).forEach((a) => {
+          const b = NODES.button(a && typeof a === "object" ? a : { label: a }, depth, ctx);
+          if (b) ac.appendChild(b);
+        });
+        body.appendChild(ac);
+      }
+      wrap.appendChild(body);
+      return wrap;
+    },
+    tabs(node, depth, ctx) {
+      const tabs = arr(node.tabs);
+      if (!tabs.length) return null;
+      const wrap = el("div", "rc-tabs");
+      const bar = el("div", "rc-tabs-bar");
+      const panels = el("div", "rc-tabs-panels");
+      tabs.forEach((t, i) => {
+        const btn = el("button", "rc-tab" + (i === 0 ? " active" : ""), str(t && t.label, "Tab " + (i + 1)));
+        btn.type = "button";
+        const panel = el("div", "rc-tab-panel");
+        if (i !== 0) panel.hidden = true;
+        if (t && t.content != null) {
+          if (typeof t.content === "string") panel.appendChild(el("div", "rc-text", interp(t.content, ctx)));
+          else { const r = renderNode(t.content, depth + 1, ctx); if (r) panel.appendChild(r); }
+        }
+        if (t && Array.isArray(t.children)) renderChildren(t, depth, panel, ctx);
+        btn.addEventListener("click", () => {
+          bar.querySelectorAll(".rc-tab").forEach((b) => b.classList.remove("active"));
+          panels.querySelectorAll(".rc-tab-panel").forEach((p) => { p.hidden = true; });
+          btn.classList.add("active"); panel.hidden = false;
+        });
+        bar.appendChild(btn); panels.appendChild(panel);
+      });
+      wrap.appendChild(bar); wrap.appendChild(panels);
+      return wrap;
+    },
+    timeline(node, depth, ctx) {
+      const items = arr(node.items);
+      if (!items.length) return null;
+      const wrap = el("div", "rc-timeline");
+      items.forEach((it) => {
+        const row = el("div", "rc-tl-item");
+        row.appendChild(el("div", "rc-tl-dot rc-tone-" + tone(it && it.tone, "accent")));
+        const body = el("div", "rc-tl-body");
+        if (it && it.title) body.appendChild(el("div", "rc-tl-title", interp(String(it.title), ctx)));
+        if (it && it.text) body.appendChild(el("div", "rc-tl-text", interp(String(it.text), ctx)));
+        row.appendChild(body);
+        wrap.appendChild(row);
+      });
+      return wrap;
+    },
+
+    // ── atoms ──
+    text(node, depth, ctx) {
+      const raw = (node.text != null ? node.text
+        : (node.value != null ? node.value
+        : (node.content != null ? node.content : "")));
+      const v = str(interp(String(raw), ctx), "");
+      if (!v && arr(node.children).length) {
+        const d = el("div", "rc-text");
+        d.style.display = "block";
+        if (node.size) d.dataset.size = ["xs","sm","md","lg"].includes(node.size) ? node.size : "md";
+        if (node.tone) d.dataset.tone = tone(node.tone, "neutral");
+        if (node.color) { const c = resolveColorToken(node.color); if (c) d.style.color = c; }
+        renderInline(node.children, ctx, d);
+        return d.childNodes.length ? d : null;
+      }
+      if (!v) return null;
+      const d = el("div", "rc-text", v);
+      if (node.size) d.dataset.size = ["xs", "sm", "md", "lg"].includes(node.size) ? node.size : "md";
+      if (node.tone) d.dataset.tone = tone(node.tone, "neutral");
+      if (node.weight) d.dataset.weight = String(node.weight);
+      if (node.align) d.style.textAlign = ["left", "center", "right"].includes(node.align) ? node.align : "left";
+      if (node.color) { const c = resolveColorToken(node.color); if (c) d.style.color = c; }
+      return d;
+    },
+    title(node, depth, ctx) {
+      const raw = (node.text != null ? node.text : node.value);
+      const v = str(interp(String(raw == null ? "" : raw), ctx), "");
+      if (!v) return null;
+      const SIZE_LVL = { "3xl": 1, "2xl": 1, xl: 2, lg: 3, md: 4, sm: 4, xs: 4 };
+      const lvl = node.level || SIZE_LVL[node.size] || 4;
+      const d = el("div", "rc-heading rc-h" + num(lvl, 4, 1, 4), v);
+      if (node.tone) d.dataset.tone = tone(node.tone, "neutral");
+      if (node.color) { const c = resolveColorToken(node.color); if (c) d.style.color = c; }
+      return d;
+    },
+    heading(node, depth, ctx) {
+      const v = str(interp(str(node.text), ctx), "");
+      if (!v) return null;
+      return el("div", "rc-heading rc-h" + num(node.level, 3, 1, 4), v);
+    },
+    badge(node, depth, ctx) {
+      const raw = node.text != null ? node.text : node.value;
+      const v = str(interp(str(raw == null ? "" : raw), ctx), "");
+      if (!v) return null;
+      const t = node.tone || node.color || "accent";
+      return el("span", "rc-badge rc-tone-" + tone(t, "accent"), v);
+    },
+    chips(node, depth, ctx) {
+      const wrap = el("div", "rc-chips");
+      arr(node.items).forEach((it) => {
+        const label = typeof it === "object" ? str(it.text || it.label) : str(it);
+        if (label) wrap.appendChild(el("span", "rc-chip", interp(label, ctx)));
+      });
+      return wrap.childNodes.length ? wrap : null;
+    },
+    stat(node, depth, ctx) {
+      const d = el("div", "rc-stat rc-tone-" + tone(node.tone, "neutral"));
+      d.appendChild(el("div", "rc-stat-value", interp(str(node.value, "—"), ctx)));
+      if (node.label) d.appendChild(el("div", "rc-stat-label", interp(String(node.label), ctx)));
+      if (node.delta) {
+        const dl = el("div", "rc-stat-delta", interp(String(node.delta), ctx));
+        dl.dataset.dir = /^\s*-/.test(String(node.delta)) ? "down" : "up";
+        d.appendChild(dl);
+      }
+      return d;
+    },
+    stats(node, depth, ctx) {
+      const wrap = el("div", "rc-stats");
+      arr(node.items).forEach((it) => {
+        if (it && typeof it === "object") { const r = NODES.stat(it, 0, ctx); if (r) wrap.appendChild(r); }
+      });
+      return wrap.childNodes.length ? wrap : null;
+    },
+    progress(node, depth, ctx) {
+      const max = num(node.max, 100, 1, 1e9);
+      let val = node.value;
+      if (typeof val === "string") val = Number(interp(val, ctx));
+      const v = num(val, 0, 0, max);
+      const pct = Math.round((v / max) * 100);
+      const wrap = el("div", "rc-progress");
+      const head = el("div", "rc-progress-head");
+      if (node.label) head.appendChild(el("span", "rc-progress-label", interp(String(node.label), ctx)));
+      head.appendChild(el("span", "rc-progress-val", node.display != null ? interp(String(node.display), ctx) : pct + "%"));
+      wrap.appendChild(head);
+      const track = el("div", "rc-progress-track");
+      const fill = el("div", "rc-progress-fill");
+      fill.style.width = pct + "%";
+      if (node.tone) fill.dataset.tone = tone(node.tone, "accent");
+      track.appendChild(fill); wrap.appendChild(track);
+      return wrap;
+    },
+    image(node, depth, ctx) {
+      if (arr(node.images).length) return renderImage({ images: node.images, caption: node.caption, query: node.query });
+      const src = resolve(str(node.src), ctx);
+      if (!src) return null;
+      const wrap = el("div", "rc-image single rc-node-image");
+      const img = document.createElement("img");
+      img.className = "rc-image-single";
+      img.alt = str(node.caption || node.alt, "");
+      img.loading = "lazy";
+      img.onerror = () => img.replaceWith(el("div", "rc-image-empty", "image unavailable"));
+      img.src = src;
+      if (node.w != null) img.style.maxWidth = num(node.w, 560, 40, 2000) + "px";
+      if (node.h != null) img.style.maxHeight = num(node.h, 480, 40, 2000) + "px";
+      wrap.appendChild(img);
+      const cap = caption(node.caption);
+      if (cap) wrap.appendChild(cap);
+      return wrap;
+    },
+    list(node, depth, ctx) {
+      const d = el(node.ordered ? "ol" : "ul", "rc-list");
+      const kids = arr(node.children);
+      if (kids.length) {
+        kids.forEach((c) => { const r = renderNode(c, depth + 1, ctx); if (r) d.appendChild(r); });
+        return d.childNodes.length ? d : null;
+      }
+      arr(node.items).forEach((it) => {
+        const li = el("li");
+        if (it && typeof it === "object") {
+          if (it.text) li.appendChild(el("span", "rc-li-text", interp(String(it.text), ctx)));
+          if (it.sub) li.appendChild(el("span", "rc-li-sub", interp(String(it.sub), ctx)));
+        } else li.textContent = interp(str(it), ctx);
+        if (li.textContent || li.childNodes.length) d.appendChild(li);
+      });
+      return d.childNodes.length ? d : null;
+    },
+    kv(node, depth, ctx) { return renderKeyValue({ pairs: node.pairs || node.items, title: node.title, caption: node.caption }); },
+    code(node, depth, ctx) {
+      const v = str(interp(String(node.text != null ? node.text : node.value), ctx), "");
+      if (!v) return null;
+      const pre = el("pre", "rc-code");
+      pre.appendChild(el("code", null, v));
+      return pre;
+    },
+    quote(node, depth, ctx) {
+      const v = str(interp(str(node.text), ctx), "");
+      if (!v) return null;
+      const d = el("blockquote", "rc-quote");
+      d.appendChild(el("p", null, v));
+      if (node.cite) d.appendChild(el("cite", "rc-quote-cite", interp(String(node.cite), ctx)));
+      return d;
+    },
+    callout(node, depth, ctx) { return renderCallout({ tone: node.tone, title: node.title, body: node.body }); },
+    table(node, depth, ctx) { return renderTable({ columns: node.columns, rows: node.rows, caption: node.caption }); },
+    chart(node, depth, ctx) {
+      // DIL writes `<Chart content={{...}}/>`; legacy writes labels/series props.
+      const c = (node.content && typeof node.content === "object") ? node.content : node;
+      return renderChart(c);
+    },
+    "segmented-control"(node, depth, ctx) {
+      const wrap = el("div", "rc-segmented");
+      const opts = arr(node.options);
+      const cur = node.value;
+      opts.forEach((o) => {
+        const val = typeof o === "object" ? o.value : o;
+        const lab = typeof o === "object" ? (o.label != null ? o.label : o.value) : o;
+        const b = el("button", "rc-seg-btn" + (val === cur ? " rc-seg-on" : ""), lab);
+        b.type = "button";
+        b.addEventListener("click", () => {
+          if (node.state && ctx) ctx.set(node.state, val);
+        });
+        wrap.appendChild(b);
+      });
+      if (node.block) wrap.dataset.block = "1";
+      return wrap;
+    },
+    segmented(node, depth, ctx) { return NODES["segmented-control"](node, depth, ctx); },
+    button(node, depth, ctx) {
+      const v = str(interp(str(node.label || node.text), ctx), "");
+      if (!v) return null;
+      const hasAction = node.action || node.send != null || node.set != null || node.toggle != null;
+      const b = el(hasAction ? "button" : "span", "rc-button rc-tone-" + tone(node.tone, "accent"), v);
+      if (node.block) b.style.width = "100%";
+      if (node.color) { const c = resolveColorToken(node.color); if (c) b.style.color = c; }
+      if (hasAction) {
+        b.type = "button";
+        // shorthand local mutations
+        if (!node.action && (node.set != null || node.toggle != null)) {
+          b.classList.add("rc-clickable");
+          b.addEventListener("click", (e) => {
+            e.preventDefault();
+            if (node.set != null && typeof node.set === "object") Object.keys(node.set).forEach((k) => ctx.set(k, node.set[k]));
+            if (node.toggle != null) ctx.toggle(node.toggle);
+          });
+        } else {
+          bindAction(b, node, ctx);
+        }
+      }
+      return b;
+    },
+    choices(node, depth, ctx) {
+      const opts = arr(node.options || node.items);
+      if (!opts.length) return null;
+      const wrap = el("div", "rc-choices");
+      if (node.title) wrap.appendChild(el("div", "rc-choices-title", interp(String(node.title), ctx)));
+      const list = el("div", "rc-choices-list");
+      const correctIdx = opts.findIndex((x) => x && typeof x === "object" && x.correct);
+      const key = node.state || node.bind;
+      let selected = key && typeof ctx.state[key] === "number" ? ctx.state[key] : -1;
+      let locked = false;
+      const buttons = [];
+
+      const sendTpl = (node.send != null && node.send !== false) ? String(node.send) : null;
+      const mode = (node.mode === "send" || sendTpl != null) ? "send" : "local";
+
+      const submit = el("button", "rc-submit", str(node.submit || node.submitLabel, "Submit"));
+      submit.type = "button";
+      submit.disabled = selected < 0;
+
+      opts.forEach((o, i) => {
+        const label = (o && typeof o === "object") ? str(o.label || o.text) : str(o);
+        const btn = el("button", "rc-choice" + (i === selected ? " rc-selected" : ""));
+        btn.type = "button";
+        btn.appendChild(el("span", "rc-choice-key", String.fromCharCode(65 + i)));
+        btn.appendChild(el("span", "rc-choice-label", interp(label, ctx)));
+        btn.addEventListener("click", () => {
+          if (locked) return;
+          selected = i;
+          buttons.forEach((b, j) => b.classList.toggle("rc-selected", j === i));
+          submit.disabled = false;
+        });
+        buttons.push(btn);
+        list.appendChild(btn);
+      });
+
+      submit.addEventListener("click", () => {
+        if (locked || selected < 0) return;
+        locked = true;
+        const o = opts[selected] || {};
+        const value = (o && typeof o === "object" && o.value != null) ? o.value : str(o);
+        const label = (o && typeof o === "object") ? str(o.label || o.text) : str(o);
+        buttons.forEach((b) => { b.classList.add("rc-locked"); b.classList.remove("rc-selected"); });
+        if (correctIdx >= 0) {
+          buttons[correctIdx].classList.add("rc-correct");
+          if (selected !== correctIdx) buttons[selected].classList.add("rc-wrong");
+        } else {
+          buttons[selected].classList.add("rc-picked");
+        }
+        submit.disabled = true;
+        submit.classList.add("rc-submitted");
+        submit.textContent = str(node.submittedLabel, mode === "send" ? "Sent" : "Answered");
+
+        const explHost = el("div", "rc-explanation");
+        let hasExpl = false;
+        const explSrc = (node.explanation != null) ? node.explanation : node.reveal;
+        if (explSrc != null) {
+          if (typeof explSrc === "string") explHost.appendChild(el("div", "rc-explanation-text", interp(explSrc, ctx)));
+          else { const r = renderNode(explSrc, depth + 1, ctx); if (r) explHost.appendChild(r); }
+          hasExpl = true;
+        }
+        const picked = (opts[selected] && typeof opts[selected] === "object") ? opts[selected] : {};
+        const pickedExpl = str(picked.explain);
+        const correctExpl = (correctIdx >= 0 && opts[correctIdx] && typeof opts[correctIdx] === "object") ? str(opts[correctIdx].explain) : "";
+        if (pickedExpl) { explHost.appendChild(el("div", "rc-explanation-text rc-explanation-pick", interp(pickedExpl, ctx))); hasExpl = true; }
+        if (correctExpl && correctExpl !== pickedExpl) {
+          explHost.appendChild(el("div", "rc-explanation-text rc-explanation-correct", interp(correctExpl, ctx)));
+          hasExpl = true;
+        }
+        if (hasExpl) {
+          const capEl = wrap.lastChild && wrap.lastChild.classList && wrap.lastChild.classList.contains("rc-cap") ? wrap.lastChild : null;
+          if (capEl) wrap.insertBefore(explHost, capEl); else wrap.appendChild(explHost);
+          requestAnimationFrame(() => explHost.classList.add("rc-explanation-in"));
+        }
+
+        if (mode !== "send") {
+          if (node.set != null && typeof node.set === "object") Object.keys(node.set).forEach((k) => ctx.set(k, node.set[k]));
+          return;
+        }
+        let action = (o && typeof o === "object" && o.action) ? o.action : null;
+        if (!action) {
+          const text = sendTpl ? sendTpl.replace(/\{value\}/g, value).replace(/\{label\}/g, label) : value;
+          action = { send: text };
+        }
+        fireAction(action, node, ctx);
+      });
+
+      wrap.appendChild(list);
+      wrap.appendChild(submit);
+      if (node.caption) wrap.appendChild(caption(interp(String(node.caption), ctx)));
+      return wrap;
+    },
+    toggle(node, depth, ctx) {
+      const d = document.createElement("details");
+      d.className = "rc-toggle";
+      if (node.open) d.open = true;
+      const s = document.createElement("summary");
+      s.className = "rc-toggle-summary";
+      s.textContent = interp(str(node.title || node.label, "Details"), ctx);
+      d.appendChild(s);
+      const body = el("div", "rc-toggle-body");
+      if (node.text) body.appendChild(el("div", "rc-text", interp(String(node.text), ctx)));
+      renderChildren(node, depth, body, ctx);
+      d.appendChild(body);
+      return d;
+    },
+    divider() { return el("hr", "rc-divider"); },
+    spacer(node) {
+      const s = el("div", "rc-spacer");
+      s.style.height = num(node.size, 12, 0, 200) + "px";
+      return s;
+    },
+    icon(node, depth, ctx) {
+      const i = document.createElement("i");
+      i.setAttribute("data-lucide", str(node.name, "circle"));
+      i.className = "rc-icon";
+      const px = ICON_SIZES[String(node.size || "md")] || ICON_SIZES.md;
+      i.style.width = px + "px";
+      i.style.height = px + "px";
+      const c = str(node.color, "");
+      if (c && SAFE_COLOR.test(c)) i.style.color = c;
+      return i;
+    },
+    video(node, depth, ctx) {
+      const src = resolve(str(node.src), ctx);
+      if (!src) return null;
+      const wrap = el("div", "rc-video");
+      const v = document.createElement("video");
+      v.className = "rc-video-el";
+      v.src = src;
+      v.controls = node.controls !== false;
+      v.preload = "metadata";
+      const poster = resolve(str(node.poster), ctx);
+      if (poster) v.poster = poster;
+      wrap.appendChild(v);
+      if (node.caption) wrap.appendChild(caption(interp(String(node.caption), ctx)));
+      return wrap;
+    },
+    file(node, depth, ctx) {
+      const name = interp(str(node.name || (node.path ? String(node.path).split("/").pop() : ""), "File"), ctx);
+      const href = resolve(str(node.src || node.href), ctx);
+      const safe = /^(https?:|mailto:|data:)/i.test(href) ? href : "";
+      const d = el(safe ? "a" : "div", "rc-file");
+      if (safe) { d.href = safe; d.setAttribute("download", ""); d.target = "_blank"; d.rel = "noopener noreferrer"; }
+      d.appendChild(el("span", "rc-file-icon", "\ud83d\udcce"));
+      d.appendChild(el("span", "rc-file-name", name));
+      if (node.size) d.appendChild(el("span", "rc-file-size", interp(String(node.size), ctx)));
+      return d;
+    },
+    link(node, depth, ctx) {
+      const href = str(node.href || node.src);
+      if (!href) return null;
+      // Only http(s)/mailto ever reach an href — a model-supplied javascript:
+      // URL must never become clickable.
+      if (!/^(https?:|mailto:)/i.test(href)) {
+        return el("span", "rc-link rc-link-inert", interp(str(node.label || node.text || href), ctx));
+      }
+      const a = document.createElement("a");
+      a.className = "rc-link";
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = interp(str(node.label || node.text || href), ctx);
+      return a;
+    },
+    avatar(node, depth, ctx) {
+      const wrap = el("div", "rc-avatar");
+      const src = resolve(str(node.src), ctx);
+      if (src) {
+        const img = document.createElement("img");
+        img.src = src; img.alt = str(node.name, "");
+        wrap.appendChild(img);
+      } else {
+        const name = interp(str(node.name, "?"), ctx);
+        wrap.appendChild(el("span", "rc-avatar-init", (name.trim()[0] || "?").toUpperCase()));
+      }
+      if (node.name) wrap.appendChild(el("span", "rc-avatar-name", interp(String(node.name), ctx)));
+      return wrap;
+    },
+  };
+
+  // ── layout (owns state, handles redraw) ───────────────────────────────────
+  function renderLayout(data) {
+    const nodes = arr(data.nodes).slice();
+    if (data.node && typeof data.node === "object") nodes.unshift(data.node);
+    if (!nodes.length) return null;
+
+    const wrap = el("div", "rc-layout");
+    const ctx = makeContext(data.state);
+
+    function draw() {
+      wrap.innerHTML = "";
+      let n = 0;
+      for (const node of nodes) {
+        if (n >= MAX_CHILDREN) break;
+        const r = renderNode(node, 0, ctx);
+        if (r) { wrap.appendChild(r); n++; }
+      }
+      const act = window.activateLucideIcons;
+      if (typeof act === "function") { try { act(wrap); } catch (e) { /* noop */ } }
+    }
+    ctx._draw = draw;
+    draw();
+    return wrap;
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  DIL spec coverage — every component the model can legally emit gets a
+  //  renderer here. Unknown kinds still fall back to text, never vanish.
+  // ══════════════════════════════════════════════════════════════════════════
+
+
+  // Inline rendering: when a <text> contains styled children (<bold>, <italic>,
+  // <Link>...), they must flow on one line, not stack as blocks.
+  const INLINE_KINDS = { bold:1, strong:1, italic:1, em:1, underline:1, strikethrough:1, link:1, cite:1, codecite:1, filecite:1, memorycite:1, entity:1, code:1 };
+  function renderInline(nodes, ctx, container) {
+    arr(nodes).forEach((c) => {
+      if (!c || typeof c !== "object") return;
+      if (c.kind === "__text__" || c.kind === "text") {
+        const t = c.text != null ? String(c.text) : "";
+        if (t) container.appendChild(document.createTextNode(t));
+        return;
+      }
+      if (INLINE_KINDS[c.kind]) {
+        const r = NODES[c.kind] ? NODES[c.kind](c, 0, ctx) : null;
+        if (r) { r.style.display = "inline"; container.appendChild(r); }
+        return;
+      }
+      const r = renderNode(c, 0, ctx);
+      if (r) container.appendChild(r);
+    });
+    return container;
+  }
+
+  function dilText(node, ctx) {
+    const raw = node.text != null ? node.text
+      : (node.value != null ? node.value
+      : (node.content != null ? node.content : null));
+    if (raw == null) {
+      const kids = arr(node.children);
+      return kids.map((c) => (c && c.text) || "").join(" ").trim();
+    }
+    return str(interp(String(raw), ctx), "");
+  }
+
+  function wrapStyle(node, depth, ctx, tag, cls, extra) {
+    const v = dilText(node, ctx);
+    const kids = arr(node.children);
+    const e = el(tag, cls);
+    if (extra) extra(e);
+    if (v) e.textContent = v;
+    else if (kids.length) renderChildren(node, depth, e, ctx);
+    return (e.textContent || e.childNodes.length) ? e : null;
+  }
+
+  Object.assign(NODES, {
+    // ── text styling ────────────────────────────────────────────────
+    bold(node, depth, ctx) { return wrapStyle(node, depth, ctx, "strong", "rc-strong"); },
+    strong(node, depth, ctx) { return NODES.bold(node, depth, ctx); },
+    italic(node, depth, ctx) {
+      return wrapStyle(node, depth, ctx, "em", "rc-italic", (e) => { e.style.fontStyle = "italic"; });
+    },
+    em(node, depth, ctx) { return NODES.italic(node, depth, ctx); },
+    underline(node, depth, ctx) {
+      return wrapStyle(node, depth, ctx, "span", "rc-underline", (e) => { e.style.textDecoration = "underline"; });
+    },
+    strikethrough(node, depth, ctx) {
+      return wrapStyle(node, depth, ctx, "s", "rc-strike", (e) => { e.style.textDecoration = "line-through"; e.style.opacity = "0.7"; });
+    },
+    caption(node, depth, ctx) {
+      const v = dilText(node, ctx);
+      if (!v) return null;
+      return el("div", "rc-cap", v);
+    },
+    math(node, depth, ctx) {
+      const v = dilText(node, ctx);
+      if (!v) return null;
+      const d = el("span", "rc-math", v);
+      d.dataset.display = node.display ? "1" : "0";
+      return d;
+    },
+
+    // ── media primitives ────────────────────────────────────────────
+    favicon(node, depth, ctx) {
+      const dom = str(node.domain || node.href || node.url || dilText(node, ctx), "");
+      if (!dom) return null;
+      const img = document.createElement("img");
+      img.className = "rc-favicon";
+      img.src = "https://www.google.com/s2/favicons?sz=32&domain=" + encodeURIComponent(dom);
+      img.alt = "";
+      img.loading = "lazy";
+      return img;
+    },
+    svg(node, depth, ctx) {
+      const d = el("div", "rc-svg");
+      const v = dilText(node, ctx);
+      if (v) d.textContent = v;
+      else return renderChildren(node, depth, d, ctx).childNodes.length ? d : null;
+      return d;
+    },
+    asyncimage(node, depth, ctx) { return NODES.image(node, depth, ctx); },
+    asyncimagegroup(node, depth, ctx) {
+      const wrap = el("div", "rc-img-group");
+      arr(node.images).forEach((im) => {
+        const src = typeof im === "object" ? (im.image || im.src || im.thumbnail) : im;
+        if (!src) return;
+        const i = document.createElement("img");
+        i.src = src; i.loading = "lazy"; i.alt = (im && im.title) || "";
+        wrap.appendChild(i);
+      });
+      return wrap.childNodes.length ? wrap : null;
+    },
+    asyncvideo(node, depth, ctx) { return NODES.video(node, depth, ctx); },
+
+    // ── layout ──────────────────────────────────────────────────────
+    card(node, depth, ctx) { return NODES.box(node, depth, ctx); },
+    "flow-item"(node, depth, ctx) {
+      const d = el("div", "rc-flow-item");
+      const t = dilText(node, ctx);
+      if (t) d.appendChild(el("div", "rc-flow-title", t));
+      renderChildren(node, depth, d, ctx);
+      return d;
+    },
+    "list-item"(node, depth, ctx) {
+      const li = el("li", "rc-list-item");
+      const t = dilText(node, ctx);
+      if (t) li.appendChild(el("span", "rc-li-text", t));
+      renderChildren(node, depth, li, ctx);
+      return li.childNodes.length ? li : null;
+    },
+    "table-section"(node, depth, ctx) {
+      const sec = el("tbody", "rc-table-section");
+      renderChildren(node, depth, sec, ctx);
+      return sec.childNodes.length ? sec : null;
+    },
+    "table-row"(node, depth, ctx) {
+      const tr = el("tr", "rc-table-row");
+      renderChildren(node, depth, tr, ctx);
+      return tr.childNodes.length ? tr : null;
+    },
+    "table-cell"(node, depth, ctx) {
+      const td = el("td", "rc-table-cell");
+      const t = dilText(node, ctx);
+      if (t) td.textContent = t;
+      else renderChildren(node, depth, td, ctx);
+      return td;
+    },
+    blockquote(node, depth, ctx) { return NODES.quote(node, depth, ctx); },
+
+    // ── collections & navigation ────────────────────────────────────
+    carousel(node, depth, ctx) {
+      const wrap = el("div", "rc-carousel");
+      renderChildren(node, depth, wrap, ctx);
+      return wrap.childNodes.length ? wrap : null;
+    },
+    "carousel-item"(node, depth, ctx) {
+      const d = el("div", "rc-carousel-item");
+      const t = dilText(node, ctx);
+      if (t) d.appendChild(el("div", "rc-carousel-text", t));
+      renderChildren(node, depth, d, ctx);
+      return d.childNodes.length ? d : null;
+    },
+    "carousel-media-item"(node, depth, ctx) {
+      const d = el("div", "rc-carousel-item rc-carousel-media");
+      if (node.src || node.image) {
+        const i = document.createElement("img");
+        i.src = node.src || node.image; i.loading = "lazy"; i.alt = "";
+        d.appendChild(i);
+      }
+      renderChildren(node, depth, d, ctx);
+      return d.childNodes.length ? d : null;
+    },
+    popover(node, depth, ctx) {
+      const d = el("details", "rc-popover");
+      const kids = arr(node.children);
+      const trigger = kids.find((c) => c && (c.kind === "popover-trigger")) || { kind: "summary", text: node.label || "Details" };
+      const content = kids.filter((c) => c && c.kind === "popover-content");
+      const sum = el("summary", "rc-popover-trigger");
+      sum.textContent = dilText(trigger, ctx) || "Details";
+      d.appendChild(sum);
+      const body = el("div", "rc-popover-content");
+      content.forEach((c) => { const r = renderNode(c, depth + 1, ctx); if (r) body.appendChild(r); });
+      d.appendChild(body);
+      return d;
+    },
+    "popover-trigger"(node, depth, ctx) { return wrapStyle(node, depth, ctx, "span", "rc-popover-trigger-label"); },
+    "popover-content"(node, depth, ctx) {
+      const d = el("div", "rc-popover-content");
+      renderChildren(node, depth, d, ctx);
+      return d.childNodes.length ? d : null;
+    },
+
+    // ── inputs ──────────────────────────────────────────────────────
+    form(node, depth, ctx) {
+      const f = el("div", "rc-form");
+      renderChildren(node, depth, f, ctx);
+      return f.childNodes.length ? f : null;
+    },
+    input(node, depth, ctx) {
+      const wrap = el("label", "rc-field");
+      if (node.label) wrap.appendChild(el("span", "rc-field-label", node.label));
+      const i = document.createElement("input");
+      i.className = "rc-input";
+      i.type = node.type || "text";
+      if (node.placeholder) i.placeholder = node.placeholder;
+      if (node.value != null) i.value = node.value;
+      if (node.name) i.name = node.name;
+      wrap.appendChild(i);
+      return wrap;
+    },
+    textarea(node, depth, ctx) {
+      const wrap = el("label", "rc-field");
+      if (node.label) wrap.appendChild(el("span", "rc-field-label", node.label));
+      const t = document.createElement("textarea");
+      t.className = "rc-textarea";
+      if (node.placeholder) t.placeholder = node.placeholder;
+      if (node.value != null) t.value = node.value;
+      if (node.rows) t.rows = Number(node.rows) || 3;
+      wrap.appendChild(t);
+      return wrap;
+    },
+    "radio-group"(node, depth, ctx) {
+      const wrap = el("div", "rc-radio-group");
+      if (node.label) wrap.appendChild(el("div", "rc-field-label", node.label));
+      arr(node.options || node.items).forEach((o) => {
+        const val = typeof o === "object" ? o.value : o;
+        const lab = typeof o === "object" ? (o.label != null ? o.label : o.value) : o;
+        const row = el("label", "rc-radio");
+        const r = document.createElement("input");
+        r.type = "radio"; r.name = node.name || "rg"; r.value = val;
+        row.appendChild(r);
+        row.appendChild(el("span", "rc-radio-label", lab));
+        wrap.appendChild(row);
+      });
+      return wrap.childNodes.length ? wrap : null;
+    },
+    select(node, depth, ctx) {
+      const wrap = el("label", "rc-field");
+      if (node.label) wrap.appendChild(el("span", "rc-field-label", node.label));
+      const s = document.createElement("select");
+      s.className = "rc-select";
+      arr(node.options || node.items).forEach((o) => {
+        const opt = document.createElement("option");
+        opt.value = typeof o === "object" ? o.value : o;
+        opt.textContent = typeof o === "object" ? (o.label != null ? o.label : o.value) : o;
+        s.appendChild(opt);
+      });
+      wrap.appendChild(s);
+      return wrap;
+    },
+    slider(node, depth, ctx) {
+      const wrap = el("label", "rc-field");
+      if (node.label) wrap.appendChild(el("span", "rc-field-label", node.label));
+      const r = document.createElement("input");
+      r.type = "range"; r.className = "rc-slider";
+      if (node.min != null) r.min = node.min;
+      if (node.max != null) r.max = node.max;
+      if (node.step != null) r.step = node.step;
+      if (node.value != null) r.value = node.value;
+      wrap.appendChild(r);
+      return wrap;
+    },
+    "date-picker"(node, depth, ctx) {
+      const wrap = el("label", "rc-field");
+      if (node.label) wrap.appendChild(el("span", "rc-field-label", node.label));
+      const i = document.createElement("input");
+      i.type = "date"; i.className = "rc-input";
+      if (node.value != null) i.value = node.value;
+      wrap.appendChild(i);
+      return wrap;
+    },
+
+    // ── data / citations ────────────────────────────────────────────
+    cite(node, depth, ctx) {
+      const v = dilText(node, ctx);
+      if (!v) return null;
+      const s = el("span", "rc-cite", v);
+      if (node.href) s.title = node.href;
+      return s;
+    },
+    codecite(node, depth, ctx) { return NODES.cite(node, depth, ctx); },
+    filecite(node, depth, ctx) {
+      const v = dilText(node, ctx);
+      if (!v) return null;
+      const s = el("span", "rc-cite rc-filecite", v);
+      if (node.path) s.title = node.path;
+      return s;
+    },
+    memorycite(node, depth, ctx) {
+      const v = dilText(node, ctx);
+      if (!v) return null;
+      return el("span", "rc-cite rc-memorycite", v);
+    },
+    entity(node, depth, ctx) {
+      const v = dilText(node, ctx) || str(node.name, "");
+      if (!v) return null;
+      const s = el("span", "rc-entity", v);
+      if (node.type) s.dataset.type = node.type;
+      return s;
+    },
+    followup(node, depth, ctx) {
+      const v = dilText(node, ctx);
+      if (!v) return null;
+      const b = el("button", "rc-followup", v);
+      b.type = "button";
+      if (node.send != null || node.action) bindAction(b, node, ctx);
+      return b;
+    },
+    filenavlist(node, depth, ctx) {
+      const wrap = el("div", "rc-filenav");
+      arr(node.files || node.items).forEach((f) => {
+        const name = typeof f === "object" ? (f.name || f.path) : f;
+        if (!name) return;
+        const row = el("div", "rc-filenav-item");
+        row.appendChild(el("span", "rc-file-icon", "\uD83D\uDCCE"));
+        row.appendChild(el("span", "rc-filenav-name", name));
+        wrap.appendChild(row);
+      });
+      return wrap.childNodes.length ? wrap : null;
+    },
+    link(node, depth, ctx) { return NODES.link(node, depth, ctx); },
+
+    // ── raw blocks ──────────────────────────────────────────────────
+    appblock(node, depth, ctx) {
+      const d = el("div", "rc-appblock");
+      if (node.app) d.appendChild(el("div", "rc-appblock-title", node.app));
+      renderChildren(node, depth, d, ctx);
+      return d.childNodes.length ? d : null;
+    },
+    codeblock(node, depth, ctx) { return NODES.code(node, depth, ctx); },
+    writingblock(node, depth, ctx) {
+      const d = el("div", "rc-writingblock");
+      renderChildren(node, depth, d, ctx);
+      return d.childNodes.length ? d : null;
+    },
+
+    // ── viz ─────────────────────────────────────────────────────────
+    flow(node, depth, ctx) {
+      const kids = arr(node.children).filter((c) => c && c.kind === "flow-item");
+      if (kids.length) {
+        const wrap = el("div", "rc-flow");
+        kids.forEach((c) => { const r = renderNode(c, depth + 1, ctx); if (r) wrap.appendChild(r); });
+        return wrap.childNodes.length ? wrap : null;
+      }
+      return renderFlow({ steps: node.steps || node.items, caption: node.caption });
+    },
+    mapwidgetv2(node, depth, ctx) {
+      const d = el("div", "rc-map");
+      d.textContent = str(node.place || node.label || node.query, "Map");
+      return d;
+    },
+  });
+
+  // Unknown-kind safety net: never silently drop a node — show it as text.
+  const _origRenderNode = renderNode;
+  renderNode = function (node, depth, ctx) {
+    const r = _origRenderNode(node, depth, ctx);
+    if (r) return r;
+    if (node && typeof node === "object" && node.kind && !NODES[node.kind]) {
+      const t = node.text != null ? String(node.text) : "";
+      if (t.trim()) return el("div", "rc-text rc-unknown", t);
+    }
+    return null;
+  };
+
+  // ── registries ────────────────────────────────────────────────────────────
+  const FLAT = {
+    image: (d) => renderImage(d),
+    card: (d) => renderCard(d),
+    table: (d) => renderTable(d),
+    callout: (d) => renderCallout(d),
+    chart: (d) => renderChart(d),
+    flow: (d) => renderFlow(d),
+    keyvalue: (d) => renderKeyValue(d),
+    layout: (d) => renderLayout(d),
+  };
+
+  function render(payload, container) {
+    const comps = arr(payload && payload.components);
+    if (!comps.length) return null;
+    const root = el("div", "rc-root");
+    comps.forEach((comp) => {
+      if (!comp || typeof comp !== "object") return;
+      const fn = FLAT[comp.type];
+      const node = fn ? fn(comp.data || {}) : null;
+      if (node) root.appendChild(node);
+    });
+    if (!root.childNodes.length) return null;
+    container.appendChild(root);
+    return root;
+  }
+
+  window.SableComponents = { render };
+})();

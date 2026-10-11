@@ -40,6 +40,7 @@ from engine.config import (
 from engine.library_ingest import make_thumbnail, thumb_path
 
 from engine.library_ingest import (
+    clean_meta_title,
     convert_to_pdf as _shared_convert_to_pdf,
     extract_pdf as _shared_extract_pdf,
     pdf_tool,
@@ -185,9 +186,10 @@ async def _run_upload_pipeline(upload_id: str, *, filename: str, ext: str) -> No
         _ensure_dirs()
         doc_id = uuid.uuid4().hex
 
-        title = (extracted.get("meta_title") or "").strip()
-        if not title or title.lower() in {"untitled", "unknown"}:
-            title = Path(filename).stem
+        # Same rule as the shared ingester: LibreOffice stamps "PowerPoint
+        # Presentation" / "Microsoft Word - x.docx" into the PDF metadata,
+        # which would otherwise become the library title verbatim.
+        title = clean_meta_title(extracted.get("meta_title") or "", filename)
 
         meta: dict[str, Any] = {
             "version": _META_VERSION,

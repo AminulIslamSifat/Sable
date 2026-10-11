@@ -142,6 +142,10 @@ def build_tool_feedback(
         if tag_id not in ends:
             continue
         end = ends[tag_id]
+        # Silent tools are presentation-only (e.g. attach_image). They render
+        # to the UI but must never leak "[attach_image] OK" back to the model.
+        if (end.get("result") or {}).get("silent"):
+            continue
         name = end.get("name") or starts.get(tag_id, {}).get("name", "unknown")
         ok = end.get("ok", False)
         duration = end.get("duration_ms", 0)
