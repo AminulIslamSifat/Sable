@@ -55,87 +55,11 @@
         if (Array.isArray(message.memory_used) && message.memory_used.length) {
           attachMemoryChip(msgDiv, message.memory_used);
         }
-        // Ensure user messages from DB have copy + TTS toolbar
-        let toolbar = msgDiv.querySelector(".msg-toolbar");
-        if (!toolbar) {
-          toolbar = document.createElement("div");
-          toolbar.className = "msg-toolbar";
-          msgDiv.appendChild(toolbar);
-        }
-        if (!toolbar.querySelector('[title="Copy"]')) {
-          const copyBtn = document.createElement("button");
-          copyBtn.innerHTML = '<i data-lucide="copy"></i>';
-          copyBtn.title = "Copy";
-          copyBtn.addEventListener("click", () => {
-            const userTextEl = msgDiv.querySelector(".user-text");
-            const copyText = userTextEl ? userTextEl.textContent : displayContent;
-            navigator.clipboard.writeText(copyText).then(() => {
-              copyBtn.innerHTML = '<i data-lucide="check"></i>';
-              activateLucideIcons(copyBtn);
-              setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
-            });
-          });
-          toolbar.appendChild(copyBtn);
-        }
-        if (!toolbar.querySelector('[title="Read aloud"]')) {
-          const ttsBtn = document.createElement("button");
-          ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-          ttsBtn.title = "Read aloud";
-          ttsBtn.addEventListener("click", async () => {
-            const now = Date.now();
-            const delta = now - _ttsLastAction;
-            const btnId = ttsBtn.dataset.msgId || ttsBtn.closest('[data-id]')?.dataset.id || 'unknown';
-            const activeBtnId = _activeTTS.btn ? (_activeTTS.btn.dataset.msgId || _activeTTS.btn.closest('[data-id]')?.dataset.id || 'unknown') : 'none';
-            console.log(`[TTS-DEBUG] user-msg click | delta=${delta}ms | _ttsActive=${_ttsActive} | gen=${_ttsGeneration} | btnMsg=${btnId} | activeBtnMsg=${activeBtnId} | btnTitle=${ttsBtn.title}`);
-            if (delta < TTS_DEBOUNCE_MS) {
-              console.log(`[TTS-DEBUG] user-msg click BLOCKED by debounce (${delta}ms < ${TTS_DEBOUNCE_MS}ms)`);
-              return;
-            }
-            if (_ttsActive) {
-              console.log(`[TTS-DEBUG] user-msg click → stopping active TTS`);
-              stopGlobalTTS();
-              return;
-            }
-            _ttsLastAction = now;
-            const userTextEl = msgDiv.querySelector(".user-text");
-            const text = userTextEl ? userTextEl.textContent : displayContent;
-            if (!text) return;
-            _ttsActive = true;
-            const gen = ++_ttsGeneration;
-            _activeTTS.gen = gen;
-            console.log(`[TTS-DEBUG] user-msg START | gen=${gen} | textLen=${text.length}`);
-            const player = new TTSStreamPlayer((state) => {
-              console.log(`[TTS-DEBUG] user-msg onStateChange="${state}" | gen=${gen} | currentGen=${_ttsGeneration}`);
-              if (_ttsGeneration !== gen) return;
-              if (state === "loading") {
-                ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
-                ttsBtn.title = "Loading...";
-              } else if (state === "playing") {
-                ttsBtn.innerHTML = '<i data-lucide="square"></i>';
-                ttsBtn.title = "Stop";
-                ttsBtn.classList.add("tts-playing");
-              } else {
-                ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-                ttsBtn.title = "Read aloud";
-                ttsBtn.classList.remove("tts-playing");
-                // Natural completion: reset _ttsActive so next click can start
-                // If stopGlobalTTS() initiated this stop, it handles _ttsActive via timeout
-                if (!_ttsStopping) {
-                  _ttsActive = false;
-                  console.log(`[TTS-DEBUG] user-msg natural end | _ttsActive→false`);
-                }
-                _activeTTS.player = null;
-                _activeTTS.btn = null;
-                _activeTTS.gen = -1;
-              }
-              activateLucideIcons(ttsBtn);
-            });
-            _activeTTS.player = player;
-            _activeTTS.btn = ttsBtn;
-            player.play(text);
-          });
-          toolbar.appendChild(ttsBtn);
-        }
+        // Copy + read-aloud are shared across every message kind — see
+        // msg-actions.js. The checkpoint / fork buttons below stay here.
+        let toolbar = window.MsgActions.ensureToolbar(msgDiv);
+        window.MsgActions.addCopy(toolbar, msgDiv, "user");
+        window.MsgActions.addTTS(toolbar, msgDiv, "user");
         // Checkpoint restore button (git-branch icon)
         if (!toolbar.querySelector('[title="Restore checkpoint"]') && message.id) {
           const cpBtn = document.createElement("button");
@@ -214,64 +138,10 @@
     // Attach copy + TTS toolbar to a .msg.bot div (reused by history + round_text)
     function _attachBotToolbar(msgDiv) {
       if (!msgDiv || msgDiv.querySelector(".msg-toolbar")) return;
-      const toolbar = document.createElement("div");
-      toolbar.className = "msg-toolbar";
-      const copyBtn = document.createElement("button");
-      copyBtn.innerHTML = '<i data-lucide="copy"></i>';
-      copyBtn.title = "Copy";
-      copyBtn.addEventListener("click", () => {
-        const md = msgDiv.querySelector(".md-content");
-        const text = md ? (md.dataset.raw || md.innerText) : "";
-        navigator.clipboard.writeText(text).then(() => {
-          copyBtn.innerHTML = '<i data-lucide="check"></i>';
-          activateLucideIcons(copyBtn);
-          setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
-        });
-      });
-      const ttsBtn = document.createElement("button");
-      ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-      ttsBtn.title = "Read aloud";
-      ttsBtn.addEventListener("click", async () => {
-        const now = Date.now();
-        const delta = now - _ttsLastAction;
-        if (delta < TTS_DEBOUNCE_MS) return;
-        if (_ttsActive) { stopGlobalTTS(); return; }
-        _ttsLastAction = now;
-        const md = msgDiv.querySelector(".md-content");
-        const text = md ? md.innerText : "";
-        if (!text) return;
-        _ttsActive = true;
-        const gen = ++_ttsGeneration;
-        _activeTTS.gen = gen;
-        const player = new TTSStreamPlayer((state) => {
-          if (_ttsGeneration !== gen) return;
-          if (state === "loading") {
-            ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
-            ttsBtn.title = "Loading...";
-          } else if (state === "playing") {
-            ttsBtn.innerHTML = '<i data-lucide="square"></i>';
-            ttsBtn.title = "Stop";
-            ttsBtn.classList.add("tts-playing");
-          } else {
-            ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-            ttsBtn.title = "Read aloud";
-            ttsBtn.classList.remove("tts-playing");
-            if (!_ttsStopping) _ttsActive = false;
-            _activeTTS.player = null;
-            _activeTTS.btn = null;
-            _activeTTS.gen = -1;
-          }
-          activateLucideIcons(ttsBtn);
-        });
-        _activeTTS.player = player;
-        _activeTTS.btn = ttsBtn;
-        player.play(text);
-      });
-      toolbar.appendChild(copyBtn);
-      toolbar.appendChild(ttsBtn);
-      msgDiv.appendChild(toolbar);
-      // ponytail: Skip per-element icon scan during bulk history render
-      if (!window._historyLoading) activateLucideIcons(toolbar);
+      // Shared implementation — see msg-actions.js. Icon activation is skipped
+      // during bulk history render (window._historyLoading) to avoid a
+      // per-message scan; the caller activates icons once at the end.
+      window.MsgActions.attach(msgDiv, "bot", { skipIcons: !!window._historyLoading });
     }
 
     // ponytail: Cap stored skill_output text during history replay.
@@ -2280,110 +2150,30 @@
             answerEl.classList.remove("streaming");
             answerContent.textContent = "⚠ Empty response from upstream — check server terminal for WAF/auth details.";
           }
-          // Attach toolbar to every bot message in this turn
+          // Attach toolbar to every bot message in this turn.
+          // Copy + read-aloud come from msg-actions.js (shared with every other
+          // message kind); only the Regenerate handler is local to the stream.
           turn.querySelectorAll(".msg.bot").forEach(botEl => {
             if (botEl.querySelector(".msg-toolbar")) return;
-            const toolbar = document.createElement("div");
-            toolbar.className = "msg-toolbar";
-
-            const copyBtn = document.createElement("button");
-            copyBtn.innerHTML = '<i data-lucide="copy"></i>';
-            copyBtn.title = "Copy";
-            copyBtn.addEventListener("click", () => {
-              const md = botEl.querySelector(".md-content");
-              const text = md ? (md.dataset.raw || md.innerText) : "";
-              navigator.clipboard.writeText(text).then(() => {
-                copyBtn.innerHTML = '<i data-lucide="check"></i>';
-                activateLucideIcons(copyBtn);
-                setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
-              });
-            });
-
-            const regenBtn = document.createElement("button");
-            regenBtn.innerHTML = '<i data-lucide="refresh-cw"></i>';
-            regenBtn.title = "Regenerate";
-            regenBtn.addEventListener("click", () => {
-              if (isStreaming()) return;
-              // Find the preceding user message in this chat
-              const pane = botEl.closest(".tab-pane") || activePane;
-              const allMsgs = Array.from(pane.querySelectorAll(".msg.user"));
-              const thisTurn = botEl.closest(".turn");
-              let prevUser = null;
-              for (const u of allMsgs) {
-                if (u.compareDocumentPosition(thisTurn) & Node.DOCUMENT_POSITION_FOLLOWING) {
-                  prevUser = u;
+            window.MsgActions.attach(botEl, "bot", {
+              speedTurn: turn,
+              regen: () => {
+                if (isStreaming()) return;
+                const pane = botEl.closest(".tab-pane") || activePane;
+                const allMsgs = Array.from(pane.querySelectorAll(".msg.user"));
+                const thisTurn = botEl.closest(".turn");
+                let prevUser = null;
+                for (const u of allMsgs) {
+                  if (u.compareDocumentPosition(thisTurn) & Node.DOCUMENT_POSITION_FOLLOWING) prevUser = u;
                 }
+                if (!prevUser) { showToast("No user message to regenerate from", "error"); return; }
+                const userText = prevUser.querySelector(".user-text")?.textContent || "";
+                if (!userText) return;
+                turn.remove();
+                inputEl.value = userText;
+                sendMessage();
               }
-              if (!prevUser) { showToast("No user message to regenerate from", "error"); return; }
-              const userText = prevUser.querySelector(".user-text")?.textContent || "";
-              if (!userText) return;
-              // Remove this turn from UI
-              turn.remove();
-              // Re-send with current parentId (server will branch)
-              inputEl.value = userText;
-              sendMessage();
             });
-
-            // TTS read-aloud button (streaming)
-            const ttsBtn = document.createElement("button");
-            ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-            ttsBtn.title = "Read aloud";
-            ttsBtn.addEventListener("click", async () => {
-              const now = Date.now();
-              const delta = now - _ttsLastAction;
-              console.log(`[TTS-DEBUG] stream-bot click | delta=${delta}ms | _ttsActive=${_ttsActive} | gen=${_ttsGeneration}`);
-              if (delta < TTS_DEBOUNCE_MS) {
-                console.log(`[TTS-DEBUG] stream-bot click BLOCKED by debounce (${delta}ms < ${TTS_DEBOUNCE_MS}ms)`);
-                return;
-              }
-              if (_ttsActive) {
-                console.log(`[TTS-DEBUG] stream-bot click → stopping active TTS`);
-                stopGlobalTTS();
-                return;
-              }
-              _ttsLastAction = now;
-              const md = botEl.querySelector(".md-content");
-              const text = md ? md.innerText : "";
-              if (!text) return;
-              _ttsActive = true;
-              const gen = ++_ttsGeneration;
-              _activeTTS.gen = gen;
-              console.log(`[TTS-DEBUG] stream-bot START | gen=${gen} | textLen=${text.length}`);
-              const player = new TTSStreamPlayer((state) => {
-                console.log(`[TTS-DEBUG] stream-bot onStateChange="${state}" | gen=${gen} | currentGen=${_ttsGeneration}`);
-                if (_ttsGeneration !== gen) return;
-                if (state === "loading") {
-                  ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
-                  ttsBtn.title = "Loading...";
-                } else if (state === "playing") {
-                  ttsBtn.innerHTML = '<i data-lucide="square"></i>';
-                  ttsBtn.title = "Stop";
-                  ttsBtn.classList.add("tts-playing");
-                } else {
-                  ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-                  ttsBtn.title = "Read aloud";
-                  ttsBtn.classList.remove("tts-playing");
-                  if (!_ttsStopping) {
-                    _ttsActive = false;
-                    console.log(`[TTS-DEBUG] stream-bot natural end | _ttsActive→false`);
-                  }
-                  _activeTTS.player = null;
-                  _activeTTS.btn = null;
-                  _activeTTS.gen = -1;
-                }
-                activateLucideIcons(ttsBtn);
-              });
-              _activeTTS.player = player;
-              _activeTTS.btn = ttsBtn;
-              player.play(text);
-            });
-
-            toolbar.appendChild(copyBtn);
-            toolbar.appendChild(regenBtn);
-            toolbar.appendChild(ttsBtn);
-            attachSpeedBadge(toolbar, turn);
-            botEl.appendChild(toolbar);
-            activateLucideIcons(toolbar);
           });
 
           // Commands ran but no normal answer ever arrived — pin a retry bar

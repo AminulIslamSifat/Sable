@@ -804,87 +804,11 @@
         }
         // Copy toolbar for user messages
         if (text) {
-          const toolbar = document.createElement("div");
-          toolbar.className = "msg-toolbar";
-          const copyBtn = document.createElement("button");
-          copyBtn.innerHTML = '<i data-lucide="copy"></i>';
-          copyBtn.title = "Copy";
-          copyBtn.addEventListener("click", () => {
-            // Read from DOM at click-time for reliability
-            const userTextEl = div.querySelector(".user-text");
-            const copyText = userTextEl ? userTextEl.textContent : text;
-            const onSuccess = () => {
-              copyBtn.innerHTML = '<i data-lucide="check"></i>';
-              activateLucideIcons(copyBtn);
-              setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
-            };
-            if (navigator.clipboard && window.isSecureContext) {
-              navigator.clipboard.writeText(copyText).then(onSuccess).catch(() => {
-                // Fallback for non-secure contexts
-                const ta = document.createElement("textarea");
-                ta.value = copyText;
-                ta.style.position = "fixed";
-                ta.style.opacity = "0";
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand("copy");
-                document.body.removeChild(ta);
-                onSuccess();
-              });
-            } else {
-              const ta = document.createElement("textarea");
-              ta.value = copyText;
-              ta.style.position = "fixed";
-              ta.style.opacity = "0";
-              document.body.appendChild(ta);
-              ta.select();
-              document.execCommand("copy");
-              document.body.removeChild(ta);
-              onSuccess();
-            }
-          });
-          toolbar.appendChild(copyBtn);
-
-          // TTS button for live user messages
-          const ttsBtn = document.createElement("button");
-          ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-          ttsBtn.title = "Read aloud";
-          ttsBtn.addEventListener("click", async () => {
-            const now = Date.now();
-            if (now - _ttsLastAction < TTS_DEBOUNCE_MS) return;
-            if (_ttsActive) { stopGlobalTTS(); return; }
-            _ttsLastAction = now;
-            const userTextEl = div.querySelector(".user-text");
-            const ttsText = userTextEl ? userTextEl.textContent : text;
-            if (!ttsText) return;
-            _ttsActive = true;
-            const gen = ++_ttsGeneration;
-            _activeTTS.gen = gen;
-            const player = new TTSStreamPlayer((state) => {
-              if (_ttsGeneration !== gen) return;
-              if (state === "loading") {
-                ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
-                ttsBtn.title = "Loading...";
-              } else if (state === "playing") {
-                ttsBtn.innerHTML = '<i data-lucide="square"></i>';
-                ttsBtn.title = "Stop";
-                ttsBtn.classList.add("tts-playing");
-              } else {
-                ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-                ttsBtn.title = "Read aloud";
-                ttsBtn.classList.remove("tts-playing");
-                if (!_ttsStopping) _ttsActive = false;
-                _activeTTS.player = null;
-                _activeTTS.btn = null;
-                _activeTTS.gen = -1;
-              }
-              activateLucideIcons(ttsBtn);
-            });
-            _activeTTS.player = player;
-            _activeTTS.btn = ttsBtn;
-            player.play(ttsText);
-          });
-          toolbar.appendChild(ttsBtn);
+          // Copy + read-aloud are shared across every message kind — see
+          // msg-actions.js. Only the fork button below is chat.js-specific.
+          const toolbar = window.MsgActions.ensureToolbar(div);
+          window.MsgActions.addCopy(toolbar, div, "user");
+          window.MsgActions.addTTS(toolbar, div, "user");
 
           // Fork button — starts disabled until SSE delivers the DB message ID
           const forkBtn = document.createElement("button");
@@ -972,9 +896,10 @@
       if (!userMsgDiv || !Array.isArray(memories) || !memories.length) return;
       if (userMsgDiv.querySelector(".memory-chip")) return;  // no duplicates
       const chip = createMemoryChip(memories);
-      const toolbar = userMsgDiv.querySelector(".msg-toolbar");
-      if (toolbar) userMsgDiv.insertBefore(chip, toolbar);
-      else userMsgDiv.appendChild(chip);
+      // The toolbar is pinned last via `order:9999`, so DOM position no longer
+      // controls layout — just append and give the chip an earlier order.
+      chip.style.order = "1";
+      userMsgDiv.appendChild(chip);
     }
 
     function openMemoryPopup(memories) {

@@ -154,4 +154,24 @@
 
   window.openLightbox = openLightbox;
   window.closeLightbox = closeLightbox;
+
+  /* Delegated fallback: markdown renders raw <img> strings (no chance to bind
+   * per-node), and other panels may add images dynamically. Catch any image
+   * inside rendered markdown that isn't already wired (rc-image-el binds its
+   * own handler and opts out via data-no-lightbox). */
+  document.addEventListener('click', function (e) {
+    var img = e.target && e.target.closest && e.target.closest('img');
+    if (!img) return;
+    if (img.classList.contains('rc-image-el') || img.hasAttribute('data-no-lightbox')) return;
+    if (!img.closest('.md-content')) return;
+    var src = img.currentSrc || img.src;
+    if (!src) return;
+    // Collect sibling images in the same markdown block for arrow navigation.
+    var scope = img.closest('.md-content') || img.parentNode;
+    var all = scope ? [].slice.call(scope.querySelectorAll('img'))
+      .filter(function (i) { return !i.hasAttribute('data-no-lightbox'); })
+      .map(function (i) { return i.currentSrc || i.src; }) : [src];
+    var idx = all.indexOf(src);
+    openLightbox(all.length ? all : [src], idx < 0 ? 0 : idx);
+  });
 })();

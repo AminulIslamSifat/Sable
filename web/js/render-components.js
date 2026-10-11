@@ -540,6 +540,26 @@
     return container.childNodes.length ? container : null;
   }
 
+  // `__if__` — server-emitted conditional. The parser ships EVERY branch along
+  // with its raw `cond` source, and the client picks the winner against live
+  // state on each render. Without this the parser collapsed to the first
+  // matching branch at parse time and dropped the rest, so `{#if tab==="B"}`
+  // could never appear no matter what the user clicked.
+  R.__if__ = function (node, depth, ctx) {
+    var frag = document.createDocumentFragment();
+    var branches = arr(node.branches);
+    for (var i = 0; i < branches.length; i++) {
+      var br = branches[i] || {};
+      var cond = String(br.cond == null ? "" : br.cond).trim();
+      var body = arr(br.nodes).length ? br.nodes : arr(br.children);
+      if (cond === "true" || cond === "" || evalExpr(cond, ctx)) {
+        renderNodesInto(frag, body, ctx);
+        break;
+      }
+    }
+    return frag;
+  };
+
   R.box = function (node, depth, ctx) {
     var bg = resolveBg(node.background || node.bg);
     // `card` (JSON schema) implies a bordered surface; `box` (DIL) only when
@@ -777,12 +797,11 @@
     return R.image({ images: srcs, caption: n.caption || n.alt, alt: n.alt });
   };
   R.asyncvideo = function (n) {
-    var src = str(n.src || n.url || n.video);
-    if (!src) return null;
-    var v = document.createElement("video");
-    v.className = "rc-video"; v.src = src; v.controls = true; v.preload = "metadata";
-    if (n.poster) v.poster = String(n.poster);
-    return v;
+    // Delegate to R.video — it owns the wrapper/player split and the error
+    // handler. Setting `rc-video` on the <video> itself was wrong: after the
+    // CSS split that class is the *wrapper*, so the player got no sizing rules
+    // and spilled over the card title.
+    return R.video({ src: n.src || n.url || n.video, poster: n.poster, caption: n.caption });
   };
 
   // ══ layout: collections, navigation, tables ════════════════════════════
@@ -1254,12 +1273,25 @@
     var used = Object.create(null);
     srcs.forEach(function (s) { used[s] = true; });
 
-    srcs.forEach(function (src) {
+    srcs.forEach(function (src, _idx) {
       var img = document.createElement("img");
       img.className = "rc-image-el";
       img.alt = str(node.caption || node.alt, "");
       img.loading = "lazy";
       img.decoding = "async";
+      // Click to open in Sable's in-app lightbox. Pass the whole live set +
+      // this tile's index so multi-image grids let you arrow between them.
+      img.style.cursor = "zoom-in";
+      img.addEventListener("click", function () {
+        if (typeof window.openLightbox !== "function") return;
+        // Read the CURRENT src of every tile (fallback pool may have swapped
+        // a dead URL for a fresh one) so the viewer shows what's on screen.
+        var live = [].slice.call(holder.querySelectorAll(".rc-image-el"))
+          .map(function (el) { return el.currentSrc || el.src; })
+          .filter(Boolean);
+        var start = live.indexOf(this.currentSrc || this.src);
+        window.openLightbox(live.length ? live : [src], start < 0 ? _idx : start);
+      });
       // Tag vector / animated assets so CSS can letterbox them instead of
       // cropping. An SVG with only a viewBox has no intrinsic size — cover-
       // fitting it into a fixed box is what collapsed the schematic to nothing.
@@ -1293,9 +1325,14 @@
     var wrap = el("div", "rc-video");
     var v = document.createElement("video");
     v.className = "rc-video-el";
-    v.style.width = "100%";
     v.controls = node.controls !== false;
+    v.preload = str(node.preload, "metadata");   // don't pull the whole file
+    v.playsInline = true;
     if (node.poster) v.poster = str(node.poster);
+    // Dead source -> drop the player instead of leaving a black box behind.
+    v.addEventListener("error", function () {
+      if (wrap.parentNode) wrap.remove();
+    }, { once: true });
     v.src = src;
     wrap.appendChild(v);
     if (node.caption) wrap.appendChild(el("div", "rc-cap", String(node.caption)));

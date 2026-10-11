@@ -336,7 +336,22 @@
 .rc-root .rc-favicon { width: 16px; height: 16px; border-radius: 3px; vertical-align: -3px; margin-right: 4px; }
 .rc-root .rc-svg { display: flex; justify-content: center; padding: 6px 0; }
 .rc-root .rc-svg svg { max-width: 100%; height: auto; }
-.rc-root .rc-video { width: 100%; max-height: 380px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
+/* ── video ────────────────────────────────────────────────────────────── */
+/* Constraint lives on the <video>, NOT the wrapper. max-height on the wrapper
+   clipped nothing (overflow: visible) — the inline <video> just spilled out
+   and painted over the card title. */
+.rc-root .rc-video { display: flex; flex-direction: column; gap: 6px; width: 100%; align-items: flex-start; }
+.rc-root .rc-video-el {
+  display: block;        /* kills the inline baseline gap */
+  width: 100%;
+  max-width: 100%;
+  max-height: 380px;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #000;
+  object-fit: contain;
+}
 
 /* ── flow item / list item / pressable ────────────────────────────────── */
 .rc-root .rc-li { color: var(--dim); }

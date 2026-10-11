@@ -112,15 +112,25 @@ _PRIM = {"true": True, "false": False, "null": None, "undefined": None}
 
 
 def _split_top(s: str, sep: str) -> list[str]:
-    """Split on `sep` at bracket/paren/brace/quote depth 0."""
+    """Split on `sep` at bracket/paren/brace/quote depth 0.
+
+    `sep` may be multi-character (`===`, `!==`, `<=` ...). The old one-char
+    compare could never match those: splitting `tab === "A"` on `=` produced
+    four pieces, the comparison handler in `_eval` bailed on `len(parts) == 2`,
+    and the expression fell through to `_literal` -- a truthy `("raw", ...)`
+    tuple. Net effect: every `{#if}` branch rendered at once.
+    """
     out, depth, buf, q = [], 0, [], None
-    for ch in s:
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
         if q:
             buf.append(ch)
             if ch == q:
                 q = None
+            i += 1
             continue
-        if ch in "\"'":
+        if ch == '"' or ch == "'":
             q = ch
             buf.append(ch)
         elif ch in "([{":
@@ -129,11 +139,14 @@ def _split_top(s: str, sep: str) -> list[str]:
         elif ch in ")]}":
             depth -= 1
             buf.append(ch)
-        elif ch == sep and depth == 0:
+        elif depth == 0 and s.startswith(sep, i):
             out.append("".join(buf))
             buf = []
+            i += len(sep)
+            continue
         else:
             buf.append(ch)
+        i += 1
     out.append("".join(buf))
     return out
 
@@ -235,13 +248,25 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
             if len(branches) == 2:
                 return _eval(branches[1], state, scope)
 
-    # equality / comparison
-    for op in ("===", "!==", "==", "!="):
-        parts = _split_top(e, op[0])
-        if len(parts) == 2 and parts[0] and parts[1]:
+    # equality / comparison -- split on the FULL operator token, never op[0].
+    # `_split_top` now understands multi-char separators, so `===` is matched
+    # whole instead of shattering on the first `=`.
+    for op in ("===", "!==", "==", "!=", "<=", ">=", "<", ">"):
+        parts = _split_top(e, op)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
             a = _eval(parts[0], state, scope)
             b = _eval(parts[1], state, scope)
-            return (a == b) if op in ("===", "==") else (a != b)
+            if op in ("===", "=="):
+                return a == b
+            if op in ("!==", "!="):
+                return a != b
+            if op == "<=":
+                return a <= b
+            if op == ">=":
+                return a >= b
+            if op == "<":
+                return a < b
+            return a > b
 
     if e.startswith("!"):
         return not _eval(e[1:], state, scope)
@@ -608,10 +633,26 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 break
             else:
                 break
+        # Emit a RE-EVALUABLE conditional instead of collapsing to the winner.
+        #
+        # The old `return coalesce(body)` for the first truthy branch baked the
+        # parse-time result into the tree and THREW THE OTHER BRANCHES AWAY.
+        # The client never received them, so `{#if tab==="B"}` could never
+        # appear no matter what the user clicked -- `tab` would flip but the
+        # body stayed frozen on whatever branch won at parse time.
+        #
+        # Now every branch ships with its raw condition; `children` still holds
+        # the initial winner so first paint is correct even before the client
+        # resolves anything.
+        branch_nodes = [
+            {"cond": c, "nodes": coalesce(body)} for c, body in branches
+        ]
+        chosen: list[dict[str, Any]] = []
         for c, body in branches:
             if _eval(c, state, scope):
-                return coalesce(body)
-        return []
+                chosen = coalesce(body)
+                break
+        return [{"kind": "__if__", "branches": branch_nodes, "children": chosen}]
 
     def parse_each(header: str, scope: dict) -> list[dict[str, Any]]:
         m = re.match(r"(.+?)\s+as\s+(\w+)\s*(?:,\s*(\w+))?$", header, re.DOTALL)
@@ -648,6 +689,18 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                     "__expr__": raw,
                 }
             return node
+        if node.get("kind") == "__if__":
+            # Inside an {#each} the branch condition may reference the loop var,
+            # which only the server can resolve. Re-pick the winner here against
+            # the sub-scope, and carry every branch through unchanged so the
+            # client can still re-evaluate top-level state.
+            branches = node.get("branches") or []
+            chosen: list[dict[str, Any]] = []
+            for br in branches:
+                if _eval(br.get("cond", ""), state, sub):
+                    chosen = coalesce([_rerender(c, sub) for c in br.get("nodes", [])])
+                    break
+            return {"kind": "__if__", "branches": branches, "children": chosen}
         props: dict[str, Any] = {}
         for k, v in node.items():
             if k == "children":

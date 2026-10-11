@@ -205,6 +205,12 @@
       word-wrap: break-word;
       border: 1px solid transparent;
       font-size: var(--font-size-system);
+      /* Column so the toolbar can be pinned last via `order`. The toolbar is
+         appended when the message is CREATED, but rich UI cards mount later —
+         without this the toolbar sat stranded above the card. */
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
     }
 
     .user {
@@ -264,6 +270,8 @@
       margin-top: 6px;
       opacity: 0;
       transition: opacity 0.15s;
+      /* Always the LAST row of the message, regardless of append order. */
+      order: 9999;
     }
     .msg.bot:hover .msg-toolbar,
     .msg.user:hover .msg-toolbar,
@@ -1122,7 +1130,7 @@
     }
     .md-content tr:nth-child(even) td { background: var(--panel); }
 
-    .md-content img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+    .md-content img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); cursor: zoom-in; }
 
     /* callouts */
     .md-content .callout {
