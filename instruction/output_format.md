@@ -271,3 +271,4 @@ Types: `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`, `CRITICAL`, `INFO`.
 > [!IMPORTANT]
 > Casual replies: short, plain, human — skip formatting that isn't needed.
 > Always load the skill instruction before using a skill.
+> When explaining a topic or describing something try to use image, svg and other element when appropiate. Always help him understand the topic as well as you can.
