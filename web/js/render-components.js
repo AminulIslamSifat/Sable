@@ -755,8 +755,22 @@
   R.math = function (n, d, c) {
     var v = inlineText(n, c);
     if (!v) return null;
-    var e = el("span", "rc-math", v);
+    var display = n.display === true || n.display === "true" || n.block === true;
+    // MathJax only typesets text between configured delimiters. The old handler
+    // dumped raw TeX into the span and relied on someone else calling
+    // typesetPromise -- nothing ever did for component trees, so it rendered as
+    // literal backslashes.
+    //
+    // Backslash built via fromCharCode ON PURPOSE. Writing the delimiter as a
+    // JS string literal is a trap: "\[" in source is the char `[` with the
+    // backslash swallowed, so MathJax never sees a delimiter and silently
+    // ignores the span. (Cost me two attempts to notice.) This form is
+    // unambiguous and survives any editor that rewrites escapes.
+    var _bs = String.fromCharCode(92);
+    var wrapped = display ? _bs + "[" + v + _bs + "]" : _bs + "(" + v + _bs + ")";
+    var e = el("span", "rc-math", wrapped);
     e.setAttribute("data-tex", v);
+    if (display) e.setAttribute("data-display", "1");
     return e;
   };
 
@@ -1120,10 +1134,21 @@
     return wrap;
   };
   R.code = function (node, depth, ctx) {
+    // `language` is optional; a fence-less <code> just omits the class.
+    var lang = str(node.language || node.lang || node.syntax);
     var v = interp(str(node.text != null ? node.text : node.value), ctx);
-    if (!v) return null;
+    if (!v) {
+      // Children form: <code><text>…</text></code> hoists into `text` upstream,
+      // but a bare text child should still work.
+      var cw = el("pre", "rc-code");
+      var cd = el("code", null);
+      renderChildren(node, depth, cd, ctx);
+      if (cd.childNodes.length) { cw.appendChild(cd); return cw; }
+      return null;
+    }
     var pre = el("pre", "rc-code");
-    pre.appendChild(el("code", null, v));
+    var code = el("code", lang ? "language-" + lang : null, v);
+    pre.appendChild(code);
     return pre;
   };
   R.quote = function (node, depth, ctx) {
@@ -1173,12 +1198,36 @@
   };
   R.table = function (node, depth, ctx) {
     var cols = arr(node.columns), rows = arr(node.rows);
-    if (!cols.length && !rows.length) return null;
+    var kids = arr(node.children);
+    // Children form: <table><table-row><table-cell>…</table-cell></table-row></table>.
+    // Previously ONLY the columns/rows props were read, so a child-built table
+    // hit `return null` and rendered as nothing at all.
+    if (!cols.length && !rows.length && !kids.length) return null;
     var wrap = el("div", "rc-table-wrap");
     var t = el("table", "rc-table");
-    if (cols.length) { var th = el("thead"), tr = el("tr"); cols.forEach(function (c) { tr.appendChild(el("th", null, interp(String(c), ctx))); }); th.appendChild(tr); t.appendChild(th); }
+    if (cols.length) {
+      var th = el("thead"), tr = el("tr");
+      cols.forEach(function (c) { tr.appendChild(el("th", null, interp(String(c), ctx))); });
+      th.appendChild(tr); t.appendChild(th);
+    }
     var tb = el("tbody");
-    rows.forEach(function (r) { var tr = el("tr"); arr(r).forEach(function (c) { tr.appendChild(el("td", null, interp(String(c), ctx))); }); tb.appendChild(tr); });
+    if (kids.length) {
+      kids.forEach(function (kid) {
+        var k = kindOf(kid || {});
+        var r = renderNode(kid, depth + 1, ctx);
+        if (!r) return;
+        // A <table-row> already renders to a <tr>; a bare <table-cell> row
+        // gets wrapped so a headerless one-liner still forms a valid row.
+        if (k === "tablerow") tb.appendChild(r);
+        else {
+          var tr2 = el("tr");
+          tr2.appendChild(k === "tablecell" ? r : el("td", null, ""));
+          tb.appendChild(tr2);
+        }
+      });
+    } else {
+      rows.forEach(function (r) { var tr = el("tr"); arr(r).forEach(function (c) { tr.appendChild(el("td", null, interp(String(c), ctx))); }); tb.appendChild(tr); });
+    }
     t.appendChild(tb); wrap.appendChild(t);
     return wrap;
   };
@@ -1598,7 +1647,29 @@
     });
     renderNodesInto(root, data.nodes, ctx);
     container.appendChild(root);
+    typesetMath(root);
     return root;
+  }
+
+  // Component trees never went through markdown's postRenderContent, so
+  // <math> sat unrendered forever. Pull MathJax in on demand and typeset the
+  // subtree -- but ONLY when a .rc-math element is actually present, so a card
+  // with no math still costs nothing.
+  var _mathPending = null;
+  function typesetMath(scope) {
+    if (!scope || !scope.querySelector) return;
+    if (!scope.querySelector(".rc-math")) return;
+    if (typeof window._lazyLoadMathJax !== "function") return;
+    if (_mathPending) { clearTimeout(_mathPending); }
+    // Debounce: a re-render (slider drag, tab switch) fires this repeatedly.
+    _mathPending = setTimeout(function () {
+      _mathPending = null;
+      Promise.resolve(window._lazyLoadMathJax()).then(function () {
+        if (window.MathJax && window.MathJax.typesetPromise) {
+          window.MathJax.typesetPromise([scope]).catch(function () {});
+        }
+      }).catch(function () {});
+    }, 30);
   }
 
   function render(payload, container) {

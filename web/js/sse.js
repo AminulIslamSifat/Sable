@@ -161,6 +161,9 @@
       let group = null;
       let lastTextBubble = null;   // bubble that inline UI/text merges into
       let lastWasUi = false;       // last event was an inline UI segment
+      // Live-stream ui_block nodes keyed by server id, so repeated `partial`
+      // events re-render into the SAME element instead of stacking copies.
+      const _uiSegs = Object.create(null);
       let _histSkillPath = "";
       // During history load, skip per-event MathJax/Mermaid/Lucide —
       // loadMessages does a single pass over the whole pane after all events
@@ -209,21 +212,49 @@
             lastWasUi = false;
           }
         } else if (evt.type === "ui_block") {
-          // Rich UI block — merge into the preceding text bubble as an inline
-          // segment so history replays as one coherent card, matching live.
-          if (!lastTextBubble) {
-            lastTextBubble = document.createElement("div");
-            lastTextBubble.className = "msg bot";
-            pane.appendChild(lastTextBubble);
+          // Rich UI block. During streaming the server emits the SAME block
+          // repeatedly — `partial:true` while it's still being written, then a
+          // final `partial:false` seal. We key the DOM node by `evt.id` so each
+          // update re-renders into the same element instead of stacking a dozen
+          // half-built copies. A block with no id (history replay, legacy) just
+          // gets a fresh segment, same as before.
+          const _uiId = evt.id || null;
+
+          if (evt.remove) {
+            // Final parse came back empty — drop the partial the client drew.
+            if (_uiId && _uiSegs[_uiId]) {
+              _uiSegs[_uiId].remove();
+              delete _uiSegs[_uiId];
+            }
+            lastWasUi = true;
+          } else {
+            let uiSeg = _uiId ? _uiSegs[_uiId] : null;
+            if (!uiSeg || !uiSeg.isConnected) {
+              if (!lastTextBubble) {
+                lastTextBubble = document.createElement("div");
+                lastTextBubble.className = "msg bot";
+                pane.appendChild(lastTextBubble);
+              }
+              uiSeg = document.createElement("div");
+              uiSeg.className = "md-content ui-block";
+              lastTextBubble.appendChild(uiSeg);
+              if (_uiId) _uiSegs[_uiId] = uiSeg;
+            }
+            if (evt.payload && window.SableComponents) {
+              // Re-render from scratch — the tree is tiny and this is the only
+              // way to handle nodes being reordered/closed mid-stream. Clear
+              // first so a partial that shrank doesn't leave stale nodes behind.
+              try {
+                uiSeg.innerHTML = "";
+                window.SableComponents.render(evt.payload, uiSeg);
+              } catch (e) {}
+            }
+            _actIcons(uiSeg);
+            lastWasUi = true;
+            // Seal: the block is final, stop tracking it so a later block with
+            // a recycled id can't accidentally reuse this node.
+            if (_uiId && evt.partial === false) delete _uiSegs[_uiId];
           }
-          const uiSeg = document.createElement("div");
-          uiSeg.className = "md-content ui-block";
-          lastTextBubble.appendChild(uiSeg);
-          if (window.SableComponents) {
-            try { window.SableComponents.render(evt.payload, uiSeg); } catch (e) {}
-          }
-          _actIcons(uiSeg);
-          lastWasUi = true;
         } else if (evt.type === "skill_start") {
           lastTextBubble = null;
           lastWasUi = false;
@@ -1727,32 +1758,76 @@
           closeCurrentThinking();
           renderAskUserCard(payload, turn);
         },
-        addComponent(payload) {
-          // Rich UI is message content. Append it as an inline segment inside
-          // the SAME bubble as the surrounding text, then open a fresh text
-          // segment below for any continued prose. One bubble, one card.
-          hidePending();
-          closeCurrentThinking();
-          _flushAnswerQueue();            // drain pending typewriter text
-          ensureAnswer();
-          if (raw && raw.trim()) {
-            answerContent.dataset.raw = raw;
-            answerContent.innerHTML = renderMarkdown(raw);
-            renderMermaidDiagrams(answerContent);
-            renderMathJax(answerContent);
-            activateLucideIcons(answerContent);
-          } else if (answerContent && !answerContent.childNodes.length) {
-            answerContent.remove();      // no leading prose — no blank gap
+        addComponent(evt) {
+          // Rich UI is message content. During streaming the SAME block arrives
+          // repeatedly — `partial:true` while it's still being written, then a
+          // final `partial:false` seal — so we key the segment by `evt.id` and
+          // re-render into the same node instead of stacking copies. A block
+          // with no id (legacy) keeps the old append-once behavior.
+          const payload = evt && typeof evt === "object" && "payload" in evt ? evt.payload : evt;
+          const _id = evt && typeof evt === "object" ? evt.id : null;
+          // Only an EXPLICIT partial:false seals. A keyed event missing the
+          // flag is still treated as a streaming update — otherwise (bug) each
+          // chunk looked final, spawned a fresh node, and produced N copies.
+          // An id-less event is legacy/history: append once, no tracking.
+          const _isPartial = _id ? evt.partial !== false : false;
+
+          if (!this._uiSegs) this._uiSegs = Object.create(null);
+
+          // Final parse came back empty — drop whatever partial we drew.
+          if (evt && typeof evt === "object" && evt.remove) {
+            if (_id && this._uiSegs[_id]) {
+              this._uiSegs[_id].remove();
+              delete this._uiSegs[_id];
+            }
+            return;
           }
-          const uiSeg = document.createElement("div");
-          uiSeg.className = "md-content ui-block";
-          answerEl.appendChild(uiSeg);
-          if (window.SableComponents) {
-            try { window.SableComponents.render(payload, uiSeg); }
-            catch (e) { uiSeg.remove(); }
+
+          let uiSeg = _id ? this._uiSegs[_id] : null;
+          const _existing = uiSeg && uiSeg.isConnected;
+
+          if (!_existing) {
+            // First sighting of this block: do the full inline-segment setup —
+            // close thinking, flush the typewriter, render any leading prose.
+            hidePending();
+            closeCurrentThinking();
+            _flushAnswerQueue();          // drain pending typewriter text
+            ensureAnswer();
+            if (raw && raw.trim()) {
+              answerContent.dataset.raw = raw;
+              answerContent.innerHTML = renderMarkdown(raw);
+              renderMermaidDiagrams(answerContent);
+              renderMathJax(answerContent);
+              activateLucideIcons(answerContent);
+            } else if (answerContent && !answerContent.childNodes.length) {
+              answerContent.remove();    // no leading prose — no blank gap
+            }
+            uiSeg = document.createElement("div");
+            uiSeg.className = "md-content ui-block";
+            answerEl.appendChild(uiSeg);
+            if (_id) this._uiSegs[_id] = uiSeg;
+          }
+
+          // Re-render from scratch each update: the tree is small and this is
+          // the only correct way to handle nodes being reordered/closed
+          // mid-stream. Clear first so a partial that shrank leaves no orphans.
+          if (payload && window.SableComponents) {
+            try {
+              uiSeg.innerHTML = "";
+              window.SableComponents.render(payload, uiSeg);
+            } catch (e) {
+              if (!_existing) uiSeg.remove();
+            }
           }
           activateLucideIcons(uiSeg);
-          _openAnswerSegment();          // fresh segment for continued text
+
+          // Only a FINAL (or unkeyed) block opens a fresh text segment below.
+          // A partial update must not, or every chunk would spawn an empty
+          // prose segment between the partials.
+          if (!_isPartial) {
+            _openAnswerSegment();        // fresh segment for continued text
+            if (_id) delete this._uiSegs[_id];
+          }
           scrollBottom();
         },
         addEvent(text) {
@@ -2786,7 +2861,9 @@
             // inline segment in the SAME bubble as the surrounding text.
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             if (typeof ui.addComponent === "function") {
-              ui.addComponent(evt.payload);
+              // Pass the WHOLE event — addComponent needs id/partial/remove to
+              // re-render streaming partials into one node.
+              ui.addComponent(evt);
             } else {
               renderUiBlock(evt.payload, streamPane);
             }

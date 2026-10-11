@@ -330,6 +330,38 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
 
 # ── attribute parsing ──────────────────────────────────────────────────────
 
+# Minimal named-entity table. Numeric (`&#10;` / `&#x0A;`) is handled by regex,
+# so this only needs the handful of names that realistically show up in model
+# output. `html.unescape` is deliberately NOT used -- it would also rewrite
+# stray `&` and `<>` inside code samples, corrupting them.
+_ENTITIES = {
+    "amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
+    "nbsp": "\u00a0", "hellip": "\u2026", "mdash": "\u2014",
+    "ndash": "\u2013", "times": "\u00d7", "rarr": "\u2192",
+    "larr": "\u2190", "check": "\u2713", "cross": "\u2717",
+}
+
+
+def _unescape_entities(s: str) -> str:
+    """Decode numeric + a few named entities. Never raises."""
+    if not s or "&" not in s:
+        return s
+
+    def _num(m: "re.Match[str]") -> str:
+        try:
+            code = int(m.group(1), 16) if m.group(0)[2:3].lower() == "x" else int(m.group(1))
+            return chr(code)
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    s = re.sub(r"&#(x?[0-9A-Fa-f]+);", _num, s)
+
+    def _named(m: "re.Match[str]") -> str:
+        return _ENTITIES.get(m.group(1).lower(), m.group(0))
+
+    return re.sub(r"&([A-Za-z]+);", _named, s)
+
+
 def _parse_attrs(raw: str) -> dict[str, tuple[str, Any]]:
     attrs: dict[str, tuple[str, Any]] = {}
     i, n = 0, len(raw)
@@ -543,7 +575,13 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             if t.kind == "text":
                 advance()
                 if t.val.strip():
-                    out.append({"kind": "__text__", "text": t.val})
+                    # Decode entities in TEXT CONTENT too, not just attributes.
+                    # `_unescape_entities` ran only on the tag's attr string, so
+                    # `&amp;` / `&#8594;` written between tags stayed literal
+                    # while the same entity inside an attribute decoded -- an
+                    # inconsistency that made `<text>a &amp; b</text>` show the
+                    # raw `&amp;`.
+                    out.append({"kind": "__text__", "text": _unescape_entities(t.val)})
                 continue
             if t.kind == "expr":
                 advance()
@@ -578,7 +616,11 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
     def parse_tag(scope: dict) -> dict[str, Any] | None:
         raw = advance().val
-        inner = raw[1:-1].strip()
+        # Decode HTML entities in attribute values (&#10;, &amp;, &quot; ...).
+        # Without this `text="a&#10;b"` shipped the literal string `&#10;` to the
+        # client instead of a newline -- which is why multi-line <code> looked
+        # broken. Tag NAMES and structure are untouched, only the payload.
+        inner = _unescape_entities(raw[1:-1]).strip()
         selfclose = inner.endswith("/")
         if selfclose:
             inner = inner[:-1].rstrip()

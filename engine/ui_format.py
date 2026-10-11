@@ -56,6 +56,97 @@ _MAX_INLINE_FILE_BYTES = 8_000_000  # 8 MB cap on inlined local files
 
 _IMAGE_NODE_KINDS = frozenset({"image", "media", "hero", "avatar"})
 
+# Attributes that are structural, not real SVG attributes — never serialized
+# back onto the element when rebuilding raw SVG markup.
+_SVG_SKIP_ATTRS = frozenset({"kind", "type", "children", "content", "markup", "__rawtype__"})
+
+# Void SVG elements — self-close, never carry children.
+_SVG_VOID = frozenset({
+    "circle", "ellipse", "line", "path", "polygon", "polyline", "rect",
+    "stop", "use", "image", "animate", "animatetransform", "animatemotion",
+})
+
+# Escape an attribute value for safe embedding in rebuilt markup.
+def _svg_attr_escape(v: str) -> str:
+    return (str(v).replace("&", "&amp;").replace('"', "&quot;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _svg_escape_text(v: str) -> str:
+    return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _svg_node_to_markup(node: Any, depth: int = 0) -> str:
+    """Rebuild raw nested SVG (parsed into a node tree) back into a markup
+    string. The renderer's `R.svg` reads `markup`, and rebuild-from-tree is the
+    only way to feed it raw `<svg><circle/></svg>` written inside a component
+    block without shipping a half-parsed node it can't draw.
+
+    Best-effort and bounded — never raises.
+    """
+    if depth > _MAX_NODE_DEPTH or not isinstance(node, dict):
+        return ""
+    tag = str(node.get("kind") or node.get("type") or "").strip()
+    if not tag:
+        return ""
+    # Text runs inside SVG (e.g. <text>label</text>) are node dicts too.
+    if tag == "__text__":
+        return _svg_escape_text(node.get("text", ""))
+
+    parts = ["<", tag]
+    for k, v in node.items():
+        if k in _SVG_SKIP_ATTRS or v is None or isinstance(v, (dict, list)):
+            continue
+        if k.startswith("__") or k in ("text",):
+            continue
+        val = v if isinstance(v, str) else json.dumps(v)
+        parts.append(f' {k}="{_svg_attr_escape(val)}"')
+
+    kids = node.get("children")
+    if not isinstance(kids, list):
+        kids = []
+    text_child = node.get("text")
+
+    # Void element or nothing to nest -> self-close.
+    if not kids and not text_child and (tag.lower() in _SVG_VOID):
+        parts.append("/>")
+        return "".join(parts)
+
+    parts.append(">")
+    if text_child and not kids:
+        parts.append(_svg_escape_text(text_child))
+    for kid in kids:
+        parts.append(_svg_node_to_markup(kid, depth + 1))
+    parts.append(f"</{tag}>")
+    return "".join(parts)
+
+
+def _resolve_svg_node(n: dict[str, Any]) -> None:
+    """Ensure an `svg` node carries a `markup` string. If it was written as raw
+    nested SVG the parser produced a child tree instead — rebuild it. The
+    documented `markup="…"` form is left untouched.
+
+    NOTE: do NOT bail on a `text` key. The parser flattens
+    `<svg><text>label</text></svg>` into `{kind:svg, viewBox:…, text:"label"}`
+    — that `text` is SVG *content*, not an alternative to `markup`, and bailing
+    on it dropped the whole drawing.
+    """
+    if n.get("markup") or n.get("svg") or n.get("content"):
+        return
+    kids = n.get("children")
+    # Structurally an SVG if it carries child nodes, a viewBox, or any
+    # svg-shaped attribute. Rebuild the whole thing into a <svg> element.
+    _svg_attrs = ("viewBox", "viewbox", "xmlns", "width", "height", "preserveAspectRatio")
+    looks_like_svg = (
+        isinstance(kids, list)
+        or any(n.get(a) for a in _svg_attrs)
+        or (isinstance(n.get("text"), str) and n.get("text").strip())
+    )
+    if looks_like_svg:
+        markup = _svg_node_to_markup({"kind": "svg", **n})
+        if markup:
+            n["markup"] = markup
+
 
 # ── markup parsing ──────────────────────────────────────────────────────────
 
@@ -624,10 +715,19 @@ def _resolve_media(obj: Any, depth: int = 0) -> None:
         return
     if isinstance(obj, dict):
         kind = str(obj.get("kind") or obj.get("type") or "").lower()
-        if kind in ("image", "img"):
-            _resolve_image_node(obj)
-        elif kind == "file":
-            _resolve_file_node(obj)
+        # Each node resolves in isolation — a dead image query or a bad local
+        # path must NOT abort the whole block's parse (which used to drop the
+        # entire card). Wrap per-node so the tree survives with the media node
+        # simply left unresolved.
+        try:
+            if kind in ("image", "img"):
+                _resolve_image_node(obj)
+            elif kind == "file":
+                _resolve_file_node(obj)
+            elif kind == "svg":
+                _resolve_svg_node(obj)
+        except Exception:
+            pass
         for v in list(obj.values()):
             _resolve_media(v, depth + 1)
     elif isinstance(obj, list):

@@ -84,6 +84,91 @@ _CONTENT_PARAM_KEYS = ("body", "content", "command")
 # the skill engine, middleware, or tool feedback.
 _BARE_TAG_NAMES = ("render_component",)
 
+# Streaming partial-render tuning. While a <render_component> is still open we
+# re-parse the body and emit `partial` ui_block events so the card builds up
+# live instead of appearing all at once on the close tag. Re-parse only when
+# the body has grown by this many chars (keeps it O(n), not O(n^2)).
+_UI_PARTIAL_FIRST_CHARS = 40
+_UI_PARTIAL_MIN_CHARS = 150
+
+
+def _scan_for_unterminated(s: str) -> tuple[int, str | None]:
+    """Find the first tag that never closes before end-of-string.
+
+    Returns ``(index, open_quote)`` where ``open_quote`` is the quote char left
+    dangling inside the tag (or ``None`` when the tag simply has no '>' yet).
+    ``(-1, None)`` when every tag is closed.
+
+    Quote-aware: a '>' inside an OPEN attribute value does not count as the
+    tag's end. That was the raw-SVG leak — `markup="<svg …>"` looked complete
+    because its value is full of '>' while its closing quote was still
+    streaming. Only '<'+letter (or '</') counts as a tag start, so prose like
+    `2 < 3` is ignored.
+    """
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] != "<":
+            i += 1
+            continue
+        k = i + 1
+        if k < n and s[k] == "/":
+            k += 1
+        if k >= n or not s[k].isalpha():
+            i += 1
+            continue
+        j, q, depth, closed = i + 1, None, 0, False
+        while j < n:
+            ch = s[j]
+            if q:
+                if ch == q:
+                    q = None
+            elif ch in "\"'":
+                q = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+            elif ch == ">" and depth == 0:
+                closed = True
+                break
+            j += 1
+        if not closed:
+            return i, q
+        i = j + 1
+    return -1, None
+
+
+def _trim_incomplete_markup(s: str) -> str:
+    """Make a partial <render_component> body parseable.
+
+    A tag left open at end-of-string is either:
+      * mid-attribute-value with a dangling quote (`markup="<svg …`) — we
+        CLOSE the quote and the tag so the partial value still parses. This is
+        what lets a big inline SVG stream: each update renders the SVG-so-far
+        instead of staying blank until the final quote lands.
+      * a half-written tag with no '>' yet (`<car`) — we DROP it; there is
+        nothing meaningful to close.
+
+    Also drops a trailing unterminated `{expr}`. Best-effort, never raises.
+    """
+    if not s:
+        return s
+    try:
+        cut, q = _scan_for_unterminated(s)
+        if cut != -1:
+            if q:
+                # Close the dangling attribute value, then the tag itself.
+                s = s + q + ">"
+            else:
+                s = s[:cut]
+        lb = s.rfind("{")
+        if lb != -1 and "}" not in s[lb:]:
+            s = s[:lb]
+    except Exception:
+        pass
+    return s
+
 
 def _find_bare_open(buf: str):
     """Locate the first bare markup tag. Returns (name, start, end) or None."""
@@ -470,11 +555,61 @@ class SkillParser:
         self._in_dsml = False
         self._pending_tag: str | None = None
         self._last_progress: tuple[int, int] = (0, 0)
+        # Partial-render bookkeeping for <render_component>.
+        self._ui_seq = 0
+        self._ui_cur_id: str | None = None
+        self._ui_last_parse_len = 0
+        self._ui_last_hash: str | None = None
 
     @classmethod
     def _strip_orphan_tags(cls, text: str) -> str:
         """Remove orphaned action/tool_call tags from prose text."""
         return cls._ORPHAN_TAG_RE.sub("", text)
+
+    def _next_ui_id(self) -> str:
+        self._ui_seq += 1
+        self._ui_cur_id = f"uib_{self._ui_seq}"
+        return self._ui_cur_id
+
+    def _reset_ui_partial(self) -> None:
+        self._ui_cur_id = None
+        self._ui_last_parse_len = 0
+        self._ui_last_hash = None
+
+    def _emit_ui_partial(self, body: str) -> Generator[dict[str, Any], None, None]:
+        """Parse a still-open <render_component> body and stream a partial tree.
+
+        Fires only when the body grew enough to be worth re-parsing, and only
+        when the resulting tree actually changed. The client keys containers by
+        `id` so each partial re-renders into the same node; the final
+        (partial=False) event seals it.
+        """
+        blen = len(body)
+        first = self._ui_last_parse_len == 0
+        need = _UI_PARTIAL_FIRST_CHARS if first else _UI_PARTIAL_MIN_CHARS
+        if blen < need or (blen - self._ui_last_parse_len) < need:
+            return
+        trimmed = _trim_incomplete_markup(body)
+        if not trimmed.strip():
+            return
+        try:
+            from engine.ui_format import parse_ui_block
+            _ui = parse_ui_block(trimmed, {})
+        except Exception:
+            _ui = None
+        if not _ui:
+            return
+        try:
+            _h = json.dumps(_ui, sort_keys=True)
+        except Exception:
+            _h = None
+        if _h is not None and _h == self._ui_last_hash:
+            self._ui_last_parse_len = blen
+            return
+        _bid = self._ui_cur_id or self._next_ui_id()
+        self._ui_last_hash = _h
+        self._ui_last_parse_len = blen
+        yield {"type": "ui_block", "payload": _ui, "id": _bid, "partial": True}
 
     def feed(self, text: str) -> Generator[dict[str, Any], None, None]:
         """Feed a chunk of streamed text. Yields events as calls/prose are resolved."""
@@ -502,20 +637,37 @@ class SkillParser:
                         # it here and emit a native event; never route it through
                         # the skill engine.
                         if _bname == "render_component":
+                            # Seal: reuse the same id any partial streamed under,
+                            # so the client replaces the partial with the final
+                            # tree in the SAME node.
+                            _bid = self._ui_cur_id or self._next_ui_id()
+                            self._reset_ui_partial()
                             try:
                                 from engine.ui_format import parse_ui_block
                                 _ui = parse_ui_block(_bbody, {})
                             except Exception:
                                 _ui = None
                             if _ui:
-                                yield {"type": "ui_block", "payload": _ui}
+                                yield {"type": "ui_block", "payload": _ui, "id": _bid, "partial": False}
+                            else:
+                                # Final parse produced nothing usable — tell the
+                                # client to drop whatever partial it drew.
+                                yield {"type": "ui_block", "id": _bid, "remove": True}
                             continue
                         yield {"type": "tag_found", "name": _bname, "attrs": {}, "content": _bbody}
                         continue
-                    # Incomplete — emit preceding prose, hold from the tag on.
+                    # Incomplete — emit preceding prose, then STREAM a partial
+                    # render of the block as it grows, instead of holding the
+                    # whole thing until the close tag lands.
                     if _bs > 0:
                         yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_bs])}
                         self.buf = self.buf[_bs:]
+                        # Shift the tag start left by the prose we just dropped so
+                        # the body slice below still lines up.
+                        _be -= _bs
+                        _bs = 0
+                    if _bname == "render_component":
+                        yield from self._emit_ui_partial(self.buf[_be:])
                     break
 
                 # Strip orphaned closing tag fragments that arrive after
@@ -1107,6 +1259,32 @@ class SkillParser:
         # Reset progress state so stale events don't emit after stream ends
         self._pending_tag = None
         self._last_progress = (0, 0)
+        if self.buf:
+            # An <render_component> still open at end-of-stream (model stopped
+            # early, or the close tag never arrived): render what we have as a
+            # FINAL block so the client seals any partial it already drew,
+            # instead of flushing the whole thing as dead text.
+            _b = _find_bare_open(self.buf)
+            if _b is not None and _b[0] == "render_component":
+                _bname, _bs, _be = _b
+                _had_partial = self._ui_cur_id is not None
+                _bid = self._ui_cur_id or self._next_ui_id()
+                self._reset_ui_partial()
+                if _bs > 0:
+                    _before = self.buf[:_bs]
+                    if _before.strip():
+                        yield {"type": "text", "text": self._strip_orphan_tags(_before)}
+                try:
+                    from engine.ui_format import parse_ui_block
+                    _ui = parse_ui_block(_trim_incomplete_markup(self.buf[_be:]), {})
+                except Exception:
+                    _ui = None
+                if _ui:
+                    yield {"type": "ui_block", "payload": _ui, "id": _bid, "partial": False}
+                elif _had_partial:
+                    yield {"type": "ui_block", "id": _bid, "remove": True}
+                self.buf = ""
+
         if self.buf:
             # Try DSML/legacy extraction on remaining buffer
             _dsml_m = self._DSML_OPEN.search(self.buf)

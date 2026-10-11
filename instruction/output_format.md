@@ -204,6 +204,11 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
 - `<video src="https://..."/>` — direct video URL.
 - `<file path="/home/sifat/x.pdf"/>` — local file attachment.
 - `<link href="https://..." label="Docs"/>` — styled link.
+- `<svg markup="<svg viewBox='0 0 10 10'>…</svg>"/>` — inline vector art. Pass a
+  real `<svg>` root as the `markup` value; it renders inline like any other
+  element. No `<script>` and no inline `on*` handlers (those degrade to a code
+  block instead of executing).
+
 
 ## Quiz rule
 

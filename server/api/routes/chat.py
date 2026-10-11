@@ -1959,12 +1959,30 @@ async def chat(request: ChatRequest):
                         elif itype == "ui_block":
                             # Rich UI block — a response format, not a tool.
                             # Forward straight to the frontend; no skill lifecycle,
-                            # no tool feedback, turn never pauses. Record it in
-                            # round_flow so it persists and replays in order.
+                            # no tool feedback, turn never pauses.
+                            #
+                            # PARTIAL events (streaming build-up) go to the
+                            # client ONLY — they must NOT persist, or history
+                            # would replay a dozen half-built copies of the card.
+                            # The FINAL event (partial=False) is what round_flow
+                            # keeps, so replay draws the card once, finished.
+                            _ui_partial = bool(item.get("partial"))
                             _ui_payload = item.get("payload")
+                            _fwd = {"type": "ui_block"}
+                            if item.get("id") is not None:
+                                _fwd["id"] = item.get("id")
+                            # MUST forward `partial` — without it the client
+                            # treats every streaming update as a final seal and
+                            # starts a fresh node each chunk (the 200-SVGs bug).
+                            _fwd["partial"] = _ui_partial
+                            if item.get("remove"):
+                                _fwd["remove"] = True
                             if _ui_payload:
-                                round_flow.append({"type": "ui_block", "payload": _ui_payload})
-                            yield sse({"type": "ui_block", "payload": _ui_payload})
+                                _fwd["payload"] = _ui_payload
+                            if not _ui_partial:
+                                if _ui_payload:
+                                    round_flow.append({"type": "ui_block", "payload": _ui_payload})
+                            yield sse(_fwd)
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
