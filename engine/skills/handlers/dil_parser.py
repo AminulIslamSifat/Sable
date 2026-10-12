@@ -226,6 +226,23 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
     if e[0] in "[{" and e[-1] in "]}":
         return _literal(e)
 
+    # One layer of balanced outer parens. `((wake + 24 - bed) % 24)` is wholly
+    # wrapped, so the depth-aware splitter below finds no TOP-LEVEL operator and
+    # the whole thing fell through to `_literal` as a raw tuple.
+    if e[0] == "(" and e[-1] == ")":
+        _d = 0
+        _bal = True
+        for _i, _ch in enumerate(e):
+            if _ch == "(":
+                _d += 1
+            elif _ch == ")":
+                _d -= 1
+                if _d == 0 and _i != len(e) - 1:
+                    _bal = False
+                    break
+        if _bal and _d == 0:
+            return _eval(e[1:-1], state, scope)
+
     # Arrow functions / inline handlers (`()=>setRunning(!running)`) are not
     # evaluable — return the source verbatim so the client can bind them.
     # Must run BEFORE the equality checks, which would otherwise split on the
@@ -237,17 +254,20 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
     if re.match(r"^\s*(\([^)]*\)|[A-Za-z_]\w*)\s*=>", e):
         return e
 
-    # ternary (top level)
+    # ternary (top level). Split on the FIRST `?` and rejoin the remainder, so
+    # a chained ternary `a ? b : c ? d : e` recurses instead of yielding three
+    # pieces and bailing (the old `len(q) == 2` check failed on every nested one).
     q = _split_top(e, "?")
-    if len(q) == 2:
-        if _eval(q[0], state, scope):
-            branches = _split_top(q[1], ":")
-            if len(branches) == 2:
-                return _eval(branches[0], state, scope)
-        else:
-            branches = _split_top(q[1], ":")
-            if len(branches) == 2:
-                return _eval(branches[1], state, scope)
+    if len(q) >= 2:
+        cond = q[0]
+        rest = "?".join(q[1:])
+        branches = _split_top(rest, ":")
+        if len(branches) >= 2:
+            then_b = branches[0]
+            else_b = ":".join(branches[1:])
+            if _eval(cond, state, scope):
+                return _eval(then_b, state, scope)
+            return _eval(else_b, state, scope)
 
     # equality / comparison -- split on the FULL operator token, never op[0].
     # `_split_top` now understands multi-char separators, so `===` is matched
@@ -273,7 +293,7 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
         return not _eval(e[1:], state, scope)
 
     # arithmetic (lowest precedence; +/- then */), left-to-right
-    for op in ("+", "-", "*", "/"):
+    for op in ("+", "-", "*", "/", "%"):
         parts = _split_top(e, op)
         if len(parts) > 1 and all(p.strip() for p in parts):
             vals = [_eval(p, state, scope) for p in parts]
@@ -286,8 +306,10 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
                         acc -= v
                     elif op == "*":
                         acc *= v
-                    else:
+                    elif op == "/":
                         acc = acc / v if v else 0
+                    else:
+                        acc = acc % v if v else 0
                 return acc
 
     # array methods FIRST — they end in `.length` too, and the generic handler
@@ -318,6 +340,15 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
         base = _eval(m3.group(1), state, scope)
         if isinstance(base, list):
             return len(base)
+
+    # `.toFixed(n)`. Must precede the `Math.*` block, or `Math.round(x).toFixed(1)`
+    # is swallowed by the Math regex and degrades to raw text.
+    _tf = re.fullmatch(r"(.+?)\.toFixed\(\s*(\d+)\s*\)", e, re.S)
+    if _tf:
+        _tv = _eval(_tf.group(1), state, scope)
+        if isinstance(_tv, (int, float)) and not isinstance(_tv, bool):
+            return round(float(_tv), int(_tf.group(2)))
+        return _literal(e)
 
     # Math.* — SVG geometry is written as `Math.cos(theta * Math.PI / 180)`,
     # and without this the whole expression fell through to `("raw", ...)`, so
@@ -495,6 +526,13 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             continue
         h = _HOOK_RE.search(t.val)
         if not h:
+            # Bare declaration: `{@body const hrs = (wake + 24 - bed) % 24}`.
+            # These carry no DIL.use* hook, so the old code `continue`d past
+            # them -- `hrs` never entered state, every later `{hrs}` lookup
+            # returned undefined, and the expression degraded to raw text.
+            nm = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*([\s\S]+)$", t.val)
+            if nm:
+                state[nm.group(1)] = _eval(nm.group(2).strip(), state, {})
             continue
         hook, args = h.group(1), h.group(2).strip()
 

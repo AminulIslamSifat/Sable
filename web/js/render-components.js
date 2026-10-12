@@ -184,10 +184,30 @@
     if ((e[0] === '"' && e[e.length - 1] === '"') || (e[0] === "'" && e[e.length - 1] === "'")) return e.slice(1, -1);
     if (/^(\([^)]*\)|[A-Za-z_]\w*)\s*=>/.test(e)) return e;   // arrow literal
 
+    // One layer of balanced outer parens. `((wake + 24 - bed) % 24)` is wholly
+    // wrapped, so the depth-aware splitter finds no top-level operator and the
+    // expression died as undefined.
+    if (e[0] === "(" && e[e.length - 1] === ")") {
+      var _d = 0, _bal = true;
+      for (var _i = 0; _i < e.length; _i++) {
+        if (e[_i] === "(") _d++;
+        else if (e[_i] === ")") { _d--; if (_d === 0 && _i !== e.length - 1) { _bal = false; break; } }
+      }
+      if (_bal && _d === 0) return evalExpr(e.slice(1, -1), ctx);
+    }
+
+    // Split on the FIRST `?`, rejoin the remainder, recurse. A chained ternary
+    // (`a ? b : c ? d : e`) yields 3+ pieces and bailed under the old
+    // `q.length === 2` check.
     var q = splitTop(e, "?");
-    if (q.length === 2) {
-      var br = splitTop(q[1], ":");
-      if (br.length === 2) return evalExpr(q[0], ctx) ? evalExpr(br[0], ctx) : evalExpr(br[1], ctx);
+    if (q.length >= 2) {
+      var rest = q.slice(1).join("?");
+      var br = splitTop(rest, ":");
+      if (br.length >= 2) {
+        return evalExpr(q[0], ctx)
+          ? evalExpr(br[0], ctx)
+          : evalExpr(br.slice(1).join(":"), ctx);
+      }
     }
     var m = e.match(/^(.+?)\.filter\(\s*\w+\s*=>\s*\w+\.([\w.]+)\s*===?\s*(.+?)\s*\)\.length$/);
     if (m) {
@@ -217,11 +237,21 @@
       var b3 = evalExpr(e.replace(/\.map\(.+?\)\.length$/, ""), ctx);
       return Array.isArray(b3) ? b3.length : 0;
     }
-    m = e.match(/^(.+?)\s*(===|!==|==|!=)\s*(.+)$/);
+    // Comparison. `<`, `>`, `<=`, `>=` were MISSING here while the Python
+    // evaluator had them -- so `hrs < 5` resolved to undefined (falsy) in the
+    // browser and every ternary silently took its final else-branch. Longest
+    // operators first so `<=` is never split as `<`.
+    m = e.match(/^(.+?)\s*(===|!==|<=|>=|==|!=|<|>)\s*(.+)$/);
     if (m) {
       var av = evalExpr(m[1], ctx), bv = evalExpr(m[3], ctx);
+      var op = m[2];
       var eq = (av === bv) || (av == bv);
-      return (m[2] === "===" || m[2] === "==") ? eq : !eq;
+      if (op === "===" || op === "==") return eq;
+      if (op === "!==" || op === "!=") return !eq;
+      if (op === "<=") return av <= bv;
+      if (op === ">=") return av >= bv;
+      if (op === "<") return av < bv;
+      return av > bv;
     }
     // Arithmetic (lowest precedence, left-to-right, +/- before */).
     var mm = splitTop(e, "+");
@@ -232,6 +262,8 @@
     if (mm.length > 1) { var p = evalExpr(mm[0], ctx); for (var a = 1; a < mm.length; a++) p = (Number(p) || 0) * (Number(evalExpr(mm[a], ctx)) || 0); return p; }
     mm = splitTop(e, "/");
     if (mm.length > 1) { var qv = evalExpr(mm[0], ctx); for (var b = 1; b < mm.length; b++) { var dv = Number(evalExpr(mm[b], ctx)) || 1; qv = (Number(qv) || 0) / dv; } return qv; }
+    mm = splitTop(e, "%");
+    if (mm.length > 1) { var rv = evalExpr(mm[0], ctx); for (var c = 1; c < mm.length; c++) { var md = Number(evalExpr(mm[c], ctx)) || 0; rv = md ? (Number(rv) || 0) % md : 0; } return rv; }
     if (e[0] === "!") return !evalExpr(e.slice(1), ctx);
     if (e.slice(-7) === ".length") {
       var lv = evalExpr(e.slice(0, -7), ctx);
@@ -239,6 +271,14 @@
     }
     // Math.* — must precede the bare-identifier fallback, or `Math.PI` matches
     // /^[A-Za-z_][\w.]*$/ and resolves to undefined via lookupPath.
+    // `.toFixed(n)` — must precede the Math block, or `Math.round(x).toFixed(1)`
+    // gets swallowed by the Math regex and evaluates to undefined.
+    var mfix = e.match(/^(.+?)\.toFixed\(\s*(\d+)\s*\)$/);
+    if (mfix) {
+      var fv = evalExpr(mfix[1], ctx);
+      if (typeof fv === "number" && isFinite(fv)) return Number(fv.toFixed(parseInt(mfix[2], 10)));
+      return undefined;
+    }
     if (e === "Math.PI") return Math.PI;
     if (e === "Math.E") return Math.E;
     var mmMath = e.match(/^Math[.](\w+)[(]([\s\S]*)[)]$/);
