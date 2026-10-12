@@ -276,7 +276,10 @@
     var mfix = e.match(/^(.+?)\.toFixed\(\s*(\d+)\s*\)$/);
     if (mfix) {
       var fv = evalExpr(mfix[1], ctx);
-      if (typeof fv === "number" && isFinite(fv)) return Number(fv.toFixed(parseInt(mfix[2], 10)));
+      // Return the STRING, matching both JS semantics and the Python side
+      // (which yields round(x, n), str()'d to "9.0"). Returning a Number made
+      // the readout flip from "9.0" on first paint to "9" on first re-render.
+      if (typeof fv === "number" && isFinite(fv)) return fv.toFixed(parseInt(mfix[2], 10));
       return undefined;
     }
     if (e === "Math.PI") return Math.PI;
@@ -736,7 +739,17 @@
   };
   R.stats = function (node, depth, ctx) {
     var wrap = el("div", "rc-stats");
-    kidsOf(node, ["items"]).forEach(function (it) { if (it && typeof it === "object") { var r = R.stat(it, depth, ctx); if (r) wrap.appendChild(r); } });
+    kidsOf(node, ["items"]).forEach(function (it) {
+      if (!it || typeof it !== "object") return;
+      // Route through renderNode, NOT R.stat directly. renderNode runs
+      // hydrate(), which re-resolves `__expr__*` against LIVE state; calling
+      // the handler straight skipped it, so `<stat value={hrs.toFixed(1)}>`
+      // inside <stats> stayed frozen at its parse-time number forever while
+      // the sliders moved. Any container that hand-calls a child handler has
+      // the same trap -- always go through renderNode.
+      var r = renderNode(it, depth + 1, ctx);
+      if (r) wrap.appendChild(r);
+    });
     return wrap.childNodes.length ? wrap : null;
   };
   R.icon = function (node) { return renderIcon(node); };
@@ -907,13 +920,31 @@
     fefuncg: 1, fefuncb: 1, fefunca: 1, fecomposite: 1, fedropshadow: 1
   };
   function sanitizeSvgString(raw) {
+    var root = null;
     var doc;
     try {
       doc = new DOMParser().parseFromString(raw, "image/svg+xml");
-    } catch (e) { return null; }
-    if (!doc || !doc.documentElement) return null;
-    if (doc.getElementsByTagName("parsererror").length) return null;
-    if (String(doc.documentElement.nodeName).toLowerCase() !== "svg") return null;
+    } catch (e) { doc = null; }
+    if (doc && doc.documentElement &&
+        !doc.getElementsByTagName("parsererror").length &&
+        String(doc.documentElement.nodeName).toLowerCase() === "svg") {
+      root = doc.documentElement;
+    } else {
+      // Streaming case: the SVG is still being written, so it is NOT
+      // well-formed XML yet. XML parsing rejects it outright, which used to
+      // make a partial drawing vanish into a <pre> until the closing tag
+      // landed. Fall back to a lenient HTML parse so the SVG renders
+      // bit-by-bit as it streams. The allowlist prune below runs on the
+      // result either way, so the security model is unchanged — a detached
+      // div's innerHTML never runs scripts, and the prune strips them
+      // regardless.
+      try {
+        var holder = document.createElement("div");
+        holder.innerHTML = raw;
+        root = holder.querySelector("svg");
+      } catch (e2) { root = null; }
+    }
+    if (!root) return null;
     (function prune(node) {
       var kids = Array.prototype.slice.call(node.childNodes || []);
       for (var i = 0; i < kids.length; i++) {
@@ -936,8 +967,8 @@
         }
         prune(ch);
       }
-    })(doc.documentElement);
-    return doc.documentElement;
+    })(root);
+    return root;
   }
 
   R.svg = function (n, depth, ctx) {
@@ -1850,6 +1881,25 @@
     }
   }
 
+  // Bare `{@body const x = EXPR}` declarations. The server evaluates these once
+  // and ships the source under `__decl__<name>`; we replay them in insertion
+  // order on every render pass. Without this a derived value stays frozen at
+  // its parse-time number while the state it reads keeps changing -- the slider
+  // moved but "hours" never did.
+  // Insertion order is declaration order (Python dicts + JSON preserve it), so
+  // `hrs` is recomputed before `verdict`, which depends on it.
+  function recomputeDecls(state) {
+    if (!state || typeof state !== "object") return;
+    for (var k in state) {
+      if (k.indexOf("__decl__") !== 0) continue;
+      var name = k.slice(8);
+      var src = state[k];
+      if (typeof src !== "string" || !src) continue;
+      var v = evalExpr(src, { state: state, scope: {} });
+      if (v !== undefined) state[name] = v;
+    }
+  }
+
   function resolveHooks(state) {
     if (!state || typeof state !== "object") return;
     for (var k in state) {
@@ -1883,6 +1933,10 @@
     resolveHooks(seeded);
     var ctx = makeCtx(seeded, function () {
       recomputeMemos(ctx.state);
+      // Derived `const` declarations must be replayed on every pass, BEFORE the
+      // tree is rebuilt -- otherwise `{hrs.toFixed(1)}` re-evaluates against a
+      // stale `hrs` and the readout never moves.
+      recomputeDecls(ctx.state);
       var fresh = el("div", "rc-root");
       renderNodesInto(fresh, data.nodes, ctx);
       if (root.parentNode) root.parentNode.replaceChild(fresh, root);

@@ -187,6 +187,19 @@
     window._sableEnsurePane = ensurePane;
     window._sableAddMessage = addMessage;
     window._sableScrollBottom = scrollBottom;
+    // Sandboxed <render_html> iframes are separate documents: their wheel /
+    // touch events never bubble to this pane, so _atBottom stayed true and
+    // every streamed chunk yanked the view back down while the user was
+    // reading up. The iframe bridge forwards the raw delta here.
+    window._sableNotifyWheel = function (deltaY) {
+      if (!activePane) return;
+      // The iframe swallowed the wheel (its own document ate it), so the pane
+      // never scrolled on its own. Apply the delta here, then re-derive intent
+      // from the resulting position.
+      activePane.scrollTop += deltaY;
+      var gap = activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight;
+      _atBottom = gap < 30;
+    };
 
     /* ---------- Pane loading overlay ---------- */
     function showPaneLoading(pane) {

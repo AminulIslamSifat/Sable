@@ -347,7 +347,11 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
     if _tf:
         _tv = _eval(_tf.group(1), state, scope)
         if isinstance(_tv, (int, float)) and not isinstance(_tv, bool):
-            return round(float(_tv), int(_tf.group(2)))
+            # Return a STRING, matching real JS `.toFixed()` and the client
+            # evaluator. Returning a bare float made attribute props bake as
+            # `9.0` (number) while the client re-rendered `"9.0"` (string) --
+            # the readout flickered between `9` and `9.0` on first interaction.
+            return "%.*f" % (int(_tf.group(2)), float(_tv))
         return _literal(e)
 
     # Math.* — SVG geometry is written as `Math.cos(theta * Math.PI / 180)`,
@@ -533,6 +537,11 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             nm = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*([\s\S]+)$", t.val)
             if nm:
                 state[nm.group(1)] = _eval(nm.group(2).strip(), state, {})
+                # Ship the SOURCE too, under a `__decl__` marker. The client
+                # re-evaluates these on every render pass; without the source a
+                # derived value (`hrs`) stays frozen at its parse-time number
+                # while the state it depends on (`bed`, `wake`) keeps moving.
+                state["__decl__" + nm.group(1)] = nm.group(2).strip()
             continue
         hook, args = h.group(1), h.group(2).strip()
 

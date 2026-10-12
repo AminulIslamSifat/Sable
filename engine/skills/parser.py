@@ -87,6 +87,34 @@ _BARE_TAG_NAMES = ("render_component", "render_html")
 _HTML_MAX_BYTES = 200_000
 _HTML_MIN_CHUNK_CHARS = 120
 
+
+def _read_local_html(src: str) -> tuple[str | None, str | None]:
+    """Read a local file for a render_html src= pane. Returns (html, error).
+
+    Inlined on purpose - one fewer module to import, and this is the only
+    caller. Local app, so no hostile-tenant model: the only person who can
+    point a pane at a file is the user. The body still lands in the
+    opaque-origin sandbox, so its scripts cannot reach the host DOM.
+    """
+    try:
+        p = Path(src).expanduser()
+        if not p.is_absolute():
+            try:
+                from engine.config import OUTPUT_ROOT
+                p = Path(OUTPUT_ROOT) / src
+            except Exception:
+                p = Path.cwd() / src
+        if not p.exists():
+            return None, f"file not found: {p}"
+        if p.is_dir():
+            return None, f"not a file: {p}"
+        data = p.read_bytes()
+        if len(data) > _HTML_MAX_BYTES:
+            data = data[:_HTML_MAX_BYTES]
+        return data.decode("utf-8", errors="replace"), None
+    except Exception as exc:
+        return None, f"read failed: {exc}"
+
 # Streaming partial-render tuning. While a <render_component> is still open we
 # re-parse the body and emit `partial` ui_block events so the card builds up
 # live instead of appearing all at once on the close tag. Re-parse only when
@@ -739,6 +767,18 @@ class SkillParser:
                 # handler instead of leaking into the transcript as raw text.
                 _bare = _find_bare_open(self.buf)
                 if _bare is not None:
+                    # A bare tag that falls inside an UNCLOSED tool-call
+                    # wrapper is part of the call's arguments (e.g. a file
+                    # edit whose body writes a render block), not a
+                    # presentation block. Intercepting it corrupts the call.
+                    _bsp = _bare[1]
+                    _lo = None
+                    for _m in self._ACTION_OPEN.finditer(self.buf, 0, _bsp):
+                        _lo = _m
+                    if _lo is not None and self._ACTION_CLOSE.search(
+                            self.buf, _lo.end(), _bsp) is None:
+                        _bare = None
+                if _bare is not None:
                     _bname, _bs, _be = _bare
                     _bclose = _find_bare_close(self.buf, _bname, _be)
                     if _bclose is not None:
@@ -772,17 +812,50 @@ class SkillParser:
                                 yield {"type": "ui_block", "id": _bid, "remove": True}
                             continue
                         if _bname == "render_html":
-                            # Raw HTML pane. Stream the remaining delta, then seal.
-                            _hid = self._html_cur_id
+                            # Raw HTML pane. Three ways to fill it:
+                            #   (inline body)  the model writes the document
+                            #   src="path"     a local file, read + inlined here
+                            #   url="http…"    a LIVE page, framed directly
+                            # src/url are read off the OPEN tag; the body (if
+                            # any) is ignored when either is present.
+                            _title = _bare_tag_attr(_open_head, 0, "title") or ""
+                            _height = _bare_tag_attr(_open_head, 0, "height")
+                            _src = _bare_tag_attr(_open_head, 0, "src")
+                            _url = _bare_tag_attr(_open_head, 0, "url")
+
+                            # url= -> direct iframe src. The pane loads the real
+                            # page (local dev server, external site) with its own
+                            # scripts intact. No body streams; the frame fetches
+                            # it itself. `sandbox="allow-scripts"` still applies,
+                            # so it stays isolated from the host.
+                            if _url and not _src:
+                                _hid = self._html_cur_id or self._next_html_id()
+                                self._reset_html_partial()
+                                yield {"type": "html_start", "id": _hid,
+                                       "title": _title, "height": _height,
+                                       "url": _url}
+                                yield {"type": "html_end", "id": _hid}
+                                continue
+
+                            # src= -> local file. A file:// URL cannot be framed
+                            # from an http page, so read it server-side and inline
+                            # it through the normal chunk path.
                             _body = _bbody[:_HTML_MAX_BYTES]
                             _err = None
-                            if len(_bbody) > _HTML_MAX_BYTES:
+                            if _src:
+                                _resolved, _rerr = _read_local_html(_src)
+                                if _resolved is not None:
+                                    _body = _resolved[:_HTML_MAX_BYTES]
+                                else:
+                                    _body = ""
+                                    _err = _rerr or "src failed"
+                            elif len(_bbody) > _HTML_MAX_BYTES:
                                 _err = "too_large"
+                            _hid = self._html_cur_id
                             if _hid is None:
                                 _hid = self._next_html_id()
                                 yield {"type": "html_start", "id": _hid,
-                                       "title": _bare_tag_attr(_open_head, 0, "title") or "",
-                                       "height": _bare_tag_attr(_open_head, 0, "height")}
+                                       "title": _title, "height": _height}
                             _delta = _body[self._html_sent_len:]
                             self._reset_html_partial()
                             if _delta:
@@ -807,6 +880,12 @@ class SkillParser:
                     if _bname == "render_component":
                         yield from self._emit_ui_partial(self.buf[_be:])
                     elif _bname == "render_html":
+                        # src=/url= carry no streamed body — the source is read
+                        # (src) or framed (url) at seal time. Streaming the
+                        # half-written tag body here would paint junk first.
+                        if (_bare_tag_attr(self.buf, 0, "src")
+                                or _bare_tag_attr(self.buf, 0, "url")):
+                            break
                         _t = _bare_tag_attr(self.buf, 0, "title") or ""
                         _hgt = _bare_tag_attr(self.buf, 0, "height")
                         yield from self._emit_html_partial(self.buf[_be:], _t, _hgt)

@@ -66,6 +66,39 @@ buttons. Nothing touches the host page.
 > - Use `resize`-aware layout; the pane height follows the content.
 > - Keep it under **200 KB**.
 
+## Sources — `src=` and `url=`
+
+A pane can be filled three ways. Pick the smallest one that works.
+
+| Want | Write | How |
+|---|---|---|
+| An app you write inline | *(body)* | The document streams in as you write it |
+| An existing local file | `src="path"` | Read server-side at seal, inlined |
+| A **live** page / dev server | `url="http://localhost:5173"` | Framed directly — the real page runs |
+
+```
+<render_html> title="My Notes" src="notes/report.html"></<render_html>
+<render_html> title="Dev Server" url="http://localhost:5173" height="500"></<render_html>
+```
+
+- **`src=`** — `~` is expanded; a relative path resolves against the output root.
+  The file is read at seal and streamed through the normal chunk path. A
+  `file://` URL can't be framed from an http page, which is why this is read
+  server-side rather than framed. Missing file → error banner, not a crash.
+- **`url=`** — the pane loads the URL **itself**, with its own JS/CSS intact.
+  Use it for a running dev server, a localhost app, or any live site. No body
+  is streamed, so don't put one inside the tag.
+- **`height="N"`** — pins the pane to N px instead of auto-sizing to content.
+  Useful for a framed page that won't report its height.
+
+> [!NOTE] `url=` panes load with a slightly wider sandbox
+> (`allow-scripts allow-forms allow-popups allow-modals allow-downloads`) so
+> ordinary pages work — but still **without** `allow-same-origin`, so the
+> framed page stays in an opaque origin and can't touch the host DOM.
+
+> [!WARNING] Don't put a body inside a `src=`/`url=` tag
+> The body is ignored when either attribute is present. `<render_html> src="…">…</<render_html>` wastes tokens.
+
 ## When NOT to use it
 
 Don't spin up an iframe for a stat card, a quiz, or a table — the DSL is themed,
@@ -329,3 +362,4 @@ Types: `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`, `CRITICAL`, `INFO`.
 > Casual replies: short, plain, human — skip formatting that isn't needed.
 > Always load the skill instruction before using a skill.
 > When explaining a topic or describing something try to use image, svg and other element when appropiate. you can use multiple of them when necessary. Relevant image (both svg and query image) should be used when explaining anything complex, so visual  thing. Always help him understand the topic as well as you can.
+> You may even attach html if you want or when it is needed or appropiate or adding it will make the resposne better.

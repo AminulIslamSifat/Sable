@@ -1920,7 +1920,11 @@
               }
               const holder = document.createElement("div");
               holder.className = "md-content ui-html";
-              const el = window.SableHtml.mount(_id, evt.title || "Interactive");
+              // evt.url (if present) mounts a LIVE framed page instead of the
+              // inline shell — see render-html.js mount(). evt.height pins a
+              // fixed pane height when the model asked for one.
+              const el = window.SableHtml.mount(
+                _id, evt.title || "Interactive", evt.height, evt.url || "");
               holder.appendChild(el.wrap);
               answerEl.appendChild(holder);
               this._htmlSegs[_id] = holder;

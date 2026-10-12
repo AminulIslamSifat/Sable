@@ -2040,6 +2040,10 @@ async def chat(request: ChatRequest):
                                 _html_acc[_hhid] = {
                                     "title": item.get("title") or "",
                                     "height": item.get("height"),
+                                    # url panes frame a live page instead of
+                                    # accumulating a body; keep it so a reload
+                                    # replays the same pane.
+                                    "url": item.get("url") or "",
                                     "src": "",
                                 }
                             elif itype == "html_chunk":
@@ -2049,12 +2053,15 @@ async def chat(request: ChatRequest):
                             else:  # html_end
                                 _hacc = _html_acc.pop(_hhid, None)
                                 if _hacc is not None:
-                                    round_flow.append({
+                                    _hstart = {
                                         "type": "html_start",
                                         "id": _hhid,
                                         "title": _hacc["title"],
                                         "height": _hacc["height"],
-                                    })
+                                    }
+                                    if _hacc.get("url"):
+                                        _hstart["url"] = _hacc["url"]
+                                    round_flow.append(_hstart)
                                     round_flow.append({
                                         "type": "html_chunk",
                                         "id": _hhid,

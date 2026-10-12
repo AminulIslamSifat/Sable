@@ -84,6 +84,14 @@
       '  setTimeout(reportSize,300);',
       '},false);',
       'if(window.ResizeObserver){new ResizeObserver(reportSize).observe(document.documentElement);}',
+      // Forward scroll intent to the parent. The iframe is its own document,
+      // so its wheel/touch events do not bubble to the chat pane; without
+      // this the pane thinks the user is still pinned to the bottom and
+      // re-scrolls on every streamed chunk.
+      'window.addEventListener("wheel",function(e){try{parent.postMessage({rc:"usermove",deltaY:e.deltaY},"*");}catch(err){}},{passive:true});',
+      'var _rcLastY=0;',
+      'window.addEventListener("touchstart",function(e){_rcLastY=e.touches[0].clientY;},{passive:true});',
+      'window.addEventListener("touchmove",function(e){var _dy=e.touches[0].clientY-_rcLastY;_rcLastY=e.touches[0].clientY;try{parent.postMessage({rc:"usermove",deltaY:-_dy},"*");}catch(err){}},{passive:true});',
       ''
     ].join("\n");
   }
@@ -120,7 +128,7 @@
 
   var blocks = Object.create(null);
 
-  function mount(id, title, height) {
+  function mount(id, title, height, url) {
     // A duplicate id means an upstream bug (ids must be session-unique).
     // Returning the stale block would silently graft the new render onto the
     // OLD pane's DOM node and corrupt both. Tear the old one down instead.
@@ -147,10 +155,22 @@
 
     var frame = document.createElement("iframe");
     frame.className = "rc-html-frame";
-    frame.setAttribute("sandbox", "allow-scripts");
+    // URL mode frames a LIVE page (local dev server, external site). It needs a
+    // couple more sandbox tokens than the inline shell so ordinary pages work,
+    // but still WITHOUT allow-same-origin — the framed page stays in an opaque
+    // origin and cannot reach the host DOM.
+    if (url) {
+      frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+    } else {
+      frame.setAttribute("sandbox", "allow-scripts");
+    }
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.setAttribute("loading", "lazy");
-    frame.srcdoc = shell();
+    if (url) {
+      frame.setAttribute("src", url);
+    } else {
+      frame.srcdoc = shell();
+    }
 
     // Wrapper that clips the oversized frame back to pane size.
     var box = document.createElement("div");
@@ -255,14 +275,16 @@
     try { blk.frame.contentWindow.postMessage(msg, "*"); } catch (e) {}
   }
 
-  // Inbound: resize + error. Verify the source really is this block's frame.
+  // Inbound: resize + error + scroll intent. Verify the source is this frame.
   window.addEventListener("message", function (ev) {
     var d = ev.data || {};
-    if (d.rc !== "resize" && d.rc !== "error") return;
+    if (d.rc !== "resize" && d.rc !== "error" && d.rc !== "usermove") return;
     for (var id in blocks) {
       var blk = blocks[id];
       if (!blk.frame.contentWindow || ev.source !== blk.frame.contentWindow) continue;
-      if (d.rc === "resize") {
+      if (d.rc === "usermove") {
+        if (window._sableNotifyWheel) window._sableNotifyWheel(Number(d.deltaY) || 0);
+      } else if (d.rc === "resize") {
         // Explicit height wins — a fixed pane never chases its content.
         if (blk.height) continue;
         // The frame reports content height in its virtual viewport, so scale
@@ -316,7 +338,7 @@
   });
 
   window.SableHtml = {
-    mount: function (id, title, height) { return mount(id, title, height); },
+    mount: function (id, title, height, url) { return mount(id, title, height, url); },
     push: function (id, text) {
       var blk = blocks[id];
       if (!blk) return;
