@@ -1,0 +1,88 @@
+/* render-html.css — sandboxed <render_html> pane. */
+.rc-html {
+  margin: 10px 0;
+  border: 1px solid var(--border, #303030);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface, #18181b);
+}
+.rc-html-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--surface-secondary, #212124);
+  border-bottom: 1px solid var(--border, #303030);
+}
+.rc-html-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text, #d4d4d8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rc-html-spacer { flex: 1 1 auto; }
+.rc-html-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #303030);
+  background: transparent;
+  color: var(--dim, #a1a1aa);
+  cursor: pointer;
+}
+.rc-html-btn:hover { color: var(--text, #d4d4d8); border-color: var(--accent, #8b5cf6); }
+/* Desktop-mode trick: .rc-html-box is the visible pane. The frame inside it
+   is laid out RENDER_SCALE x larger and scaled back down. --rc-scale/--rc-inv
+   are set from JS (RENDER_SCALE in render-html.js); the values here are
+   only fallbacks so the CSS still works standalone. */
+.rc-html-box {
+  position: relative;
+  width: 100%;
+  height: 480px;
+  min-height: 120px;
+  overflow: hidden;
+  background: transparent;
+}
+.rc-html-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc(100% * var(--rc-scale, 1.25));
+  height: calc(100% * var(--rc-scale, 1.25));
+  transform: scale(var(--rc-inv, 0.8));
+  transform-origin: top left;
+  border: 0;
+  background: transparent;
+}
+.rc-html-done .rc-html-box { height: 480px; }
+.rc-html-haserror .rc-html-bar { border-bottom-color: rgba(220, 38, 38, 0.5); }
+.rc-html-errbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(220, 38, 38, 0.1);
+  border-bottom: 1px solid rgba(220, 38, 38, 0.35);
+}
+.rc-html-errtxt {
+  flex: 1 1 auto;
+  font: 11px/1.4 ui-monospace, monospace;
+  color: #fca5a5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rc-html-src {
+  margin: 0;
+  padding: 10px;
+  max-height: 320px;
+  overflow: auto;
+  font: 12px/1.4 ui-monospace, monospace;
+  color: var(--dim, #a1a1aa);
+  background: var(--surface, #18181b);
+  border-top: 1px solid var(--border, #303030);
+  white-space: pre-wrap;
+}
+.rc-html:not(.rc-html-showsrc) .rc-html-src { display: none; }

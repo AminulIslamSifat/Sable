@@ -31,30 +31,39 @@ router = APIRouter()
 
 @router.get("/api/search/image")
 def search_image(q: str, count: int = 1) -> dict[str, Any]:
-    """Resolve a text query to an image URL via SearXNG.
+    """Resolve a text query to image URLs via SearXNG.
 
-    Used by the rich-component frontend to resolve `image_query` fields at
-    render time. Returns {"image": null} when nothing is found so the caller
-    can draw a placeholder instead of a broken image.
+    The rich-component frontend calls this to resolve `query`-based images
+    asynchronously, so the chat stream never blocks on a network search. Every
+    call is served from the shared TTL cache in `engine.ui_format`, so a card
+    that re-renders (or a retry) does not re-hit SearXNG.
+
+    Returns both a single `image` (back-compat) and the full ordered `images`
+    list plus a `pool` of spares, mirroring what the server used to inline.
     """
     query = (q or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="q is required")
+    want = max(1, min(int(count or 1), 8))
     try:
-        from engine.search import searxng_image_results
-        results = searxng_image_results(query, count=max(1, min(count, 8)))
+        # Reuse the cached fetch so parallel/duplicate queries collapse into a
+        # single SearXNG hit, and a re-render returns the SAME URLs.
+        from engine.ui_format import _cached_image_candidates
+        rows = _cached_image_candidates(query, max(want, min(want * 3, 12)))
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("search_image failed for %r: %s", query, exc)
-        results = []
-    if not results:
-        return {"image": None, "thumbnail": None, "results": []}
-    top = results[0]
+        rows = []
+    if not rows:
+        return {"image": None, "thumbnail": None, "images": [], "pool": [], "results": []}
+    top = rows[0]
     return {
         "image": top.get("image"),
         "thumbnail": top.get("thumbnail"),
         "title": top.get("title", ""),
-        "source": top.get("url", ""),
-        "results": results,
+        "source": top.get("source", ""),
+        "images": rows[:want],   # what the card shows
+        "pool": rows,            # ordered spares for onerror swaps
+        "results": rows,
     }
 
 
@@ -432,29 +441,113 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 _SETTINGS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "system" / "settings.json"
-_VALID_TOOL_FORMATS = {"qwen_json", "hermes", "dsml", "native", "none", ""}
+_VALID_TOOL_FORMATS = {"qwen_json", "hermes", "dsml", "mimo", "native", "none", ""}
+
+# Display labels for the format picker (kept in sync with the frontend options).
+_TOOL_FORMAT_LABELS: dict[str, str] = {
+    "": "Default (built-in)",
+    "qwen_json": "Qwen JSON (action tags + JSON array)",
+    "hermes": "Hermes XML (invoke/parameter tags)",
+    "dsml": "DSML (DeepSeek native pipe tags)",
+    "mimo": "MiMo XML (function/parameter tags)",
+    "native": "Native (bracket-wrapped JSON)",
+    "none": "None (API function calling)",
+}
+
+# Static provider keys the format picker must offer even with no configured
+# endpoint. Mirrors prompt_injection.PROVIDERS.
+_TOOL_FORMAT_PROVIDERS: tuple[str, ...] = (
+    "deepseek", "qwen", "gemini", "gemini_web", "zai", "kimi",
+    "mimo", "mistral", "mistral_web", "groq", "chatgpt", "native",
+    "local", "scraping",
+)
+
+
+def _tool_format_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Shape the GET/POST response: per-provider map + provider rows + labels."""
+    from connectors.common.prompt_injection import list_providers
+    from connectors.common.instruction_builder import (
+        get_default_tool_format_name, available_tool_format_names,
+    )
+
+    saved = data.get("tool_call_format_by_provider")
+    if not isinstance(saved, dict):
+        saved = {}
+
+    rows, provider_labels = list_providers()
+    formats = available_tool_format_names()
+    # An empty-string row means "use the built-in default for this provider".
+    providers: dict[str, str] = {}
+    for row in rows:
+        key = row["key"]
+        val = saved.get(key, "")
+        providers[key] = val if val in _VALID_TOOL_FORMATS else ""
+
+    defaults = {
+        row["key"]: get_default_tool_format_name(row["key"]) or "none"
+        for row in rows
+    }
+
+    return {
+        "providers": providers,
+        "formats": formats,
+        "format_labels": _TOOL_FORMAT_LABELS,
+        "available_providers": list(_TOOL_FORMAT_PROVIDERS),
+        "provider_labels": provider_labels,
+        "defaults": defaults,
+        "rows": rows,
+        # Legacy scalar — kept so any stale client keeps working.
+        "tool_call_format": data.get("tool_call_format", "") if data.get("tool_call_format", "") in _VALID_TOOL_FORMATS else "",
+    }
+
+
+def _migrate_legacy_tool_format(data: dict[str, Any]) -> bool:
+    """Fan a pre-existing global ``tool_call_format`` out to every provider row.
+
+    Returns True when the settings dict was mutated (and must be written back).
+    The legacy key is removed after migration so the per-provider map is the
+    single source of truth.
+    """
+    legacy = data.get("tool_call_format", "")
+    if not legacy or legacy not in _VALID_TOOL_FORMATS:
+        return False
+
+    existing = data.get("tool_call_format_by_provider")
+    if not isinstance(existing, dict):
+        existing = {}
+    from connectors.common.prompt_injection import list_providers
+    rows, _ = list_providers()
+    for row in rows:
+        existing.setdefault(row["key"], legacy)
+
+    data["tool_call_format_by_provider"] = existing
+    data.pop("tool_call_format", None)
+    return True
+
 
 @router.get("/api/settings/tool-format")
-def get_tool_format_setting() -> dict[str, str]:
-    """Return the current tool_call_format override from settings."""
+def get_tool_format_setting() -> dict[str, Any]:
+    """Return the per-provider tool-call-format map + provider rows."""
+    data: dict[str, Any] = {}
     if _SETTINGS_PATH.is_file():
         try:
             data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
-            fmt = data.get("tool_call_format", "")
-            return {"tool_call_format": fmt if fmt in _VALID_TOOL_FORMATS else ""}
         except Exception:
-            pass
-    return {"tool_call_format": ""}
+            data = {}
+    return _tool_format_payload(data)
+
 
 @router.post("/api/settings/tool-format")
-async def set_tool_format_setting(request: Request) -> dict[str, str]:
-    """Set the tool_call_format override in system/settings.json."""
-    body = await request.json()
-    fmt = body.get("tool_call_format", "")
-    if fmt not in _VALID_TOOL_FORMATS:
-        raise HTTPException(status_code=400, detail=f"Invalid format. Must be one of: {', '.join(sorted(_VALID_TOOL_FORMATS - {''}))} or empty for default")
+async def set_tool_format_setting(request: Request) -> dict[str, Any]:
+    """Set per-provider tool-call formats in system/settings.json.
 
-    # Read existing settings
+    Body: ``{"providers": {"deepseek": "dsml", "qwen": ""}}``.
+    An empty string (or omitted key) means "use the built-in default".
+    A bare ``{"tool_call_format": "..."}`` is still accepted for back-compat
+    and applies to every provider.
+    """
+    body = await request.json()
+
     data: dict[str, Any] = {}
     if _SETTINGS_PATH.is_file():
         try:
@@ -462,24 +555,59 @@ async def set_tool_format_setting(request: Request) -> dict[str, str]:
         except Exception:
             data = {}
 
-    if fmt:
-        data["tool_call_format"] = fmt
-    else:
-        data.pop("tool_call_format", None)  # Remove to use per-provider defaults
+    # Back-compat: a legacy scalar POST applies globally.
+    _legacy = body.get("tool_call_format")
+    if _legacy is not None and "providers" not in body:
+        if _legacy not in _VALID_TOOL_FORMATS:
+            raise HTTPException(status_code=400, detail=f"Invalid format. Must be one of: {', '.join(sorted(_VALID_TOOL_FORMATS - {''}))} or empty for default")
+        if _legacy:
+            data["tool_call_format"] = _legacy
+        else:
+            data.pop("tool_call_format", None)
+        _migrate_legacy_tool_format(data)
+        _write_tool_format_settings(data)
+        return {"status": "ok", **_tool_format_payload(data)}
 
+    incoming = body.get("providers")
+    if not isinstance(incoming, dict):
+        raise HTTPException(status_code=400, detail="Body must contain a 'providers' object")
+
+    current = data.get("tool_call_format_by_provider")
+    if not isinstance(current, dict):
+        current = {}
+
+    from connectors.common.prompt_injection import list_providers, ENDPOINT_PREFIX
+    valid_keys = {row["key"] for row in list_providers()[0]}
+
+    for prov, fmt in incoming.items():
+        # Accept static backends and discovered ``ep:<url>`` endpoints only.
+        if prov not in valid_keys and not str(prov).startswith(ENDPOINT_PREFIX):
+            continue
+        if fmt not in _VALID_TOOL_FORMATS:
+            raise HTTPException(status_code=400, detail=f"Invalid format for {prov}: must be one of: {', '.join(sorted(_VALID_TOOL_FORMATS - {''}))} or empty for default")
+        if fmt:
+            current[prov] = fmt
+        else:
+            current.pop(prov, None)  # Empty = built-in default
+
+    data["tool_call_format_by_provider"] = current
+    # Per-provider map supersedes the legacy global key.
+    data.pop("tool_call_format", None)
+    _write_tool_format_settings(data)
+    return {"status": "ok", **_tool_format_payload(data)}
+
+
+def _write_tool_format_settings(data: dict[str, Any]) -> None:
+    """Atomically persist settings + bust the instruction cache."""
     _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _SETTINGS_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(_SETTINGS_PATH)
-
-    # Invalidate instruction cache so next chat picks up the new format
     try:
         from connectors.common.instruction_builder import invalidate_cache
         invalidate_cache()
     except Exception:
         pass
-
-    return {"status": "ok"}
 
 @router.post("/api/sync-context")
 async def sync_context_route(request: Request) -> dict[str, Any]:

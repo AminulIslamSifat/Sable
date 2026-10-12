@@ -17,6 +17,7 @@ Everything is best-effort: unknown syntax degrades to text, never raises.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -317,6 +318,58 @@ def _eval(expr: str, state: dict, scope: dict) -> Any:
         base = _eval(m3.group(1), state, scope)
         if isinstance(base, list):
             return len(base)
+
+    # Math.* — SVG geometry is written as `Math.cos(theta * Math.PI / 180)`,
+    # and without this the whole expression fell through to `("raw", ...)`, so
+    # every animated coordinate baked to garbage. Constants first, then calls
+    # with recursively-evaluated args.
+    if e == "Math.PI":
+        return math.pi
+    if e == "Math.E":
+        return math.e
+
+    mm = re.fullmatch(r"Math[.](\w+)[(](.*)[)]", e, re.S)
+    if mm:
+        fn, argstr = mm.group(1), mm.group(2)
+        args = [_eval(a, state, scope) for a in _split_top(argstr, ",")] if argstr.strip() else []
+        if not all(isinstance(a, (int, float)) and not isinstance(a, bool) for a in args):
+            return _literal(e)
+        try:
+            if fn == "cos":
+                return math.cos(args[0])
+            if fn == "sin":
+                return math.sin(args[0])
+            if fn == "tan":
+                return math.tan(args[0])
+            if fn == "atan2":
+                return math.atan2(args[0], args[1])
+            if fn == "acos":
+                return math.acos(args[0])
+            if fn == "asin":
+                return math.asin(args[0])
+            if fn == "atan":
+                return math.atan(args[0])
+            if fn == "abs":
+                return abs(args[0])
+            if fn == "sqrt":
+                return math.sqrt(args[0])
+            if fn == "pow":
+                return math.pow(args[0], args[1])
+            if fn == "floor":
+                return math.floor(args[0])
+            if fn == "ceil":
+                return math.ceil(args[0])
+            if fn == "round":
+                return round(args[0], int(args[1]) if len(args) > 1 else 0)
+            if fn == "min":
+                return min(args)
+            if fn == "max":
+                return max(args)
+            if fn == "hypot":
+                return math.hypot(*args)
+        except (ValueError, TypeError, OverflowError):
+            return _literal(e)
+        return _literal(e)
 
     if e.endswith(".length"):
         v = _eval(e[:-7], state, scope)

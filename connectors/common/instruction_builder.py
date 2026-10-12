@@ -192,32 +192,33 @@ _TOOL_FORMAT_HERMES = f"""\
 
 > [!CRITICAL]
 > This instruction overrides ALL other formatting guidance.
-> You MUST wrap every tool call in {_TC_OPEN}...{_TC_CLOSE} tags using Hermes XML structure. No exceptions.
+> You MUST wrap every tool call in {_ACTION_OPEN}...{_ACTION_CLOSE} tags using Hermes XML structure. No exceptions.
 
-- All tool calls MUST be wrapped inside a single `{_TC_OPEN}`...`{_TC_CLOSE}` block.
+- All tool calls MUST be wrapped inside a single `{_ACTION_OPEN}`...`{_ACTION_CLOSE}` block.
 - Each tool invocation uses `<invoke name="TOOL_NAME">` with `<parameter name="KEY">VALUE</parameter>` children.
-- Multiple tool calls go inside ONE `{_TC_OPEN}` block as separate `<invoke>` elements.
-- NEVER output JSON arrays for tool calls. Use ONLY Hermes XML.
+- Multiple tool calls go inside ONE `{_ACTION_OPEN}` block as separate `<invoke>` elements.
+- NEVER output JSON arrays for tool calls. Use ONLY the XML invoke structure above.
+- The wrapper is `{_ACTION_OPEN}` ... `{_ACTION_CLOSE}`. Do not substitute any other tag name.
 - Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
 - Keep prose to ONE short sentence before the tool call block.
 - Place the tool call block at the END of your response.
 
 ### Single call
-{_TC_OPEN}
+{_ACTION_OPEN}
 <invoke name="TOOL_NAME">
 <parameter name="arg_name">value</parameter>
 </invoke>
-{_TC_CLOSE}
+{_ACTION_CLOSE}
 
 ### Multiple calls
-{_TC_OPEN}
+{_ACTION_OPEN}
 <invoke name="TOOL_A">
 <parameter name="arg1">value1</parameter>
 </invoke>
 <invoke name="TOOL_B">
 <parameter name="arg2">value2</parameter>
 </invoke>
-{_TC_CLOSE}
+{_ACTION_CLOSE}
 """
 
 _TOOL_FORMAT_MIMO = f"""\
@@ -287,30 +288,81 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
 }
 
 
-def get_tool_format(provider: str | None = None) -> str:
-    """Return the active tool format string.
+# Raw connector provider strings -> canonical settings/UI key. Mirrors the
+# aliasing in ``prompt_injection.canonical_provider`` so a per-provider format
+# set against the UI row ("gemini") still applies when the connector passes its
+# raw string ("none").
+_FORMAT_PROVIDER_ALIASES: dict[str, str] = {
+    "none": "gemini",
+    "gemini_api": "gemini",
+    "openai_compat": "native",
+    "cloudflare": "native",
+    "url": "native",
+    "deepseek_scraper": "deepseek",
+    "qwen_scraper": "qwen",
+}
+
+
+def _canonical_format_provider(provider: str | None) -> str:
+    """Normalise a raw connector provider string to its settings/UI key."""
+    if not provider:
+        return ""
+    _p = str(provider).strip().lower()
+    return _FORMAT_PROVIDER_ALIASES.get(_p, _p)
+
+
+def _named_format_for(provider: str | None) -> str:
+    """Resolve the active tool-format NAME for a provider.
 
     Priority:
-      1. ``tool_call_format`` key in system/settings.json (user override from UI)
-      2. Per-provider default from ``_PROVIDER_TOOL_FORMATS``
-      3. Empty string if provider is None or unknown
+      1. Per-provider override — ``tool_call_format_by_provider[<key>]``
+         (set from Settings -> Providers)
+      2. Legacy global override — ``tool_call_format`` (pre per-provider UI)
+      3. Built-in provider default from ``_PROVIDER_FORMAT_NAMES``
+
+    Returns ``""`` when nothing applies, i.e. "no prompt format section".
     """
-    # Check for user override in settings
+    _raw = str(provider).strip().lower() if provider else ""
+    _key = _canonical_format_provider(provider)
+
+    _settings: dict[str, Any] = {}
     try:
         _settings_path = Path(__file__).resolve().parent.parent.parent / "system" / "settings.json"
         if _settings_path.is_file():
             import json as _json
             _settings = _json.loads(_settings_path.read_text(encoding="utf-8"))
-            _override = _settings.get("tool_call_format", "")
-            if _override and _override in _NAMED_TOOL_FORMATS:
-                return _NAMED_TOOL_FORMATS[_override]
     except Exception:
-        pass
+        _settings = {}
 
-    # Fall back to provider default
-    if provider and provider in _PROVIDER_TOOL_FORMATS:
-        return _PROVIDER_TOOL_FORMATS[provider]
-    return ""
+    # 1. Per-provider override. An explicit "" means "use the provider default".
+    _map = _settings.get("tool_call_format_by_provider")
+    if isinstance(_map, dict) and _key and _key in _map:
+        _val = _map.get(_key, "")
+        if _val in _NAMED_TOOL_FORMATS:
+            return _val
+        return _PROVIDER_FORMAT_NAMES.get(_key) or _PROVIDER_FORMAT_NAMES.get(_raw, "")
+
+    # 2. Legacy global override — applies to every provider.
+    _global = _settings.get("tool_call_format", "")
+    if _global and _global in _NAMED_TOOL_FORMATS:
+        return _global
+
+    # 3. Provider default (canonical key first, then raw as a fallback so a
+    #    raw provider like "none" still resolves to the gemini/none default).
+    return _PROVIDER_FORMAT_NAMES.get(_key) or _PROVIDER_FORMAT_NAMES.get(_raw, "")
+
+
+def get_tool_format(provider: str | None = None) -> str:
+    """Return the active tool format string for *provider*.
+
+    Resolution priority:
+      1. Per-provider override in ``system/settings.json``
+         (``tool_call_format_by_provider``) — set from Settings -> Providers.
+      2. Legacy global override (``tool_call_format``) — pre per-provider UI.
+      3. Built-in provider default from ``_PROVIDER_TOOL_FORMATS``.
+      4. Empty string if nothing matches.
+    """
+    return _NAMED_TOOL_FORMATS.get(_named_format_for(provider), "")
 
 
 # Human-readable wrapper info per named format: (open_tag, close_tag, example).
@@ -323,9 +375,9 @@ _NAMED_FORMAT_DESCRIPTIONS: dict[str, tuple[str, str, str]] = {
         _ACTION_OPEN + '[{"name": "tool_name", "arguments": {...}}]' + _ACTION_CLOSE,
     ),
     "hermes": (
-        _TC_OPEN,
-        _TC_CLOSE,
-        _TC_OPEN + '<invoke name="tool_name"><parameter name="arg">value</parameter></invoke>' + _TC_CLOSE,
+        _ACTION_OPEN,
+        _ACTION_CLOSE,
+        _ACTION_OPEN + '<invoke name="tool_name"><parameter name="arg">value</parameter></invoke>' + _ACTION_CLOSE,
     ),
     "dsml": (
         "<\uff5cDSML\uff5ctool_calls>",
@@ -364,20 +416,19 @@ def get_tool_format_name(provider: str | None = None) -> str:
     Same resolution order as :func:`get_tool_format`, but returns the settings
     key so consumers can render format-correct guidance without parsing prose.
     """
-    try:
-        _settings_path = Path(__file__).resolve().parent.parent.parent / "system" / "settings.json"
-        if _settings_path.is_file():
-            import json as _json
-            _settings = _json.loads(_settings_path.read_text(encoding="utf-8"))
-            _override = _settings.get("tool_call_format", "")
-            if _override and _override in _NAMED_TOOL_FORMATS:
-                return _override
-    except Exception:
-        pass
+    return _named_format_for(provider)
 
-    if provider and provider in _PROVIDER_FORMAT_NAMES:
-        return _PROVIDER_FORMAT_NAMES[provider]
-    return ""
+
+def get_default_tool_format_name(provider: str | None) -> str:
+    """Built-in default format NAME for a provider, ignoring user overrides."""
+    _raw = str(provider).strip().lower() if provider else ""
+    _key = _canonical_format_provider(provider)
+    return _PROVIDER_FORMAT_NAMES.get(_key) or _PROVIDER_FORMAT_NAMES.get(_raw, "")
+
+
+def available_tool_format_names() -> list[str]:
+    """All selectable format names, in UI display order."""
+    return ["qwen_json", "hermes", "dsml", "mimo", "native", "none"]
 
 
 def get_tool_format_tags(provider: str | None = None) -> tuple[str, str, str]:

@@ -267,6 +267,100 @@
   height: auto;
 }
 
+/* ── uniform rows ─────────────────────────────────────────────────────────
+   A row of INDEPENDENT <img> nodes (one query each) is not a grid: every
+   node is its own single-image branch, so without this each one took its own
+   natural shape — a 700x250 diagram sat next to a tall photo and the strip
+   looked broken. Give every image in a horizontal strip the SAME box and let
+   object-fit decide the crop, exactly like .rc-imggrid does.
+
+   This must cover:
+     * the resolved  <img class="rc-image-el">
+     * the SVG case   ([data-kind="svg"] letterboxed via object-fit: contain)
+     * the pending placeholder (.rc-image-ph), so the box does not jump when
+       the real URL lands and replaces it. */
+.rc-root .rc-row > .rc-image {
+  flex: 0 0 auto;              /* never squish — a strip must stay readable */
+  width: var(--rc-img-strip-w, 150px);
+  min-width: 0;
+}
+/* Only scroll when the row actually overflows with images — an ordinary
+   <row> of text/buttons keeps its normal wrapping behaviour. */
+.rc-root .rc-row:has(> .rc-image) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 4px;
+}
+.rc-root .rc-row:has(> .rc-image)::-webkit-scrollbar { height: 6px; }
+.rc-root .rc-row:has(> .rc-image)::-webkit-scrollbar-thumb {
+  background: var(--border); border-radius: 3px;
+}
+.rc-root .rc-row > .rc-image > .rc-image-el,
+.rc-root .rc-row > .rc-image > .rc-image-ph,
+.rc-root .rc-row > .rc-image > .rc-imggrid > .rc-image-el {
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+}
+/* A vector keeps its whole frame (contain) but sits in the SAME 4:3 box, so
+   it lines up with the photos instead of collapsing to its own ratio. */
+.rc-root .rc-row > .rc-image > .rc-image-el[data-kind="svg"],
+.rc-root .rc-row > .rc-image > .rc-image-el[data-kind="gif"] {
+  object-fit: contain;
+  min-height: 0;        /* the 90px floor is what made it a different height */
+}
+/* A wrapped image row is a grid, not a strip — let the tiles share the width
+   evenly instead of forcing every one to a fixed 150px. */
+.rc-root .rc-row[data-wrap="1"]:has(> .rc-image) {
+  overflow-x: visible;
+}
+.rc-root .rc-row[data-wrap="1"] > .rc-image {
+  flex: 1 1 var(--rc-img-strip-w, 150px);
+}
+
+/* ── async placeholder ────────────────────────────────────────────────────
+   A `query` image is resolved in the browser, not by the server. Until the
+   URLs land we draw a shimmering box the same size as the real thing, so the
+   card never reflows when the image swaps in — and the chat stream is never
+   blocked waiting for the search. */
+.rc-root .rc-image-pending { opacity: 0.9; }
+.rc-root .rc-imggrid > .rc-image-ph,
+.rc-root .rc-image-pending > .rc-image-ph {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: linear-gradient(100deg,
+      var(--surface, #141414) 30%,
+      rgba(255, 255, 255, 0.05) 50%,
+      var(--surface, #141414) 70%);
+  background-size: 220% 100%;
+  animation: rc-img-shimmer 1.4s ease-in-out infinite;
+  overflow: hidden;
+}
+.rc-root .rc-image-ph-dot {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent, #888);
+  animation: rc-img-spin 0.8s linear infinite;
+}
+@keyframes rc-img-shimmer {
+  0%   { background-position: 130% 0; }
+  100% { background-position: -30% 0; }
+}
+@keyframes rc-img-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .rc-root .rc-image-ph { animation: none; }
+  .rc-root .rc-image-ph-dot { animation: none; }
+}
+
 /* ── button ───────────────────────────────────────────────────────────── */
 .rc-root .rc-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;

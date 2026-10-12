@@ -164,6 +164,15 @@
       // Live-stream ui_block nodes keyed by server id, so repeated `partial`
       // events re-render into the SAME element instead of stacking copies.
       const _uiSegs = Object.create(null);
+      // History replay accumulator for <render_html> panes (keyed by block id).
+      const _htmlHist = Object.create(null);
+      // Last rendered payload signature per ui-block id. A streaming block is
+      // re-emitted on every partial; when two consecutive payloads serialise
+      // identically there is nothing new to draw, so we skip the
+      // innerHTML='' + full re-render. Without this the block (and every <img>
+      // inside it) is destroyed and rebuilt on each tick, which the browser
+      // shows as "image appears, then flickers to another one".
+      const _uiSigs = Object.create(null);
       let _histSkillPath = "";
       // During history load, skip per-event MathJax/Mermaid/Lucide —
       // loadMessages does a single pass over the whole pane after all events
@@ -226,6 +235,7 @@
               _uiSegs[_uiId].remove();
               delete _uiSegs[_uiId];
             }
+            if (_uiId) delete _uiSigs[_uiId];
             lastWasUi = true;
           } else {
             let uiSeg = _uiId ? _uiSegs[_uiId] : null;
@@ -244,17 +254,57 @@
               // Re-render from scratch — the tree is tiny and this is the only
               // way to handle nodes being reordered/closed mid-stream. Clear
               // first so a partial that shrank doesn't leave stale nodes behind.
-              try {
-                uiSeg.innerHTML = "";
-                window.SableComponents.render(evt.payload, uiSeg);
-              } catch (e) {}
+              let _sig = null;
+              try { _sig = JSON.stringify(evt.payload); } catch (e) { _sig = null; }
+              // Identical payload as last tick → nothing to redraw. Also covers
+              // the seal (partial:false) that repeats a partial verbatim.
+              if (_sig === null || _uiId === null || _uiSigs[_uiId] !== _sig) {
+                try {
+                  uiSeg.innerHTML = "";
+                  window.SableComponents.render(evt.payload, uiSeg);
+                  if (_uiId !== null && _sig !== null) _uiSigs[_uiId] = _sig;
+                } catch (e) {}
+                _actIcons(uiSeg);
+              }
+            } else {
+              _actIcons(uiSeg);
             }
-            _actIcons(uiSeg);
             lastWasUi = true;
             // Seal: the block is final, stop tracking it so a later block with
             // a recycled id can't accidentally reuse this node.
-            if (_uiId && evt.partial === false) delete _uiSegs[_uiId];
+            if (_uiId && evt.partial === false) {
+              delete _uiSegs[_uiId];
+              delete _uiSigs[_uiId];
+            }
           }
+        } else if (evt.type === "html_start" || evt.type === "html_chunk" || evt.type === "html_end") {
+          // Sandboxed HTML pane (history replay). Accumulate chunks by id, then
+          // mount + finish on html_end so the replayed pane matches the live one.
+          const _hid = evt.id || "html_hist";
+          if (!_htmlHist[_hid]) _htmlHist[_hid] = { title: "", src: "", height: null };
+          if (evt.type === "html_start") {
+            _htmlHist[_hid].title = evt.title || "Interactive";
+            _htmlHist[_hid].height = evt.height || null;
+          } else if (evt.type === "html_chunk") {
+            _htmlHist[_hid].src += evt.text || "";
+          } else if (evt.type === "html_end") {
+            if (window.SableHtml) {
+              if (!lastTextBubble) {
+                lastTextBubble = document.createElement("div");
+                lastTextBubble.className = "msg bot";
+                pane.appendChild(lastTextBubble);
+              }
+              const holder = document.createElement("div");
+              holder.className = "md-content ui-html";
+              const _blk = window.SableHtml.mount(_hid, _htmlHist[_hid].title, _htmlHist[_hid].height);
+              holder.appendChild(_blk.wrap);
+              lastTextBubble.appendChild(holder);
+              window.SableHtml.push(_hid, _htmlHist[_hid].src);
+              window.SableHtml.finish(_hid, evt.error);
+            }
+            delete _htmlHist[_hid];
+          }
+          lastWasUi = true;
         } else if (evt.type === "skill_start") {
           lastTextBubble = null;
           lastWasUi = false;
@@ -1773,6 +1823,7 @@
           const _isPartial = _id ? evt.partial !== false : false;
 
           if (!this._uiSegs) this._uiSegs = Object.create(null);
+          if (!this._uiSigs) this._uiSigs = Object.create(null);
 
           // Final parse came back empty — drop whatever partial we drew.
           if (evt && typeof evt === "object" && evt.remove) {
@@ -1780,6 +1831,7 @@
               this._uiSegs[_id].remove();
               delete this._uiSegs[_id];
             }
+            if (_id) delete this._uiSigs[_id];
             return;
           }
 
@@ -1811,22 +1863,74 @@
           // Re-render from scratch each update: the tree is small and this is
           // the only correct way to handle nodes being reordered/closed
           // mid-stream. Clear first so a partial that shrank leaves no orphans.
+          // Skip the whole teardown when the payload matches the last tick —
+          // otherwise every partial destroys and rebuilds the <img> elements,
+          // which reads as the picture flickering between two images.
           if (payload && window.SableComponents) {
-            try {
-              uiSeg.innerHTML = "";
-              window.SableComponents.render(payload, uiSeg);
-            } catch (e) {
-              if (!_existing) uiSeg.remove();
+            let _sig = null;
+            try { _sig = JSON.stringify(payload); } catch (e) { _sig = null; }
+            if (_sig === null || _id === null || this._uiSigs[_id] !== _sig) {
+              try {
+                uiSeg.innerHTML = "";
+                window.SableComponents.render(payload, uiSeg);
+                if (_id !== null && _sig !== null) this._uiSigs[_id] = _sig;
+              } catch (e) {
+                if (!_existing) uiSeg.remove();
+              }
+              activateLucideIcons(uiSeg);
             }
+          } else {
+            activateLucideIcons(uiSeg);
           }
-          activateLucideIcons(uiSeg);
 
           // Only a FINAL (or unkeyed) block opens a fresh text segment below.
           // A partial update must not, or every chunk would spawn an empty
           // prose segment between the partials.
           if (!_isPartial) {
             _openAnswerSegment();        // fresh segment for continued text
-            if (_id) delete this._uiSegs[_id];
+            if (_id) {
+              delete this._uiSegs[_id];
+              delete this._uiSigs[_id];
+            }
+          }
+          scrollBottom();
+        },
+        addHtml(evt) {
+          // Sandboxed HTML pane. html_start mounts the iframe skeleton,
+          // html_chunk streams a delta in, html_end seals it. Same id-keying
+          // as addComponent so replayed/streamed events share one node.
+          if (!window.SableHtml) return;
+          const _id = evt && evt.id;
+          if (!_id) return;
+          if (!this._htmlSegs) this._htmlSegs = Object.create(null);
+          if (evt.type === "html_start") {
+            if (!this._htmlSegs[_id]) {
+              hidePending();
+              closeCurrentThinking();
+              _flushAnswerQueue();
+              ensureAnswer();
+              if (raw && raw.trim()) {
+                answerContent.dataset.raw = raw;
+                answerContent.innerHTML = renderMarkdown(raw);
+                renderMermaidDiagrams(answerContent);
+                renderMathJax(answerContent);
+                activateLucideIcons(answerContent);
+              } else if (answerContent && !answerContent.childNodes.length) {
+                answerContent.remove();
+              }
+              const holder = document.createElement("div");
+              holder.className = "md-content ui-html";
+              const el = window.SableHtml.mount(_id, evt.title || "Interactive");
+              holder.appendChild(el.wrap);
+              answerEl.appendChild(holder);
+              this._htmlSegs[_id] = holder;
+              _openAnswerSegment();
+            }
+          } else if (evt.type === "html_chunk") {
+            window.SableHtml.push(_id, evt.text || "");
+          } else if (evt.type === "html_end") {
+            window.SableHtml.finish(_id, evt.error);
+            if (this._htmlSegs[_id]) delete this._htmlSegs[_id];
           }
           scrollBottom();
         },
@@ -2867,6 +2971,10 @@
             } else {
               renderUiBlock(evt.payload, streamPane);
             }
+            scrollBottom();
+          } else if (evt.type === "html_start" || evt.type === "html_chunk" || evt.type === "html_end") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            if (typeof ui.addHtml === "function") ui.addHtml(evt);
             scrollBottom();
           } else if (evt.type === "permission_request") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }

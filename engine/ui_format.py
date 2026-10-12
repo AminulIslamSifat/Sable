@@ -40,6 +40,8 @@ import base64
 import json
 import mimetypes
 import re
+import threading
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -142,10 +144,38 @@ def _resolve_svg_node(n: dict[str, Any]) -> None:
         or any(n.get(a) for a in _svg_attrs)
         or (isinstance(n.get("text"), str) and n.get("text").strip())
     )
-    if looks_like_svg:
-        markup = _svg_node_to_markup({"kind": "svg", **n})
-        if markup:
-            n["markup"] = markup
+    if not looks_like_svg:
+        return
+    # Dynamic geometry: keep the node tree so the client re-evaluates the
+    # `__expr__` coordinates on every render. Baking to markup freezes them.
+    if _svg_subtree_has_expr(n):
+        return
+    markup = _svg_node_to_markup({"kind": "svg", **n})
+    if markup:
+        n["markup"] = markup
+
+
+def _svg_subtree_has_expr(obj: Any, depth: int = 0) -> bool:
+    """True if any node in this SVG subtree carries a live `__expr__` source.
+
+    Such a subtree MUST NOT be flattened to a `markup` string: `_svg_node_to_
+    markup` writes the *baked* attribute values and drops the `__expr__` keys,
+    so every `{expr}` coordinate freezes at its parse-time value and the
+    drawing can never move. Leaving the tree intact lets the client re-evaluate.
+    """
+    if depth > _MAX_NODE_DEPTH:
+        return False
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.startswith("__expr__"):
+                return True
+            if isinstance(v, (dict, list)) and _svg_subtree_has_expr(v, depth + 1):
+                return True
+    elif isinstance(obj, list):
+        for item in obj:
+            if _svg_subtree_has_expr(item, depth + 1):
+                return True
+    return False
 
 
 # ── markup parsing ──────────────────────────────────────────────────────────
@@ -566,6 +596,69 @@ def _parse_markup(markup: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 # ── media resolution ────────────────────────────────────────────────────────
 
+# ── image result cache ──────────────────────────────────────────────────────
+# A UI block streams in as a SERIES of partial events, and the server re-parses
+# the whole block on every one (that is the only way to handle nodes appearing
+# mid-stream). Without a cache, each re-parse fired a FRESH SearXNG search, so
+# the resolved URLs changed between partials — the client tore down the old
+# <img> and drew a different picture, which read as "the image loads, then
+# instantly gets swapped for another". Memoising on (query, count) makes a
+# re-parse of an unchanged block idempotent, so the browser just re-uses the
+# bitmap it already decoded.
+_IMG_CACHE_TTL = 600.0   # seconds — SearXNG's ranking is stable for minutes
+_IMG_CACHE_MAX = 256     # bound the dict so a long session can't grow forever
+_IMG_CACHE: dict[tuple[str, int], tuple[float, list[dict[str, str]]]] = {}
+_IMG_CACHE_LOCK = threading.Lock()
+
+
+def _fetch_image_candidates(query: str, want: int) -> list[dict[str, str]]:
+    """Run one image search and normalise the rows. Never raises."""
+    try:
+        from engine.search import searxng_image_results
+        rows = searxng_image_results(query, count=want)
+    except Exception:
+        return []
+    out: list[dict[str, str]] = []
+    for r in rows:
+        img = r.get("image") or r.get("thumbnail")
+        if not img:
+            continue
+        out.append({
+            "image": img,
+            "thumbnail": r.get("thumbnail") or img,
+            "title": r.get("title", ""),
+            "source": r.get("url", ""),
+        })
+    return out
+
+
+def _cached_image_candidates(query: str, want: int) -> list[dict[str, str]]:
+    """`_fetch_image_candidates` behind a TTL cache. Never raises.
+
+    Empty results are deliberately NOT cached: a transient SearXNG failure
+    should recover on the next partial, not be frozen for ten minutes.
+    """
+    key = (query, want)
+    now = time.monotonic()
+    with _IMG_CACHE_LOCK:
+        hit = _IMG_CACHE.get(key)
+        if hit is not None:
+            ts, rows = hit
+            if (now - ts) < _IMG_CACHE_TTL:
+                return [dict(r) for r in rows]   # copy — callers mutate freely
+            _IMG_CACHE.pop(key, None)
+
+    rows = _fetch_image_candidates(query, want)
+    if rows:
+        with _IMG_CACHE_LOCK:
+            if len(_IMG_CACHE) >= _IMG_CACHE_MAX:
+                # Drop the oldest entry — cheap FIFO, no need for real LRU here.
+                oldest = min(_IMG_CACHE, key=lambda k: _IMG_CACHE[k][0])
+                _IMG_CACHE.pop(oldest, None)
+            _IMG_CACHE[key] = (now, [dict(r) for r in rows])
+    return rows
+
+
 def _resolve_images(data: dict[str, Any]) -> dict[str, Any]:
     """Turn an image component's query into real URLs. Never raises.
 
@@ -582,23 +675,13 @@ def _resolve_images(data: dict[str, Any]) -> dict[str, Any]:
 
     images: list[dict[str, str]] = []
     if query:
-        try:
-            from engine.search import searxng_image_results
-            # Ask for extra candidates — dead links are common (hotlink
-            # protection, 404s), so the client needs spares from the SAME query.
-            want = max(count, min(count * 3, 12))
-            for r in searxng_image_results(query, count=want):
-                img = r.get("image") or r.get("thumbnail")
-                if not img:
-                    continue
-                images.append({
-                    "image": img,
-                    "thumbnail": r.get("thumbnail") or img,
-                    "title": r.get("title", ""),
-                    "source": r.get("url", ""),
-                })
-        except Exception:
-            images = []
+        # Ask for extra candidates — dead links are common (hotlink protection,
+        # 404s), so the client needs spares from the SAME query. Cached because
+        # the block is re-parsed on every streaming partial: the URL set must
+        # not churn between them or the client redraws a different image each
+        # tick.
+        want = max(count, min(count * 3, 12))
+        images = _cached_image_candidates(query, want)
 
     out = dict(data)
     out["query"] = query
@@ -652,7 +735,29 @@ def _first_src(entry: Any) -> str | None:
     return None
 
 
-def _resolve_image_node(n: dict[str, Any]) -> None:
+def _mark_image_pending(n: dict[str, Any]) -> None:
+    """Flag a `query`-based image for CLIENT-side resolution.
+
+    Resolving an image means a network search, and this runs inside the SSE
+    generator — so doing it here blocked the entire chat stream for up to
+    `REQUEST_TIMEOUT` seconds per image, serially. Instead we ship the query
+    untouched plus `pending: true`; the browser fetches it asynchronously (all
+    queries in parallel) against `/api/search/image`, drawing a placeholder in
+    the meantime. See `R._pendingImage` in web/js/render-components.js.
+    """
+    q = str(n.get("query", "") or "").strip()
+    if not q:
+        return
+    try:
+        c = int(n.get("count", 1) or 1)
+    except (ValueError, TypeError):
+        c = 1
+    n["query"] = q
+    n["count"] = max(1, min(c, MAX_IMAGES_PER_COMPONENT))
+    n["pending"] = True
+
+
+def _resolve_image_node(n: dict[str, Any], *, fetch: bool = False) -> None:
     # `images` may arrive as a JSON *string* from a markup attribute, and its
     # entries may be bare local paths — parse then inline both.
     imgs = n.get("images")
@@ -686,6 +791,11 @@ def _resolve_image_node(n: dict[str, Any]) -> None:
 
     q = n.get("query")
     if q:
+        if not fetch:
+            # Non-blocking default: hand the query to the client. No network
+            # call happens while the stream is live.
+            _mark_image_pending(n)
+            return
         resolved = _resolve_images({"query": q, "count": n.get("count", 1)})
         got = resolved.get("images") or []
         if got:
@@ -709,8 +819,14 @@ def _resolve_file_node(n: dict[str, Any]) -> None:
         n["src"] = uri
 
 
-def _resolve_media(obj: Any, depth: int = 0) -> None:
-    """Walk a node tree and resolve image / file sources in place."""
+def _resolve_media(obj: Any, depth: int = 0, *, fetch: bool = False) -> None:
+    """Walk a node tree and resolve image / file sources in place.
+
+    ``fetch=False`` (the default) leaves `query` images unresolved and marks
+    them `pending` for the client — that is what keeps the SSE stream
+    non-blocking. Local files and raw SVG are always resolved inline; neither
+    touches the network, so neither can stall the stream.
+    """
     if depth > _MAX_NODE_DEPTH:
         return
     if isinstance(obj, dict):
@@ -721,7 +837,7 @@ def _resolve_media(obj: Any, depth: int = 0) -> None:
         # simply left unresolved.
         try:
             if kind in ("image", "img"):
-                _resolve_image_node(obj)
+                _resolve_image_node(obj, fetch=fetch)
             elif kind == "file":
                 _resolve_file_node(obj)
             elif kind == "svg":
@@ -729,10 +845,10 @@ def _resolve_media(obj: Any, depth: int = 0) -> None:
         except Exception:
             pass
         for v in list(obj.values()):
-            _resolve_media(v, depth + 1)
+            _resolve_media(v, depth + 1, fetch=fetch)
     elif isinstance(obj, list):
         for item in obj:
-            _resolve_media(item, depth + 1)
+            _resolve_media(item, depth + 1, fetch=fetch)
 
 
 # ── legacy JSON path ────────────────────────────────────────────────────────
@@ -761,12 +877,9 @@ def _walk_nodes(obj: Any, depth: int = 0) -> None:
     if isinstance(obj, dict):
         kind = str(obj.get("kind") or obj.get("type") or "").lower()
         if kind in _IMAGE_NODE_KINDS and obj.get("query") and not obj.get("src"):
-            resolved = _resolve_images({"query": obj.get("query"), "count": obj.get("count", 1)})
-            imgs = resolved.get("images") or []
-            if imgs:
-                obj["images"] = imgs
-                obj["pool"] = resolved.get("pool") or imgs   # keep reserves
-                obj["src"] = imgs[0].get("image") or imgs[0].get("thumbnail")
+            # Same rule as the markup path: never hit the network mid-stream.
+            # The client resolves it against /api/search/image.
+            _mark_image_pending(obj)
         for value in list(obj.values()):
             _walk_nodes(value, depth + 1)
     elif isinstance(obj, list):
@@ -787,8 +900,11 @@ def _normalize(comp: Any) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(data, dict):
         return None, f"'{ctype}' data must be an object"
     if ctype == "image":
-        data = _resolve_images(data)
-        if not data["images"]:
+        # Deferred to the client, same as every other image path — a legacy
+        # `image` component with a `query` must not block the SSE stream.
+        if data.get("query") and not data.get("src") and not data.get("images"):
+            _mark_image_pending(data)
+        elif not data.get("images") and not data.get("src"):
             return None, "image query returned nothing"
     elif ctype == "layout":
         _walk_nodes(data)

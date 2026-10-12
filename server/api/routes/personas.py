@@ -90,11 +90,25 @@ async def set_active_persona(request: Request):
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
     _layout_mode = body.get("layout_mode") or None
-    try:
-        await service.sync_context(layout_mode=_layout_mode)
-    except Exception as exc:
-        logger.warning("sync_context after persona switch failed: %s", exc)
-    return {"status": "ok", "active": name}
+    # Only push to Qwen's personalization slot when the caller is ACTUALLY on
+    # Qwen. On any other provider the persona rides in the request prompt, and
+    # pushing here would spam chat.qwen.ai with settings/update calls for a
+    # provider the user isn't even using. Qwen will lazily re-sync on its next
+    # turn via `_ensure_qwen_layout_sync` if it's stale (see chat.py).
+    _provider = (body.get("provider") or "").lower()
+    _on_qwen = _provider in ("qwen", "qwen_scraper")
+    if _on_qwen:
+        try:
+            ok = await service.sync_context(layout_mode=_layout_mode)
+            if ok:
+                try:
+                    from .chat import mark_qwen_synced as _mark
+                    _mark(_layout_mode)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("sync_context after persona switch failed: %s", exc)
+    return {"status": "ok", "active": name, "qwen_synced": _on_qwen}
 
 
 @router.get("/api/personas/output-format")
@@ -125,11 +139,23 @@ async def toggle_output_format(request: Request):
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
     _layout_mode = body.get("layout_mode") or None
-    try:
-        await service.sync_context(layout_mode=_layout_mode)
-    except Exception as exc:
-        logger.warning("sync_context after output_format toggle failed: %s", exc)
-    return {"status": "ok", "output_format_enabled": enabled}
+    # Same conditional as set_active_persona: only push to Qwen when the
+    # caller is actually on Qwen. Other providers ride the prompt and Qwen
+    # re-syncs lazily on its next turn.
+    _provider = (body.get("provider") or "").lower()
+    _on_qwen = _provider in ("qwen", "qwen_scraper")
+    if _on_qwen:
+        try:
+            ok = await service.sync_context(layout_mode=_layout_mode)
+            if ok:
+                try:
+                    from .chat import mark_qwen_synced as _mark
+                    _mark(_layout_mode)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("sync_context after output_format toggle failed: %s", exc)
+    return {"status": "ok", "output_format_enabled": enabled, "qwen_synced": _on_qwen}
 
 
 # ─── Dynamic /{name} routes LAST ──────────────────────────────────────────

@@ -174,48 +174,9 @@
       } catch (e) { console.error("loadTools failed", e); }
     }
 
-    // --- Tool Call Format dropdown ---
-    const toolFormatSelect = document.getElementById("toolFormatSelect");
-    const toolFormatSaveBtn = document.getElementById("toolFormatSaveBtn");
-    const toolFormatStatus = document.getElementById("toolFormatStatus");
-
-    async function loadToolFormat() {
-      if (!toolFormatSelect) return;
-      try {
-        const res = await fetch("/api/settings/tool-format");
-        const data = await res.json();
-        toolFormatSelect.value = data.tool_call_format || "";
-      } catch (e) { console.warn("Failed to load tool format setting", e); }
-    }
-
-    if (toolFormatSaveBtn) {
-      toolFormatSaveBtn.addEventListener("click", async () => {
-        toolFormatSaveBtn.disabled = true;
-        if (toolFormatStatus) toolFormatStatus.textContent = "Saving...";
-        try {
-          const res = await fetch("/api/settings/tool-format", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tool_call_format: toolFormatSelect.value })
-          });
-          if (res.ok) {
-            if (toolFormatStatus) { toolFormatStatus.textContent = "✓ Saved"; toolFormatStatus.style.color = "var(--accent)"; }
-          } else {
-            const err = await res.json().catch(() => ({}));
-            if (toolFormatStatus) { toolFormatStatus.textContent = "✗ " + (err.detail || "Failed"); toolFormatStatus.style.color = "var(--error)"; }
-          }
-        } catch (e) {
-          if (toolFormatStatus) { toolFormatStatus.textContent = "✗ Error"; toolFormatStatus.style.color = "var(--error)"; }
-        }
-        toolFormatSaveBtn.disabled = false;
-        setTimeout(() => { if (toolFormatStatus) toolFormatStatus.textContent = ""; }, 3000);
-      });
-    }
-
     document.querySelector('[data-tab="personalization"]').addEventListener("click", () => {
       loadTools();
       loadSkills();
-      loadToolFormat();
     });
     document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
 
@@ -621,6 +582,7 @@
       if (typeof loadSearchSettings === "function") loadSearchSettings();
       if (typeof loadJitterSettings === "function") loadJitterSettings();
       if (typeof loadPromptInjectionSettings === "function") loadPromptInjectionSettings();
+      if (typeof loadToolCallFormats === "function") loadToolCallFormats();
     });
 
     // --- Request Jitter section (inside Providers tab) ---
@@ -900,6 +862,162 @@
 
     window._universalSave?.register("prompt-injection", _savePromptInjectionSettings);
     window.loadPromptInjectionSettings = loadPromptInjectionSettings;
+
+    // --- Tool Call Format (per-provider, inside Providers tab) ---
+    const _tfEls = {
+      provider: () => document.getElementById("tfProviderSelect"),
+      format: () => document.getElementById("tfFormatSelect"),
+      save: () => document.getElementById("tfSaveBtn"),
+      reset: () => document.getElementById("tfResetBtn"),
+      hint: () => document.getElementById("tfDefaultHint"),
+      status: () => document.getElementById("tfStatus"),
+    };
+    let _tfProviders = {};   // provider key -> format name ("" = built-in default)
+    let _tfFormats = [];     // selectable format names
+    let _tfFormatLabels = {};
+    let _tfDefaults = {};    // provider key -> built-in default format name
+    let _tfRows = [];        // [{key,label,group,models,url}]
+    let _tfActive = "";
+
+    function _tfStatus(msg, color) {
+      const el = _tfEls.status();
+      if (el) { el.textContent = msg || ""; el.style.color = color || "var(--text-dim)"; }
+    }
+
+    function _tfUpdateHint() {
+      const hint = _tfEls.hint();
+      if (!hint) return;
+      if (!_tfActive) { hint.textContent = ""; return; }
+      const def = _tfDefaults[_tfActive] || "none";
+      const label = _tfFormatLabels[def] || def;
+      hint.textContent = "Built-in default: " + label;
+    }
+
+    function _tfPopulateProviders() {
+      const sel = _tfEls.provider();
+      if (!sel) return;
+      const keep = _tfActive;
+      sel.innerHTML = "";
+      const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "Select provider…";
+      sel.appendChild(ph);
+
+      const groups = [];
+      const byName = {};
+      _tfRows.forEach((r) => {
+        const g = r.group || "Backends";
+        if (!byName[g]) { byName[g] = []; groups.push(g); }
+        byName[g].push(r);
+      });
+      groups.forEach((g) => {
+        const og = document.createElement("optgroup");
+        og.label = g;
+        byName[g].forEach((r) => {
+          const o = document.createElement("option");
+          o.value = r.key;
+          o.textContent = r.label || r.key;
+          if (r.url) o.title = r.url;
+          og.appendChild(o);
+        });
+        sel.appendChild(og);
+      });
+      sel.value = keep || "";
+    }
+
+    function _tfPopulateFormats() {
+      const sel = _tfEls.format();
+      if (!sel) return;
+      sel.innerHTML = "";
+      const def = document.createElement("option");
+      def.value = "";
+      def.textContent = "Default (built-in)";
+      sel.appendChild(def);
+      _tfFormats.forEach((f) => {
+        const o = document.createElement("option");
+        o.value = f;
+        o.textContent = _tfFormatLabels[f] || f;
+        sel.appendChild(o);
+      });
+    }
+
+    function _tfRender() {
+      const fmtSel = _tfEls.format();
+      const saveBtn = _tfEls.save();
+      const resetBtn = _tfEls.reset();
+      if (!fmtSel) return;
+      if (!_tfActive) {
+        fmtSel.value = "";
+        fmtSel.disabled = true;
+        if (saveBtn) saveBtn.disabled = true;
+        if (resetBtn) resetBtn.disabled = true;
+        _tfUpdateHint();
+        return;
+      }
+      fmtSel.disabled = false;
+      if (saveBtn) saveBtn.disabled = false;
+      if (resetBtn) resetBtn.disabled = false;
+      fmtSel.value = _tfProviders[_tfActive] || "";
+      _tfUpdateHint();
+    }
+
+    async function loadToolCallFormats() {
+      try {
+        const res = await fetch("/api/settings/tool-format");
+        if (!res.ok) { _tfStatus("Failed to load (HTTP " + res.status + ")"); return; }
+        const d = await res.json();
+        _tfProviders = d.providers || {};
+        _tfFormats = d.formats || [];
+        _tfFormatLabels = d.format_labels || {};
+        _tfDefaults = d.defaults || {};
+        _tfRows = d.rows || (d.available_providers || []).map((k) => ({ key: k, label: (d.provider_labels || {})[k] || k, group: "Backends" }));
+        _tfPopulateProviders();
+        _tfPopulateFormats();
+        _tfRender();
+      } catch (e) {
+        console.error("Failed to load tool-call formats:", e);
+        _tfStatus("Failed to load: " + e.message, "var(--error)");
+      }
+    }
+
+    async function _tfSave() {
+      if (!_tfActive) return;
+      const fmt = _tfEls.format()?.value ?? "";
+      const res = await fetch("/api/settings/tool-format", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providers: { [_tfActive]: fmt } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || "Save failed");
+      if (data.providers) _tfProviders = data.providers;
+      _tfRender();
+    }
+
+    async function _tfSaveNow() {
+      try {
+        await _tfSave();
+        _tfStatus("✓ Saved", "var(--accent)");
+      } catch (e) {
+        _tfStatus("✗ " + e.message, "var(--error)");
+      }
+      setTimeout(() => _tfStatus(""), 3000);
+    }
+
+    _tfEls.provider()?.addEventListener("change", (e) => {
+      _tfActive = e.target.value || "";
+      _tfRender();
+      _tfStatus(_tfActive ? "" : "Select a provider to set its tool-call format.");
+    });
+    _tfEls.save()?.addEventListener("click", () => _tfSaveNow());
+    _tfEls.reset()?.addEventListener("click", () => {
+      const fmtSel = _tfEls.format();
+      if (fmtSel) fmtSel.value = "";
+      _tfSaveNow();
+    });
+
+    window._universalSave?.register("tool-call-format", _tfSave);
+    window.loadToolCallFormats = loadToolCallFormats;
 
     // --- Search Engine section (inside Providers tab) ---
     const _searchEls = {

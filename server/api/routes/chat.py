@@ -799,7 +799,7 @@ async def _run_summarizer(
 # request. The slot is global per account, so it only needs a re-sync when the
 # layout mode actually changes — normal chat <-> study. Tracking the last mode
 # keeps a study turn from re-pushing the whole directive on every message.
-_QWEN_LAYOUT_SYNCED: dict[str, str | None] = {"mode": None}
+_QWEN_LAYOUT_SYNCED: dict[str, str | None] = {"mode": None, "persona": None}
 
 # Study chats whose upstream session already received the study directive as a
 # first-message fallback (only used when the Qwen layout sync failed). Keyed by
@@ -807,14 +807,41 @@ _QWEN_LAYOUT_SYNCED: dict[str, str | None] = {"mode": None}
 _QWEN_STUDY_FALLBACK_SENT: set[str] = set()
 
 
+def _active_persona_name() -> str | None:
+    """Read the currently-active persona name from disk. Never raises."""
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        cfg = _P(__file__).resolve().parent.parent.parent.parent / "instruction" / ".persona_config.json"
+        return _json.loads(cfg.read_text(encoding="utf-8")).get("active")
+    except Exception:
+        return None
+
+
+def mark_qwen_synced(layout_mode: str | None = None) -> None:
+    """Record that Qwen's personalization slot now holds the current state.
+
+    Called after an explicit sync (e.g. the persona-change endpoint) so the
+    next turn's lazy auto-sync doesn't re-push the same instruction.
+    """
+    _QWEN_LAYOUT_SYNCED["mode"] = layout_mode
+    _QWEN_LAYOUT_SYNCED["persona"] = _active_persona_name()
+
+
 async def _ensure_qwen_layout_sync(layout_mode: str) -> bool:
-    """Push the layout-appropriate instruction into Qwen's personalization slot.
+    """Push the layout- and persona-appropriate instruction into Qwen.
+
+    No-ops when Qwen's slot already holds BOTH the requested layout mode and
+    the currently-active persona. This makes it safe to call on every Qwen
+    turn: after a persona change made on a non-Qwen provider, the very next
+    Qwen turn re-syncs automatically — no explicit push needed at change time.
 
     Returns True when the slot already holds (or was just updated to) the
-    requested layout's instruction. A False return means the caller should fall
-    back to sending the directive on the first message of the session.
+    requested state. A False return means the caller should fall back to
+    sending the directive on the first message of the session.
     """
-    if _QWEN_LAYOUT_SYNCED["mode"] == layout_mode:
+    persona = _active_persona_name()
+    if _QWEN_LAYOUT_SYNCED["mode"] == layout_mode and _QWEN_LAYOUT_SYNCED["persona"] == persona:
         return True
     try:
         _sync_mode = None if layout_mode in ("agent", "", None) else layout_mode
@@ -827,6 +854,7 @@ async def _ensure_qwen_layout_sync(layout_mode: str) -> bool:
         return False
     if ok:
         _QWEN_LAYOUT_SYNCED["mode"] = layout_mode
+        _QWEN_LAYOUT_SYNCED["persona"] = persona
     return bool(ok)
 
 
@@ -1043,6 +1071,21 @@ async def chat(request: ChatRequest):
         current_provider = _resolve_api_backend(request.model)
     else:
         current_provider = "qwen"
+
+    # ── Lazy Qwen persona/layout auto-sync ──────────────────────────────
+    # Qwen keeps its instruction in a SERVER-SIDE personalization slot, so a
+    # persona change made while the user is on a DIFFERENT provider never
+    # reaches it. Rather than push on every persona change (which spams the
+    # Qwen settings API even when Qwen isn't in use), we reconcile lazily:
+    # the first Qwen turn after a change re-syncs the slot. `_ensure_qwen_
+    # layout_sync` compares BOTH layout_mode and active persona, so it no-ops
+    # once they match. Scraper mode uses a real browser DOM and re-syncs via
+    # its own path, so skip it here.
+    if current_provider == "qwen" and not scraper_enabled and _layout_mode != "study":
+        try:
+            await _ensure_qwen_layout_sync(_layout_mode)
+        except Exception:
+            logger.warning("[qwen-persona] lazy sync failed", exc_info=True)
 
     # Per-provider prompt-injection toggles (Settings -> Providers).
     #
@@ -1746,6 +1789,10 @@ async def chat(request: ChatRequest):
                 # Ordered text/ui_block for this round so history replays in the
                 # exact order they were emitted (was: all text, then all tools).
                 round_flow: list[dict[str, Any]] = []
+                # <render_html> panes stream as html_start/chunk/end deltas.
+                # Accumulate per block id so the whole pane can be persisted
+                # ONCE at seal, instead of a thousand chunk events in the DB.
+                _html_acc: dict[str, dict[str, Any]] = {}
                 _round_raw_parts: list[str] = []  # per-round raw text for guard checks
                 pending_thinking: list[str] = []
                 parser = _get_skill_engine().create_parser()
@@ -1983,6 +2030,41 @@ async def chat(request: ChatRequest):
                                 if _ui_payload:
                                     round_flow.append({"type": "ui_block", "payload": _ui_payload})
                             yield sse(_fwd)
+                        elif itype in ("html_start", "html_chunk", "html_end"):
+                            # Sandboxed HTML pane — a response format, not a tool.
+                            # Live events forward straight to the client; the
+                            # body is accumulated and persisted at seal so a
+                            # reload replays the pane exactly as it streamed.
+                            _hhid = item.get("id") or "html_hist"
+                            if itype == "html_start":
+                                _html_acc[_hhid] = {
+                                    "title": item.get("title") or "",
+                                    "height": item.get("height"),
+                                    "src": "",
+                                }
+                            elif itype == "html_chunk":
+                                _hacc = _html_acc.get(_hhid)
+                                if _hacc is not None:
+                                    _hacc["src"] += str(item.get("text") or "")
+                            else:  # html_end
+                                _hacc = _html_acc.pop(_hhid, None)
+                                if _hacc is not None:
+                                    round_flow.append({
+                                        "type": "html_start",
+                                        "id": _hhid,
+                                        "title": _hacc["title"],
+                                        "height": _hacc["height"],
+                                    })
+                                    round_flow.append({
+                                        "type": "html_chunk",
+                                        "id": _hhid,
+                                        "text": _hacc["src"],
+                                    })
+                                    _hend = {"type": "html_end", "id": _hhid}
+                                    if item.get("error"):
+                                        _hend["error"] = item["error"]
+                                    round_flow.append(_hend)
+                            yield sse(item)
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):

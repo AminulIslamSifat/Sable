@@ -374,6 +374,25 @@
     }
 
     /* ---------- Persona dropdown (status-dropdown style) ---------- */
+
+    // Resolve the provider the user is CURRENTLY on, so the persona endpoints
+    // only push to Qwen's personalization slot when Qwen is actually in use.
+    // Qwen models carry no `api_backend` (or "qwen"); everything else has a
+    // real backend. Scraper mode is a distinct provider key.
+    function _currentProvider() {
+      try {
+        if (_isScraperMode()) {
+          const sm = localStorage.getItem(MODEL_KEY);
+          return sm === "qwen-scraper" ? "qwen_scraper" : "scraping";
+        }
+        const mdl = selectedModel || localStorage.getItem(MODEL_KEY);
+        const entry = (modelList || []).find(m => m.id === mdl);
+        return entry?.api_backend || "qwen";
+      } catch (err) {
+        return "qwen";
+      }
+    }
+
     async function syncStatusPersona() {
       if (!statusPersonaEl || !personaMenu) return;
       try {
@@ -424,7 +443,7 @@
             await fetch("/api/personas/output-format-toggle", {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ enabled: newState, layout_mode: localStorage.getItem('sable_layout_mode') || 'agent' })
+              body: JSON.stringify({ enabled: newState, layout_mode: localStorage.getItem('sable_layout_mode') || 'agent', provider: _currentProvider() })
             });
             fmtSwitch.classList.toggle("on", newState);
             fmtSwitch.textContent = newState ? "ON" : "OFF";
@@ -460,7 +479,7 @@
         await fetch("/api/personas/active", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, layout_mode: localStorage.getItem('sable_layout_mode') || 'agent' })
+          body: JSON.stringify({ name, layout_mode: localStorage.getItem('sable_layout_mode') || 'agent', provider: _currentProvider() })
         });
         personaDropdown.classList.remove("open");
         document.dispatchEvent(new CustomEvent("persona-changed"));

@@ -17,6 +17,7 @@ from engine.skills.json_depth import json_structurally_complete
 
 
 import json
+import uuid
 from engine.skills.json_repair import repair_json
 from engine.skills.json_sanitize import sanitize_transport
 import logging
@@ -82,7 +83,9 @@ _CONTENT_PARAM_KEYS = ("body", "content", "command")
 # NOT skills — they are a response format. The parser turns the body into a
 # native `ui_block` event the frontend renders directly; nothing goes through
 # the skill engine, middleware, or tool feedback.
-_BARE_TAG_NAMES = ("render_component",)
+_BARE_TAG_NAMES = ("render_component", "render_html")
+_HTML_MAX_BYTES = 200_000
+_HTML_MIN_CHUNK_CHARS = 120
 
 # Streaming partial-render tuning. While a <render_component> is still open we
 # re-parse the body and emit `partial` ui_block events so the card builds up
@@ -170,8 +173,50 @@ def _trim_incomplete_markup(s: str) -> str:
     return s
 
 
+def _bare_tag_attr(buf: str, start: int, name: str) -> str | None:
+    """Pull an attribute off a bare open tag at `start`. Best-effort, never raises."""
+    try:
+        gt = buf.find(">", start)
+        if gt < 0:
+            return None
+        head = buf[start:gt]
+        m = re.search(rf'{re.escape(name)}\s*=\s*"([^"]*)"', head)
+        if not m:
+            m = re.search(rf"{re.escape(name)}\s*=\s*'([^']*)'", head)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _scan_tag_end(buf: str, i: int) -> int:
+    """From index `i` (just past the tag name), find the '>' that ends the tag.
+
+    Quote-aware, so a '>' inside an attribute value doesn't close it early —
+    `<render_html title="a>b">` ends at the real '>', not the one in the
+    value. Returns the index AFTER '>' or -1 if the tag is still open.
+    """
+    q = None
+    j, n = i, len(buf)
+    while j < n:
+        ch = buf[j]
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+        elif ch == ">":
+            return j + 1
+        j += 1
+    return -1
+
+
 def _find_bare_open(buf: str):
-    """Locate the first bare markup tag. Returns (name, start, end) or None."""
+    """Locate the first bare markup tag. Returns (name, start, end) or None.
+
+    Attributes ARE allowed (`<render_html title="…">`): the tag name must be
+    followed by whitespace, '>', or '/', then a quote-aware scan finds the
+    real end of the open tag.
+    """
     low = buf.lower()
     best = None
     for name in _BARE_TAG_NAMES:
@@ -182,11 +227,11 @@ def _find_bare_open(buf: str):
             if j < 0:
                 break
             k = j + len(needle)
-            while k < len(buf) and buf[k].isspace():
-                k += 1
-            if k < len(buf) and buf[k] == ">":
-                if best is None or j < best[1]:
-                    best = (name, j, k + 1)
+            if k < len(buf) and (buf[k].isspace() or buf[k] in ">/"):
+                end = _scan_tag_end(buf, k)
+                if end != -1:
+                    if best is None or j < best[1]:
+                        best = (name, j, end)
                 break
             i = j + 1
     return best
@@ -202,10 +247,11 @@ def _find_bare_close(buf: str, name: str, start: int):
         if j < 0:
             return None
         k = j + len(needle)
-        while k < len(buf) and buf[k].isspace():
-            k += 1
-        if k < len(buf) and buf[k] == ">":
-            return (j, k + 1)
+        if k < len(buf) and (buf[k].isspace() or buf[k] == ">"):
+            end = _scan_tag_end(buf, k)
+            if end != -1:
+                return (j, end)
+            return None
         i = j + 1
 
 
@@ -481,6 +527,41 @@ def _find_json_end(raw: str) -> int:
     return -1
 
 
+def _looks_like_bare_tool_call(s: str) -> bool:
+    """Cheap shape gate for bare (unwrapped) JSON tool calls.
+
+    Only two shapes qualify:
+
+      * ``[{...}]`` — an array whose first element is an object. Bare ``[]``,
+        ``[1, 2]``, ``[true]`` etc. never do.
+      * ``{...}`` that declares a top-level ``"name"`` / ``"tool"`` / ``"tag"``
+        key within the first 400 chars. Empty ``{}`` and arbitrary JSON
+        objects never qualify.
+
+    Anything else is prose. This keeps stray ``[`` / ``{`` out of the bare
+    tool-call path — the parser no longer holds the stream or emits spurious
+    parse errors on markdown like ``[!CAUTION]`` or ``{key: value}``.
+    """
+    if not s:
+        return False
+    c0 = s[0]
+    if c0 == "[":
+        i, n = 1, len(s)
+        while i < n and s[i].isspace():
+            i += 1
+        if i >= n:
+            # Lone '[' (+ optional whitespace). No evidence of a tool call —
+            # holding here would stall the stream waiting for a '{' that may
+            # never come. If a '{' does arrive on the next feed, the buffer
+            # becomes '[{' and the check below catches it then. So: do NOT hold.
+            return False
+        return s[i] == "{"
+    if c0 == "{":
+        head = s[:400]
+        return '"name"' in head or '"tool"' in head or '"tag"' in head
+    return False
+
+
 class SkillParser:
     """Extracts complete Hermes-style tool calls from streamed answer text.
 
@@ -560,6 +641,9 @@ class SkillParser:
         self._ui_cur_id: str | None = None
         self._ui_last_parse_len = 0
         self._ui_last_hash: str | None = None
+        self._html_seq = 0
+        self._html_cur_id: str | None = None
+        self._html_sent_len = 0
 
     @classmethod
     def _strip_orphan_tags(cls, text: str) -> str:
@@ -567,14 +651,46 @@ class SkillParser:
         return cls._ORPHAN_TAG_RE.sub("", text)
 
     def _next_ui_id(self) -> str:
+        # Same reasoning as _next_html_id — see the comment there.
         self._ui_seq += 1
-        self._ui_cur_id = f"uib_{self._ui_seq}"
+        self._ui_cur_id = f"uib_{uuid.uuid4().hex[:12]}"
         return self._ui_cur_id
 
     def _reset_ui_partial(self) -> None:
         self._ui_cur_id = None
         self._ui_last_parse_len = 0
         self._ui_last_hash = None
+
+    def _next_html_id(self) -> str:
+        # MUST be unique across the whole session, not per-parser-instance.
+        # A parser is rebuilt every round, so a counter would restart at 1 and
+        # hand round N the same id as round 1 — the client keys panes by id and
+        # would reuse (and corrupt) the previous pane's node.
+        self._html_seq += 1
+        self._html_cur_id = f"html_{uuid.uuid4().hex[:12]}"
+        return self._html_cur_id
+
+    def _reset_html_partial(self) -> None:
+        self._html_cur_id = None
+        self._html_sent_len = 0
+
+    def _emit_html_partial(self, body: str, title: str, height=None) -> Generator[dict[str, Any], None, None]:
+        """Stream a still-open <render_html> body as DELTAS.
+
+        Only the newly-appended slice is sent each time (html_chunk), so a
+        200 KB block costs 200 KB total over the wire, not O(n^2). The first
+        emit carries html_start so the client can mount the pane skeleton.
+        """
+        if len(body) > _HTML_MAX_BYTES:
+            body = body[:_HTML_MAX_BYTES]
+        if self._html_cur_id is None:
+            _bid = self._next_html_id()
+            yield {"type": "html_start", "id": _bid, "title": title, "height": height}
+        delta = body[self._html_sent_len:]
+        if not delta or len(delta) < _HTML_MIN_CHUNK_CHARS:
+            return
+        self._html_sent_len = len(body)
+        yield {"type": "html_chunk", "id": self._html_cur_id, "text": delta}
 
     def _emit_ui_partial(self, body: str) -> Generator[dict[str, Any], None, None]:
         """Parse a still-open <render_component> body and stream a partial tree.
@@ -629,6 +745,7 @@ class SkillParser:
                         _bcs, _bce = _bclose
                         _bbefore = self.buf[:_bs]
                         _bbody = self.buf[_be:_bcs]
+                        _open_head = self.buf[_bs:_be]
                         self.buf = self.buf[_bce:]
                         if _bbefore.strip():
                             yield {"type": "text", "text": self._strip_orphan_tags(_bbefore)}
@@ -654,6 +771,27 @@ class SkillParser:
                                 # client to drop whatever partial it drew.
                                 yield {"type": "ui_block", "id": _bid, "remove": True}
                             continue
+                        if _bname == "render_html":
+                            # Raw HTML pane. Stream the remaining delta, then seal.
+                            _hid = self._html_cur_id
+                            _body = _bbody[:_HTML_MAX_BYTES]
+                            _err = None
+                            if len(_bbody) > _HTML_MAX_BYTES:
+                                _err = "too_large"
+                            if _hid is None:
+                                _hid = self._next_html_id()
+                                yield {"type": "html_start", "id": _hid,
+                                       "title": _bare_tag_attr(_open_head, 0, "title") or "",
+                                       "height": _bare_tag_attr(_open_head, 0, "height")}
+                            _delta = _body[self._html_sent_len:]
+                            self._reset_html_partial()
+                            if _delta:
+                                yield {"type": "html_chunk", "id": _hid, "text": _delta}
+                            _end = {"type": "html_end", "id": _hid}
+                            if _err:
+                                _end["error"] = _err
+                            yield _end
+                            continue
                         yield {"type": "tag_found", "name": _bname, "attrs": {}, "content": _bbody}
                         continue
                     # Incomplete — emit preceding prose, then STREAM a partial
@@ -668,6 +806,10 @@ class SkillParser:
                         _bs = 0
                     if _bname == "render_component":
                         yield from self._emit_ui_partial(self.buf[_be:])
+                    elif _bname == "render_html":
+                        _t = _bare_tag_attr(self.buf, 0, "title") or ""
+                        _hgt = _bare_tag_attr(self.buf, 0, "height")
+                        yield from self._emit_html_partial(self.buf[_be:], _t, _hgt)
                     break
 
                 # Strip orphaned closing tag fragments that arrive after
@@ -752,14 +894,9 @@ class SkillParser:
                         if _before_xml.strip():
                             yield {"type": "text", "text": _before_xml}
                             self.buf = self.buf[_xml_open_m.start():]
-                        # Emit pending indicator for first invoke if visible
-                        # Try both DSML and legacy invoke patterns (hybrid blocks)
-                        _inv_m = self._DSML_INVOKE_RE.search(self.buf) or self._LEGACY_INVOKE_RE.search(self.buf)
-                        if _inv_m:
-                            _tag_name = _inv_m.group(1).strip().lower()
-                            if _tag_name != self._pending_tag:
-                                self._pending_tag = _tag_name
-                                yield {"type": "tool_pending", "tag": _tag_name, "attrs": {}}
+                        # Stream live progress while the block is still open —
+                        # otherwise XML calls render as one silent lump at close.
+                        yield from self._emit_xml_progress(self.buf)
                         break  # wait for closing tag
 
                 # --- Bare JSON detection (no <tool_call> wrapper) ---
@@ -776,68 +913,70 @@ class SkillParser:
                     for _scan_i, _scan_ch in enumerate(self.buf):
                         if _scan_i in _fenced_indices:
                             continue  # Skip characters inside code fences
-                        if _scan_ch in ('{', '['):
-                            _candidate = self.buf[_scan_i:]
-                            _json_end_idx = _find_json_end(_candidate)
-                            if _json_end_idx > 0:
-                                _json_str = _candidate[:_json_end_idx]
-                                _bare_calls = _parse_action_payload(_json_str)
-                                if _bare_calls:
-                                    _plog(f"BARE_JSON_TOOL_CALL: parsed {len(_bare_calls)} calls at offset {_scan_i}")
+                        if _scan_ch not in ('{', '['):
+                            continue
+                        # Shape gate: only proceed for genuine bare tool-call
+                        # shapes — [{...}] or {...} declaring "name"/"tool"/"tag".
+                        # Bare [] or standalone {} (or any non-tool JSON) is
+                        # skipped here and left to flush as prose below.
+                        if not _looks_like_bare_tool_call(self.buf[_scan_i:]):
+                            continue
+                        _candidate = self.buf[_scan_i:]
+                        _json_end_idx = _find_json_end(_candidate)
+                        if _json_end_idx > 0:
+                            _json_str = _candidate[:_json_end_idx]
+                            _bare_calls = _parse_action_payload(_json_str)
+                            if _bare_calls:
+                                _plog(f"BARE_JSON_TOOL_CALL: parsed {len(_bare_calls)} calls at offset {_scan_i}")
+                                if _scan_i > 0 and self.buf[:_scan_i].strip():
+                                    yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
+                                self.buf = _candidate[_json_end_idx:]
+                                self._pending_tag = None
+                                self._last_progress = (0, 0)
+                                for call in _bare_calls:
+                                    yield {
+                                        "type": "tag_found",
+                                        "name": call["name"],
+                                        "attrs": call["attrs"],
+                                        "content": call["content"],
+                                    }
+                                _bare_done = True
+                                break
+                            elif json_structurally_complete(_json_str):
+                                # Structurally complete but not parseable. Only
+                                # surface a parse_error when the body actually
+                                # carries a tool-call key (name/tool/tag) — that
+                                # is a genuinely malformed tool call. Anything
+                                # else (e.g. literal `[{}]`, `[{"foo":1}]`) is
+                                # left to flush as prose below.
+                                _is_tool_attempt = (
+                                    '"name"' in _json_str
+                                    or '"tool"' in _json_str
+                                    or '"tag"' in _json_str
+                                )
+                                if _is_tool_attempt:
+                                    _plog(f"BARE_JSON_PARSE_ERROR: offset={_scan_i} len={len(_json_str)}")
                                     if _scan_i > 0 and self.buf[:_scan_i].strip():
                                         yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                     self.buf = _candidate[_json_end_idx:]
-                                    self._pending_tag = None
-                                    self._last_progress = (0, 0)
-                                    for call in _bare_calls:
-                                        yield {
-                                            "type": "tag_found",
-                                            "name": call["name"],
-                                            "attrs": call["attrs"],
-                                            "content": call["content"],
-                                        }
+                                    yield {
+                                        "type": "parse_error",
+                                        "raw": _json_str[:500],
+                                        "reason": "Bare JSON detected without <tool_call> wrapper. Could not parse as tool calls. Use <tool_call>[{...}]</tool_call> format.",
+                                    }
                                     _bare_done = True
                                     break
-                                elif json_structurally_complete(_json_str):
-                                    # Only emit parse_error if content looks like a tool call attempt.
-                                    # Prose with balanced brackets (e.g. [!CAUTION], [...]) should be
-                                    # treated as text, not failed tool calls — emitting errors for
-                                    # non-tool-call content creates feedback loops when error messages
-                                    # containing brackets get re-injected into conversation context.
-                                    _looks_like_tool_call = (
-                                        '"name"' in _json_str
-                                        or '"tool"' in _json_str
-                                        or '"tag"' in _json_str
-                                    )
-                                    if _looks_like_tool_call:
-                                        _plog(f"BARE_JSON_PARSE_ERROR: offset={_scan_i} len={len(_json_str)}")
-                                        if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                            yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
-                                        self.buf = _candidate[_json_end_idx:]
-                                        yield {
-                                            "type": "parse_error",
-                                            "raw": _json_str[:500],
-                                            "reason": "Bare JSON detected without <tool_call> wrapper. Could not parse as tool calls. Use <tool_call>[{...}]</tool_call> format.",
-                                        }
-                                        _bare_done = True
-                                        break
-                                    else:
-                                        # Not a tool call — treat as prose, skip past this bracket block
-                                        _plog(f"BARE_JSON_NON_TOOL: offset={_scan_i} len={len(_json_str)} | preview={repr(_json_str[:80])}")
-                                        if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                            yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
-                                        # Emit the bracket content as text and continue scanning
-                                        yield {"type": "text", "text": _json_str}
-                                        self.buf = _candidate[_json_end_idx:]
-                                        _bare_done = True
-                                        break
+                                # else: fall through — leave buf untouched,
+                                # continue scanning (the outer prose flush will
+                                # emit this bracket run as text).
                             else:
-                                # Incomplete JSON at _scan_i — emit preceding text, hold rest
-                                if _scan_i > 0:
-                                    yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
-                                    self.buf = self.buf[_scan_i:]
+                                # Passed the shape gate but not structurally complete yet.
                                 _bare_hold = True
                                 break
+                        else:
+                            # Complete shape prefix, still streaming — hold & wait.
+                            _bare_hold = True
+                            break
                     if _bare_done:
                         continue
                     if _bare_hold:
@@ -964,6 +1103,8 @@ class SkillParser:
                             # No closing tag yet — hold buffer, wait for more stream
                             _plog(f"HYBRID_XML_TOOL_CALL: incomplete, holding buffer")
                             self.buf = _open_tag + _ahead
+                            # Live progress for the hybrid Hermes/XML block.
+                            yield from self._emit_xml_progress(self.buf)
                             break
                         continue
                     # Truly not a tool call — preserve the ENTIRE sequence as visible text
@@ -1082,6 +1223,122 @@ class SkillParser:
                 attrs[pname] = pval
         return attrs
 
+    def _emit_xml_progress(self, block: str) -> Generator[dict[str, Any], None, None]:
+        """Stream live progress for an INCOMPLETE XML tool block.
+
+        The XML path (Hermes / DSML / MiMo) has no ``partial`` mode — without
+        this, every XML tool call arrives as one silent lump and only renders
+        once the closing tag lands, while the JSON path streams a live card the
+        whole way. This mirrors :meth:`_extract_json`'s partial branch: emit
+        ``tool_pending`` once for the tool name, then ``tool_progress`` as the
+        block grows, so the card builds up live exactly like JSON does.
+
+        Safe on any prefix: it degrades to a byte counter when no parameter
+        value is complete enough to preview yet.
+        """
+        # Tool name — ONLY from a complete, terminated match. A half-streamed
+        # name (e.g. `cre` on the way to `create_file`) must not be emitted:
+        # it would fire a second tool_pending when the real name lands.
+        name = ""
+        _m = (
+            self._DSML_INVOKE_RE.search(block)
+            or self._LEGACY_INVOKE_RE.search(block)
+            or self._MIMO_FUNCTION_RE.search(block)
+        )
+        if _m:
+            name = _m.group(1).strip().lower()
+        else:
+            # Terminated name attribute / function tag — quote or '>' closed.
+            _pm = (
+                re.search(r'<invoke\s+name="([^"\s>]+)"', block)
+                or re.search(r'<function\s*=\s*([^>\s]+)\s*>', block)
+            )
+            if _pm:
+                name = _pm.group(1).strip().lower()
+        if not name:
+            return  # name still streaming — stay silent, like the JSON path
+
+        if name != self._pending_tag:
+            self._pending_tag = name
+            self._last_progress = (0, 0)
+            yield {"type": "tool_pending", "tag": name, "attrs": {}}
+
+        p_bytes = len(block.encode("utf-8"))
+        _last_lines, last_bytes = self._last_progress
+        # Throttle: only re-emit once the block has grown meaningfully.
+        if last_bytes and p_bytes - last_bytes < 32:
+            return
+        self._last_progress = (0, p_bytes)
+
+        preview_lines = self._xml_preview_lines(block, p_bytes)
+
+        yield {
+            "type": "tool_progress",
+            "tag": name,
+            "bytes": p_bytes,
+            "preview_lines": preview_lines,
+        }
+
+    @staticmethod
+    def _xml_preview_lines(block: str, p_bytes: int) -> list[str]:
+        """Build the card preview for an XML tool block (partial or complete).
+
+        Shared by the streaming progress path and the final snapshot emitted
+        from :meth:`_extract_dsml`, so an atomically-arrived block still shows
+        the same preview a streamed one would.
+        """
+        def _trim_partial_close(val: str) -> str:
+            """Drop a trailing partial close tag (e.g. `</para`) mid-stream.
+
+            Only trims when the trailing `<...` is a strict PREFIX of the
+            closing tag. Legitimate `<` inside content (HTML, code) is kept.
+            """
+            _i = val.rfind("<")
+            if _i >= 0:
+                _tail = val[_i:].lower()
+                if "</parameter".startswith(_tail):
+                    return val[:_i]
+            return val
+
+        preview_lines: list[str] = []
+
+        # path / filename → first line of the card
+        _pm = re.search(r'<parameter\s+name="(?:path|filename)"\s*>([^<]*)', block)
+        if _pm and _pm.group(1).strip():
+            preview_lines.append(_pm.group(1).strip()[:200])
+
+        # command → show it verbatim (short; first non-empty line)
+        _cm = re.search(r'<parameter\s+name="command"\s*>(.*)$', block, re.DOTALL)
+        if _cm:
+            _cmd = _cm.group(1)
+            _cut = _cmd.find("</parameter")
+            if _cut >= 0:
+                _cmd = _cmd[:_cut]
+            else:
+                _cmd = _trim_partial_close(_cmd)
+            for _ln in _cmd.splitlines():
+                if _ln.strip():
+                    preview_lines.append(_ln.strip()[:150])
+                    break
+
+        # content / body / lines → trailing lines (what is being written now)
+        _bm = re.search(r'<parameter\s+name="(?:content|body|lines)"\s*>(.*)$', block, re.DOTALL)
+        if _bm:
+            _body = _bm.group(1)
+            _cut = _body.find("</parameter")
+            if _cut >= 0:
+                _body = _body[:_cut]
+            else:
+                _body = _trim_partial_close(_body)
+            _lines = [ln for ln in _body.splitlines() if ln.strip()]
+            for _ln in _lines[-3:]:
+                preview_lines.append(_ln[:150])
+
+        if not preview_lines:
+            _size = f"{p_bytes} B" if p_bytes < 1024 else f"{p_bytes / 1024:.1f} KB"
+            preview_lines.append(f"streaming\u2026 {_size}")
+        return preview_lines
+
     def _extract_dsml(self, block: str) -> Generator[dict[str, Any], None, None]:
         """Parse a complete DSML/legacy/MiMo tool_calls block and yield tag_found events.
         
@@ -1143,7 +1400,23 @@ class SkillParser:
                 "content": content,
             }
             found = True
-        if not found:
+        if found:
+            # Final progress snapshot — mirrors the JSON path's pre-execution
+            # emit. Matters when the whole block arrived in ONE chunk (no
+            # streaming happened): without this the card would pop in with no
+            # preview at all.
+            _p_bytes = len(block.encode("utf-8"))
+            _preview = self._xml_preview_lines(block, _p_bytes)
+            _tag = self._pending_tag or "unknown"
+            yield {
+                "type": "tool_progress",
+                "tag": _tag,
+                "bytes": _p_bytes,
+                "preview_lines": _preview,
+            }
+            self._pending_tag = None
+            self._last_progress = (0, 0)
+        else:
             _plog(f"DSML_PARSE_FAIL: no invokes found in block len={len(block)}")
 
     def _extract_json(self, raw: str, partial: bool) -> Generator[dict[str, Any], None, None]:

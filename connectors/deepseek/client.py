@@ -1338,16 +1338,18 @@ class DeepSeekClient:
 
         # Detect which format is active by checking for signature strings
         if "Hermes XML" in fmt or "invoke name" in fmt:
-            # Hermes XML format
-            _tc_o = "<" + "tool_call" + ">"
-            _tc_c = "</" + "tool_call" + ">"
+            # Hermes XML format — wrapper is <action>, NOT <tool_call>.
+            # Must match the system prompt or the model gets two conflicting
+            # instructions and falls back to whatever it was pretrained on.
+            _ao = "<" + "action" + ">"
+            _ac = "</" + "action" + ">"
             return (
                 "[reminder] Tool calling structure:\n"
-                + _tc_o + "\n"
+                + _ao + "\n"
                 + '<invoke name="TOOL_NAME">\n'
                 + '<parameter name="arg">value</parameter>\n'
                 + "</invoke>\n"
-                + _tc_c + "\n"
+                + _ac + "\n"
                 + "[user message]"
             )
         elif "DSML" in fmt or "|DSML|" in fmt:

@@ -237,6 +237,35 @@
       var lv = evalExpr(e.slice(0, -7), ctx);
       return (lv && typeof lv.length === "number") ? lv.length : 0;
     }
+    // Math.* — must precede the bare-identifier fallback, or `Math.PI` matches
+    // /^[A-Za-z_][\w.]*$/ and resolves to undefined via lookupPath.
+    if (e === "Math.PI") return Math.PI;
+    if (e === "Math.E") return Math.E;
+    var mmMath = e.match(/^Math[.](\w+)[(]([\s\S]*)[)]$/);
+    if (mmMath) {
+      var mfn = mmMath[1];
+      var margs = mmMath[2].trim() ? splitTop(mmMath[2], ",").map(function (a) { return evalExpr(a, ctx); }) : [];
+      var allNum = margs.every(function (a) { return typeof a === "number" && isFinite(a); });
+      if (allNum) {
+        if (mfn === "cos") return Math.cos(margs[0]);
+        if (mfn === "sin") return Math.sin(margs[0]);
+        if (mfn === "tan") return Math.tan(margs[0]);
+        if (mfn === "atan2") return Math.atan2(margs[0], margs[1]);
+        if (mfn === "acos") return Math.acos(margs[0]);
+        if (mfn === "asin") return Math.asin(margs[0]);
+        if (mfn === "atan") return Math.atan(margs[0]);
+        if (mfn === "abs") return Math.abs(margs[0]);
+        if (mfn === "sqrt") return Math.sqrt(margs[0]);
+        if (mfn === "pow") return Math.pow(margs[0], margs[1]);
+        if (mfn === "floor") return Math.floor(margs[0]);
+        if (mfn === "ceil") return Math.ceil(margs[0]);
+        if (mfn === "round") return Math.round(margs[0]);
+        if (mfn === "min") return Math.min.apply(null, margs);
+        if (mfn === "max") return Math.max.apply(null, margs);
+        if (mfn === "hypot") return Math.hypot.apply(null, margs);
+      }
+      return undefined;
+    }
     if (/^[A-Za-z_][\w.]*$/.test(e)) return lookupPath(e, ctx);
     return undefined;
   }
@@ -784,31 +813,135 @@
   };
   // Raw SVG: inlined ONLY when it is a genuine <svg> root with no <script> and
   // no inline event handler. Anything else degrades to a code block.
-  R.svg = function (n) {
-    var raw = str(n.svg || n.content || n.text || n.markup);
-    if (!raw) return null;
-    var d = el("div", "rc-svg");
-    if (/^\s*<svg[\s>]/i.test(raw) && !/<script/i.test(raw) && !/\son\w+\s*=/i.test(raw)) {
-      d.innerHTML = raw;
-    } else {
-      d.appendChild(el("pre", "rc-code", raw.slice(0, 4000)));
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  // Rebuild an SVG element from a live node tree. Used when the subtree
+  // carries `__expr__` coordinates and was therefore NOT flattened to markup
+  // server-side — `hydrate()` resolves each attr expression against current
+  // state here, so dragging a slider actually moves the drawing.
+  function buildSvgTree(node, ctx) {
+    var h = hydrate(node, ctx);
+    var tag = String(h.kind || h.type || "").toLowerCase();
+    if (!tag || tag === "__text__" || tag === "text") {
+      // bare text run inside SVG (e.g. <text>…</text> content) is handled by
+      // the parent, but a stray one still renders as a tspan-free text node.
+      if (h.kind === "__text__" || h.kind === "text") {
+        var tn = document.createElementNS(SVG_NS, "text");
+        tn.textContent = String(h.text || "");
+        return tn;
+      }
+      return null;
     }
+    var e = document.createElementNS(SVG_NS, tag);
+    for (var k in h) {
+      if (k === "kind" || k === "type" || k === "children" || k === "text") continue;
+      if (k.indexOf("__") === 0 || k === "props") continue;
+      var v = h[k];
+      if (v == null || typeof v === "object") continue;
+      try { e.setAttribute(k, String(v)); } catch (err) {}
+    }
+    if (h.text != null && h.text !== "") e.textContent = String(h.text);
+    var kids = arr(h.children);
+    for (var i = 0; i < kids.length; i++) {
+      var c = buildSvgTree(kids[i], ctx);
+      if (c) e.appendChild(c);
+    }
+    return e;
+  }
+  // ── SVG sanitizer (ALLOWLIST) ─────────────────────────────────────────
+  // Replaces the old regex denylist. That denylist was bypassable: a `/`
+  // separates attributes just like whitespace, so `<svg /onload=alert(1)>`
+  // passed BOTH gates (`^\s*<svg[\s>]` saw the space; `\son\w+\s*=` never
+  // saw a space before `on`) and then innerHTML fired the handler. Denylists
+  // for SVG are a dead end. Instead: parse into a detached document, drop any
+  // element not on the allowlist, strip every `on*` attr and any href/src that
+  // is not a `#`-fragment. Nothing executes because we only touch the parsed
+  // tree before it is ever inserted.
+  var SVG_OK_ELEMS = {
+    svg: 1, g: 1, defs: 1, symbol: 1, use: 1, title: 1, desc: 1,
+    path: 1, rect: 1, circle: 1, ellipse: 1, line: 1, polyline: 1, polygon: 1,
+    text: 1, tspan: 1, textpath: 1,
+    lineargradient: 1, radialgradient: 1, stop: 1,
+    clippath: 1, mask: 1, marker: 1, pattern: 1, filter: 1,
+    fegaussianblur: 1, feoffset: 1, feblend: 1, fecolormatrix: 1,
+    femerge: 1, femergenode: 1, fecomponenttransfer: 1, fefuncr: 1,
+    fefuncg: 1, fefuncb: 1, fefunca: 1, fecomposite: 1, fedropshadow: 1
+  };
+  function sanitizeSvgString(raw) {
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(raw, "image/svg+xml");
+    } catch (e) { return null; }
+    if (!doc || !doc.documentElement) return null;
+    if (doc.getElementsByTagName("parsererror").length) return null;
+    if (String(doc.documentElement.nodeName).toLowerCase() !== "svg") return null;
+    (function prune(node) {
+      var kids = Array.prototype.slice.call(node.childNodes || []);
+      for (var i = 0; i < kids.length; i++) {
+        var ch = kids[i];
+        if (ch.nodeType !== 1) continue;
+        var nm = String(ch.nodeName).toLowerCase();
+        if (!SVG_OK_ELEMS[nm]) { ch.parentNode.removeChild(ch); continue; }
+        var attrs = Array.prototype.slice.call(ch.attributes || []);
+        for (var a = 0; a < attrs.length; a++) {
+          var an = String(attrs[a].name).toLowerCase();
+          var av = String(attrs[a].value || "");
+          if (an.indexOf("on") === 0) { ch.removeAttribute(attrs[a].name); continue; }
+          if (an === "href" || an === "xlink:href" || an === "src") {
+            if (av.trim().charAt(0) !== "#") ch.removeAttribute(attrs[a].name);
+            continue;
+          }
+          if (an === "style" && /url\s*\(/i.test(av) && !/url\s*\(\s*["']?data:/i.test(av)) {
+            ch.removeAttribute(attrs[a].name);
+          }
+        }
+        prune(ch);
+      }
+    })(doc.documentElement);
+    return doc.documentElement;
+  }
+
+  R.svg = function (n, depth, ctx) {
+    var raw = str(n.svg || n.content || n.text || n.markup);
+    var d = el("div", "rc-svg");
+    if (raw && /^\s*<svg[\s>]/i.test(raw)) {
+      var clean = sanitizeSvgString(raw);
+      if (clean) { d.appendChild(clean); return d; }
+    }
+    // No frozen markup but a child tree -> dynamic geometry. Build real SVG
+    // DOM so `__expr__` attrs re-evaluate on every render pass.
+    if (arr(n.children).length) {
+      var live = buildSvgTree(n, ctx || noopCtx());
+      if (live) { d.appendChild(live); return d; }
+    }
+    if (raw) d.appendChild(el("pre", "rc-code", raw.slice(0, 4000)));
+    else return null;
     return d;
   };
   R.asyncimage = function (n, d, c) {
     var src = str(n.src || n.url || n.image || n.thumbnail);
-    if (!src) return null;
+    // No URL yet but a `query` present -> hand to R.image, which draws the
+    // placeholder and resolves it asynchronously. Bailing here (the old
+    // behaviour) dropped the whole node and left a hole in the card.
+    if (!src) {
+      if (str(n.query) || n.pending) return R.image(n, d, c);
+      return null;
+    }
     return R.image({ src: src, caption: n.caption || n.alt, alt: n.alt }, d, c);
   };
-  R.asyncimagegroup = function (n) {
+  R.asyncimagegroup = function (n, d, c) {
     var items = arr(n.images || n.items || n.srcs);
-    if (!items.length) return null;
+    // A group whose only payload is a query is a single pending image, not an
+    // empty one — route it through R.image so it still renders + resolves.
+    if (!items.length) {
+      if (str(n.query) || n.pending) return R.image(n, d, c);
+      return null;
+    }
     // Normalise to plain src strings, then hand off to R.image so the
     // fallback chain + uniform sizing stay in ONE place.
     var srcs = items.map(function (it) {
       return typeof it === "object" ? str(it.src || it.url || it.image || it.thumbnail) : str(it);
     });
-    return R.image({ images: srcs, caption: n.caption || n.alt, alt: n.alt });
+    return R.image({ images: srcs, caption: n.caption || n.alt, alt: n.alt }, d, c);
   };
   R.asyncvideo = function (n) {
     // Delegate to R.video — it owns the wrapper/player split and the error
@@ -1291,18 +1424,89 @@
     });
     return wrap.childNodes.length ? wrap : null;
   };
+  // ── pending image (async, non-blocking) ───────────────────────────────
+  // A `query`-based image arrives unresolved (`pending: true`): the server
+  // refuses to block the chat stream on a SearXNG round-trip, so it ships the
+  // query and the browser fetches it here. ALL pending queries fire at once and
+  // resolve independently — one slow search never holds up the card, let alone
+  // the transcript. A placeholder occupies the slot until the URLs land.
+  var _imgInflight = Object.create(null);   // query|count -> promise
+
+  function _placeholder(node) {
+    var wrap = el("div", "rc-image rc-image-pending");
+    var n = num(node.count, 1, 1, 8);
+    var holder = n > 1 ? el("div", "rc-imggrid") : wrap;
+    if (n > 1) wrap.appendChild(holder);
+    for (var i = 0; i < n; i++) {
+      var ph = el("div", "rc-image-ph");
+      ph.setAttribute("aria-busy", "true");
+      ph.appendChild(el("span", "rc-image-ph-dot", ""));
+      holder.appendChild(ph);
+    }
+    if (node.caption) wrap.appendChild(el("div", "rc-cap", String(node.caption)));
+    return wrap;
+  }
+
+  function _fetchImages(query, count) {
+    var key = query + "|" + count;
+    if (_imgInflight[key]) return _imgInflight[key];
+    var url = "/api/search/image?q=" + encodeURIComponent(query) + "&count=" + encodeURIComponent(count);
+    var p = fetch(url, { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .catch(function () { return null; })
+      .then(function (data) {
+        delete _imgInflight[key];   // let a later retry re-ask
+        return data;
+      });
+    _imgInflight[key] = p;
+    return p;
+  }
+
+  function _pendingImage(node) {
+    var wrap = _placeholder(node);
+    var query = str(node.query);
+    var count = num(node.count, 1, 1, 8);
+    if (!query) return wrap;
+    _fetchImages(query, count).then(function (data) {
+      if (!wrap.isConnected) return;   // card was torn down / re-rendered
+      var imgs = data && (data.images || data.results);
+      if (!imgs || !imgs.length) {
+        // Nothing found — drop the placeholders so the grid closes up.
+        wrap.remove();
+        return;
+      }
+      var resolved = R.image({
+        images: imgs.slice(0, count),
+        pool: data.pool || imgs,
+        caption: node.caption,
+        alt: node.alt
+      });
+      if (resolved && wrap.parentNode) wrap.parentNode.replaceChild(resolved, wrap);
+    });
+    return wrap;
+  }
+
   R.image = function (node) {
-    // The server resolves `query` / `file` into `src` (+ an `images` array,
-    // plus `pool` — spare URLs from the SAME query). Show `images`; when one
-    // dies, swap in the next unused entry from `pool`. Only when the pool is
-    // fully exhausted do we drop the tile (so the grid reflows) — we never
-    // leave a hole or draw a placeholder box.
+    // Two modes:
+    //   pending — `query` set, no URLs yet. Draw a placeholder and resolve
+    //             asynchronously (never blocks the stream).
+    //   ready   — server-resolved `images` (+ `pool` of spares). Show `images`;
+    //             when one dies, swap in the next unused entry from `pool`.
+    //             Only when the pool is exhausted do we drop the tile, so the
+    //             grid reflows and we never leave a hole or a broken-image box.
+    if (node.pending && str(node.query)) return _pendingImage(node);
+
     var list = arr(node.images);
     var srcs = list.length ? list.map(function (i) { return str(i && (i.image || i.thumbnail)) || str(i); }) : [];
     var single = str(node.src);
     if (!srcs.length && single) srcs = [single];
     srcs = srcs.filter(Boolean);
-    if (!srcs.length) return null;
+    if (!srcs.length) {
+      // Unresolved query that never got flagged — treat it as pending rather
+      // than dropping the node, so the card keeps its slot and fills in.
+      if (str(node.query)) return _pendingImage(node);
+      return null;
+    }
 
     // Ordered reserve: every candidate the server returned for this query.
     var pool = arr(node.pool).map(function (i) {
