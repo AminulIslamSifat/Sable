@@ -27,7 +27,7 @@
   color: var(--text);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -158,10 +158,13 @@
 .rc-root .rc-badge[data-tone="accent"] { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); background: color-mix(in srgb, var(--purple) 15%, transparent); }
 .rc-root .rc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .rc-root .rc-chip { padding: 2px 10px; border-radius: 99px; font-size: 11px; border: 1px solid var(--border); color: var(--muted); }
+/* Inline {{chip}} inside any richText body — flow steps, callouts, prose.
+   Mirrors .rc-chip but sized to sit in a sentence without shifting line height. */
+.rc-root .rc-chip-inline { font-family: var(--font-mono, monospace); font-size: .92em; padding: 1px 6px; border-radius: 5px; background: var(--accent-dim); color: var(--accent-text); border: 1px solid var(--border); white-space: nowrap; }
 
 /* ── stat ─────────────────────────────────────────────────────────────── */
 /* ref .stats{grid-template-columns:repeat(3,1fr);gap:16px;margin:24px 10px 22px} */
-.rc-root .rc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 16px; margin: 24px 10px 22px; }
+.rc-root .rc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 18px; }
 /* ref .stat{display:flex;flex-direction:column;gap:3px}
        .stat svg{margin-bottom:3px} .value{font-size:18px;font-weight:700;line-height:1.2}
        .label{font-size:11px;color:#b5b5b5} */
@@ -184,7 +187,7 @@
 .rc-root .rc-kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
 .rc-root .rc-kv-key { color: var(--muted); } .rc-root .rc-kv-val { color: var(--text); }
 .rc-root .rc-kv-title { font-weight: 700; color: var(--text); margin-bottom: 6px; }
-.rc-root .rc-code { margin: 0; padding: 12px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); font-family: var(--font); font-size: 12px; color: var(--dim); overflow-x: auto; line-height: 1.55; }
+.rc-root .rc-code { margin: 0; padding: 14px 16px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); font-family: var(--font); font-size: 12px; color: var(--dim); overflow-x: auto; line-height: 1.55; }
 .rc-root .rc-code code { background: none; border: none; padding: 0; }
 .rc-root .rc-quote { margin: 0; padding: 4px 14px; border-left: 3px solid var(--purple); color: var(--muted); font-style: italic; }
 .rc-root .rc-quote p { margin: 0; }
@@ -194,7 +197,7 @@
 .rc-root .rc-li-sub { display: block; color: var(--muted); font-size: 12px; }
 
 /* ── callout ──────────────────────────────────────────────────────────── */
-.rc-root .rc-callout { padding: 10px 14px; border-radius: 0 8px 8px 0; border: 1px solid var(--border); border-left: 3px solid var(--purple); background: var(--surface); }
+.rc-root .rc-callout { padding: 13px 16px; border-radius: 0 8px 8px 0; border: 1px solid var(--border); border-left: 3px solid var(--purple); background: var(--surface); }
 .rc-root .rc-callout[data-tone="note"] { border: none; border-left: none; background: none; padding: 0; }
 .rc-root .rc-callout[data-tone="tip"] { border-left-color: var(--teal); }
 .rc-root .rc-callout[data-tone="warning"] { border-left-color: var(--yellow); }
@@ -206,7 +209,7 @@
 /* ── table ────────────────────────────────────────────────────────────── */
 .rc-root .rc-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 .rc-root .rc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.rc-root .rc-table th, .rc-root .rc-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.rc-root .rc-table th, .rc-root .rc-table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
 .rc-root .rc-table th { color: var(--muted); font-weight: 600; }
 .rc-root .rc-table td { color: var(--dim); }
 
@@ -217,21 +220,85 @@
 .rc-root .rc-progress-track { height: 8px; border-radius: 4px; background: var(--surface); overflow: hidden; }
 .rc-root .rc-progress-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--purple) 70%, transparent), var(--purple)); }
 
-.rc-root .rc-timeline { display: flex; flex-direction: column; gap: 10px; }
-.rc-root .rc-tl-item { display: flex; gap: 10px; }
+/* ── block components share ONE card treatment ──────────────────────────
+   Half the block-level components had a surface+border and half were bare
+   flex columns, so a transcript read as a mix of framed cards and loose
+   text. These are the data/block pieces; prose-level pieces (.rc-list,
+   .rc-quote, .rc-chips) deliberately stay unframed, and .rc-flow keeps its
+   rail as its own frame. */
+.rc-root .rc-timeline,
+.rc-root .rc-kv,
+.rc-root .rc-checklist,
+.rc-root .rc-toggle,
+.rc-root .rc-stats {
+  padding: 15px 17px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.rc-root .rc-timeline { display: flex; flex-direction: column; gap: 12px; }
+.rc-root .rc-tl-item { display: flex; gap: 11px; }
 .rc-root .rc-tl-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--purple); flex: 0 0 9px; margin-top: 5px; }
 .rc-root .rc-tl-title { font-weight: 700; color: var(--text); font-size: 13px; }
 .rc-root .rc-tl-text { color: var(--dim); font-size: 12px; }
 
-.rc-root .rc-flow { display: flex; flex-direction: column; gap: 6px; }
-.rc-root .rc-flow-node { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--dim); }
-.rc-root .rc-flow-idx { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--surface); font-size: 11px; color: var(--muted); flex: 0 0 20px; }
+.rc-root .rc-flow { display: flex; flex-direction: column; }
+.rc-root .rc-flow-node { position: relative; display: grid; grid-template-columns: 22px 1fr; gap: 12px; align-items: start; padding: 0 0 20px; }
+.rc-root .rc-flow-node:last-child { padding-bottom: 0; }
+.rc-root .rc-flow-node::before { content: ""; position: absolute; left: 11px; top: 26px; bottom: 0; width: 1px; background: var(--border); transform: translateX(-0.5px); }
+.rc-root .rc-flow-node:last-child::before { display: none; }
+.rc-root .rc-flow-idx { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-family: var(--font-mono, monospace); font-size: 11px; font-weight: 600; line-height: 1; background: var(--accent-dim); color: var(--accent-text); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.rc-root .rc-flow-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding-top: 1px; }
+.rc-root .rc-flow-title { color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.45; }
+.rc-root .rc-flow-text { color: var(--text-dim); font-size: 12px; line-height: 1.65; }
+.rc-root .rc-flow-node[data-state="done"] .rc-flow-idx { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.rc-root .rc-flow-node[data-state="done"] .rc-flow-title { color: var(--text-dim); }
+.rc-root .rc-flow-node[data-state="current"] .rc-flow-idx { box-shadow: 0 0 0 3px var(--accent-dim); }
+.rc-root .rc-flow-node[data-state="current"] .rc-flow-title { color: var(--accent-text); }
 
 /* reference: <svg viewBox="0 0 700 250"> scaled to the column width
    (.chartbox svg{display:block;width:100%;height:auto;max-height:280px}) */
-.rc-root .rc-chart { display: flex; flex-direction: column; gap: 8px; }
+/* Chart card. Previously .rc-chart was a bare flex column — no surface, no
+   border — so the plot floated on the page background with no separation. */
+.rc-root .rc-chart { display: flex; flex-direction: column; gap: 12px; padding: 17px 19px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.rc-root .rc-chart-title { font-weight: 600; color: var(--text); font-size: 13.5px; line-height: 1.4; }
 .rc-root .rc-chart-svg { width: 100%; overflow: hidden; }
 .rc-root .rc-chart-svg svg { display: block; width: 100%; height: auto; max-height: 280px; }
+/* Chart internals styled by class, not baked hex in the SVG string — so bars
+   and gridlines follow the active theme instead of forcing purple-on-brown. */
+.rc-root .rc-chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.rc-root .rc-chart-legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
+.rc-root .rc-chart-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.rc-root .rc-chart-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.rc-root .rc-chart-grid { stroke: var(--border); stroke-width: 1; }
+.rc-root .rc-chart-axis { fill: var(--muted); font-size: 11px; font-family: var(--font-mono, monospace); }
+/* Series 0 is full accent; later series step down in opacity so a grouped
+   chart reads as one family without inventing new hues. */
+.rc-root .rc-chart-bar { fill: var(--accent); }
+.rc-root .rc-chart-bar[data-s="1"] { opacity: .62; }
+.rc-root .rc-chart-bar[data-s="2"] { opacity: .4; }
+.rc-root .rc-chart-bar[data-s="3"] { opacity: .26; }
+.rc-root .rc-chart-legend .rc-chart-swatch[data-s="1"] { opacity: .62; }
+.rc-root .rc-chart-legend .rc-chart-swatch[data-s="2"] { opacity: .4; }
+.rc-root .rc-chart-legend .rc-chart-swatch[data-s="3"] { opacity: .26; }
+.rc-root .rc-chart-swatch { background: var(--accent); }
+.rc-root .rc-chart-avg { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; opacity: .7; }
+.rc-root .rc-chart-avg-label { fill: var(--muted); font-size: 10px; font-family: var(--font-mono, monospace); }
+.rc-root .rc-chart-val { fill: var(--text-dim); font-size: 11px; font-family: var(--font-mono, monospace); }
+.rc-root .rc-chart-cat { fill: var(--muted); font-size: 12px; }
+/* Bars grow up from the axis on mount, staggered left-to-right. */
+.rc-root .rc-chart-bar { transform-box: fill-box; transform-origin: bottom; animation: rc-bar-grow .5s cubic-bezier(.34,1.3,.64,1) backwards; animation-delay: calc(var(--i, 0) * 45ms); transition: opacity .15s, filter .15s; }
+@keyframes rc-bar-grow { from { transform: scaleY(0); opacity: 0; } }
+/* Hover: the pointed-at bar brightens, every sibling fades back. :has() makes
+   the dimming siblings-aware without any JS. */
+.rc-root .rc-chart-svg:has(.rc-chart-bar:hover) .rc-chart-bar { opacity: .32; }
+.rc-root .rc-chart-svg .rc-chart-bar:hover { opacity: 1 !important; filter: brightness(1.18); }
+/* Cursor-following tooltip. JS sets left/top per mousemove; this owns the look.
+   Lives inside the card so it inherits the scoped .rc-root theme tokens. */
+.rc-root .rc-chart { position: relative; }
+.rc-root .rc-chart-tip { position: absolute; z-index: 5; pointer-events: none; opacity: 0; transform: translate(-50%, -135%) scale(.96); transition: opacity .12s, transform .12s; padding: 5px 9px; border-radius: 7px; background: var(--panel); color: var(--text); border: 1px solid var(--border); font-family: var(--font-mono, monospace); font-size: 11px; white-space: nowrap; box-shadow: 0 4px 14px var(--shadow-outer-heavy, rgba(0,0,0,.35)); }
+.rc-root .rc-chart-tip.on { opacity: 1; transform: translate(-50%, -135%) scale(1); }
+@media (prefers-reduced-motion: reduce) { .rc-root .rc-chart-bar { animation: none; } .rc-root .rc-chart-tip { transition: none; } }
 .rc-root .rc-cap { font-size: 10px; color: var(--faint); }
 
 /* ── image ────────────────────────────────────────────────────────────── */
@@ -370,8 +437,18 @@
   cursor: default; text-decoration: none;
 }
 .rc-root .rc-button[data-block="1"] { width: 100%; align-self: stretch; }
-.rc-root .rc-button[data-tone="danger"] { background: var(--red); border-color: var(--red); color: #fff; }
-.rc-root .rc-button[data-tone="tip"] { background: var(--green); border-color: var(--green); color: #fff; }
+/* The active member of a switcher: filled with the accent, so "where am I"
+   is answerable at a glance instead of every chip looking identical. */
+.rc-root .rc-button[data-active="1"] { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.rc-root .rc-button[data-active="1"]:hover { filter: brightness(1.08); }
+/* Auto-grouped run of adjacent buttons (see renderChildren). Wraps on narrow
+   columns instead of overflowing. */
+.rc-root .rc-btn-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rc-root .rc-btn-row .rc-button { align-self: auto; }
+/* Text on a filled colour token uses var(--bg), not #fff — the codebase-wide
+   convention (see .rc-choice-picked::before). #fff broke on light themes. */
+.rc-root .rc-button[data-tone="danger"] { background: var(--red); border-color: var(--red); color: var(--bg); }
+.rc-root .rc-button[data-tone="tip"] { background: var(--green); border-color: var(--green); color: var(--bg); }
 .rc-root .rc-button[data-tone="accent"] { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); background: color-mix(in srgb, var(--purple) 15%, transparent); }
 .rc-root .rc-button.rc-clickable { cursor: pointer; }
 .rc-root .rc-button.rc-clickable:hover { filter: brightness(1.12); }
@@ -397,20 +474,73 @@
 .rc-root .rc-check-row.rc-done .rc-check-text { color: var(--muted); text-decoration: line-through; }
 .rc-root .rc-toggle { display: flex; flex-direction: column; gap: 6px; }
 .rc-root .rc-toggle-title { font-weight: 700; color: var(--text); font-size: 13px; }
-.rc-root .rc-choices { display: flex; flex-direction: column; gap: 8px; }
-.rc-root .rc-choices-title { font-weight: 700; color: var(--text); font-size: 13px; }
+.rc-root .rc-choices { display: flex; flex-direction: column; gap: 13px; padding: 17px 19px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.rc-root .rc-quiz-head { display: flex; flex-direction: column; gap: 7px; }
+.rc-root .rc-quiz-kicker { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; font-family: var(--font-mono, monospace); font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--accent-text); background: var(--accent-dim); border: 1px solid var(--border); border-radius: 99px; padding: 3px 10px 3px 4px; }
+.rc-root .rc-quiz-icon { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 700; }
+.rc-root .rc-quiz-progress { font-weight: 500; color: var(--muted); letter-spacing: .04em; padding-left: 4px; border-left: 1px solid var(--border); margin-left: 2px; }
+.rc-root .rc-choices-title { font-weight: 600; color: var(--text); font-size: 15.5px; line-height: 1.5; }
 .rc-root .rc-choices-list { display: flex; flex-direction: column; gap: 6px; }
-.rc-root .rc-choice { text-align: left; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; }
-.rc-root .rc-choice:hover { border-color: var(--purple); color: var(--text); }
-.rc-root .rc-choice { transition: border-color .15s, background .15s, color .15s; }
-.rc-root .rc-choice:disabled { cursor: default; opacity: .9; }
-.rc-root .rc-choice.rc-choice-picked { border-color: color-mix(in srgb, var(--purple) 55%, transparent); color: var(--text); background: color-mix(in srgb, var(--purple) 15%, transparent); }
-.rc-root .rc-choice.rc-choice-correct { border-color: color-mix(in srgb, var(--ok) 55%, transparent); color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
-.rc-root .rc-choice.rc-choice-wrong { border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.rc-root .rc-choices-feedback { font-size: 12px; font-weight: 600; margin-top: 2px; }
+.rc-root .rc-choice { position: relative; display: grid; grid-template-columns: 26px 1fr; align-items: center; gap: 11px; text-align: left; padding: 11px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text-dim); font: inherit; font-size: 13.5px; line-height: 1.5; cursor: pointer; transition: border-color .15s, background .15s, color .15s, transform .12s; }
+.rc-root .rc-choice::before { content: attr(data-letter); display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); font-family: var(--font-mono, monospace); font-size: 12px; font-weight: 700; color: var(--accent-text); transition: inherit; }
+.rc-root .rc-choice.rc-clickable:hover { border-color: var(--purple); background: var(--surface); color: var(--text); transform: translateX(2px); }
+.rc-root .rc-choice.rc-clickable:hover::before { border-color: var(--purple); color: var(--text); }
+.rc-root .rc-choice.rc-clickable:active { transform: translateX(2px) scale(.995); }
+.rc-root .rc-choice:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+.rc-root .rc-choice:disabled { cursor: default; }
+/* Revealed states carry an inset colour bar — structural, not just tinted, so
+   the outcome survives greyscale / low-contrast themes. */
+.rc-root .rc-choice.rc-choice-picked { border-color: var(--purple); background: var(--bg); box-shadow: inset 3px 0 0 var(--purple); color: var(--text); }
+.rc-root .rc-choice.rc-choice-picked::before { background: var(--purple); border-color: var(--purple); color: var(--bg); }
+.rc-root .rc-choice.rc-choice-correct { border-color: var(--ok); background: var(--bg); box-shadow: inset 3px 0 0 var(--ok); color: var(--text); }
+.rc-root .rc-choice.rc-choice-correct::before { content: "✓"; background: var(--ok); border-color: var(--ok); color: var(--bg); }
+.rc-root .rc-choice.rc-choice-wrong { border-color: var(--border); background: var(--bg); box-shadow: inset 3px 0 0 var(--danger); color: var(--muted); }
+.rc-root .rc-choice.rc-choice-wrong::before { content: "✕"; background: transparent; border-color: var(--danger); color: var(--danger); }
+/* De-emphasise unpicked rows via a colour shift, NOT opacity — dimming text
+   below readable contrast fails WCAG in dark themes (Smashing Mag, 2025). */
+.rc-root .rc-choice:disabled:not(.rc-choice-correct):not(.rc-choice-wrong):not(.rc-choice-picked) { color: var(--muted); background: var(--bg); }
+.rc-root .rc-choice:disabled:not(.rc-choice-correct):not(.rc-choice-wrong):not(.rc-choice-picked)::before { opacity: .6; }
+/* Staggered reveal — each row keys off its --i index so the result sweeps
+   down the list instead of every row snapping at once. */
+.rc-root .rc-choice.rc-choice-correct,
+.rc-root .rc-choice.rc-choice-wrong,
+.rc-root .rc-choice:disabled:not(.rc-choice-correct):not(.rc-choice-wrong):not(.rc-choice-picked) { animation: rc-reveal .32s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+@keyframes rc-reveal { from { opacity: .35; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .rc-root .rc-choice.rc-choice-correct, .rc-root .rc-choice.rc-choice-wrong, .rc-root .rc-choice:disabled { animation-delay: 0ms !important; } }
+.rc-root .rc-choices-feedback { font-size: 12.5px; font-weight: 650; margin-top: -2px; padding-left: 2px; }
 .rc-root .rc-choices-feedback.rc-ok { color: var(--ok); }
 .rc-root .rc-choices-feedback.rc-no { color: var(--danger); }
-.rc-root .rc-choices-explain { font-size: 12px; color: var(--muted); }
+/* Result banner — the payoff after answering. Big mark, verdict, and (on a
+   miss) the correct answer spelled out, so it reads as feedback not a log line. */
+.rc-root .rc-quiz-result { display: grid; grid-template-columns: 28px 1fr; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 9px; border: 1px solid var(--border); border-left-width: 3px; animation: rc-reveal .28s cubic-bezier(.2,.7,.2,1) both; }
+.rc-root .rc-quiz-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font-size: 15px; font-weight: 700; }
+.rc-root .rc-quiz-verdict-main { font-size: 13.5px; font-weight: 700; line-height: 1.4; }
+.rc-root .rc-quiz-verdict-sub { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
+.rc-root .rc-quiz-verdict-sub b { color: var(--text); font-weight: 600; }
+.rc-root .rc-quiz-result.rc-ok { background: var(--bg); border-color: var(--ok); }
+.rc-root .rc-quiz-result.rc-ok .rc-quiz-mark { background: var(--ok); color: var(--bg); }
+.rc-root .rc-quiz-result.rc-ok .rc-quiz-verdict-main { color: var(--ok); }
+.rc-root .rc-quiz-result.rc-no { background: var(--bg); border-color: var(--danger); }
+.rc-root .rc-quiz-result.rc-no .rc-quiz-mark { background: var(--danger); color: var(--bg); }
+.rc-root .rc-quiz-result.rc-no .rc-quiz-verdict-main { color: var(--danger); }
+.rc-root .rc-choices-explain { font-size: 12px; color: var(--muted); line-height: 1.6; padding: 9px 11px; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--border); }
+/* ── quiz stepper ─────────────────────────────────────────────────────────
+   Wraps N <choices> so only one shows at a time. Nav button gates on the
+   current step being answered. */
+.rc-root .rc-quiz { display: flex; flex-direction: column; gap: 12px; }
+.rc-root .rc-quiz-stage { animation: rc-quiz-in .3s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes rc-quiz-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rc-root .rc-quiz-nav { display: flex; justify-content: flex-end; }
+.rc-root .rc-quiz-btn { font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); cursor: pointer; transition: filter .15s, opacity .15s; }
+.rc-root .rc-quiz-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.rc-root .rc-quiz-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rc-root .rc-quiz-btn-off, .rc-root .rc-quiz-btn:disabled { background: transparent; border-color: var(--border); color: var(--muted); cursor: default; }
+.rc-root .rc-quiz-summary { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 22px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); text-align: center; animation: rc-quiz-in .3s cubic-bezier(.2,.7,.2,1) both; }
+.rc-root .rc-quiz-score { font-family: var(--font-mono, monospace); font-size: 42px; font-weight: 600; line-height: 1; color: var(--text); }
+.rc-root .rc-quiz-score small { font-size: 18px; color: var(--muted); }
+.rc-root .rc-quiz-score-label { font-size: 13.5px; color: var(--text-dim); line-height: 1.5; max-width: 40ch; }
+@media (prefers-reduced-motion: reduce) { .rc-root .rc-quiz-stage, .rc-root .rc-quiz-summary { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rc-root .rc-choice.rc-choice-correct, .rc-root .rc-choice.rc-choice-wrong, .rc-root .rc-quiz-result { animation: none; } }
 
 /* ── link ─────────────────────────────────────────────────────────────── */
 .rc-root .rc-link { color: var(--blue); text-decoration: none; }
@@ -457,7 +587,11 @@
 .rc-root .rc-pressable:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
 
 /* ── carousel ─────────────────────────────────────────────────────────── */
-.rc-root .rc-carousel { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x mandatory; }
+/* The scroller itself stays frameless — it is a viewport, not a card. Its
+   ITEMS are the cards, and they already carry border+surface. */
+.rc-root .rc-carousel { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x mandatory; }
+.rc-root .rc-carousel::-webkit-scrollbar { height: 6px; }
+.rc-root .rc-carousel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .rc-root .rc-carousel-item {
   flex: 0 0 auto; min-width: 180px; max-width: 280px; scroll-snap-align: start;
   border: 1px solid var(--border); border-radius: 10px; padding: 10px;

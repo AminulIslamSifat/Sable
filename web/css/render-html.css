@@ -1,6 +1,8 @@
 /* render-html.css — sandboxed <render_html> pane. */
 .rc-html {
-  margin: 10px 0;
+  /* Matches .md-content:has(> .rc-root) in chat.css -- a DSL card and an HTML
+     pane are both "component blocks" and should not sit at different gaps. */
+  margin: 6px 0;
   border: 1px solid var(--border, #303030);
   border-radius: 10px;
   overflow: hidden;

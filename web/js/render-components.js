@@ -100,6 +100,7 @@
     favicon: "favicon", svg: "svg",
     asyncimage: "asyncimage", asyncimagegroup: "asyncimagegroup", asyncvideo: "asyncvideo",
     // Layout: collections, navigation, tables
+    quiz: "quiz", mcq: "quiz",
     "flow-item": "flowitem", flowitem: "flowitem",
     "list-item": "listitem", listitem: "listitem",
     pressable: "pressable",
@@ -342,25 +343,36 @@
 
   function interp(s, ctx) {
     if (typeof s !== "string" || s.indexOf("{") === -1) return s;
-    return s.replace(/\{([a-zA-Z0-9_.]+)\}/g, function (m, path) {
+    // Negative lookarounds keep {{double-brace}} markers untouched — those
+    // belong to richText (inline chips), not to variable interpolation.
+    return s.replace(/(?<!\{)\{([a-zA-Z0-9_.]+)\}(?!\})/g, function (m, path) {
       var v = getPath(path, ctx);
       return v == null ? m : String(v);
     });
   }
   function richText(parent, s) {
     var src = String(s == null ? "" : s);
-    var re = /\*\*([^*]+)\*\*|(?<!\*)\*([^*]+)\*(?!\*)|`([^`]+)`/g;
+    // {{term}} -> inline chip · **bold** · *italic* · `code`
+    var re = /\{\{([^}]+)\}\}|\*\*([^*]+)\*\*|(?<!\*)\*([^*]+)\*(?!\*)|`([^`]+)`/g;
     var last = 0, m;
     while ((m = re.exec(src)) !== null) {
       if (m.index > last) parent.appendChild(document.createTextNode(src.slice(last, m.index)));
-      if (m[1] != null) parent.appendChild(el("strong", "rc-strong", m[1]));
-      else if (m[2] != null) parent.appendChild(el("em", "rc-italic", m[2]));
-      else if (m[3] != null) parent.appendChild(el("code", "rc-inline-code", m[3]));
+      if (m[1] != null) parent.appendChild(el("span", "rc-chip-inline", m[1]));
+      else if (m[2] != null) parent.appendChild(el("strong", "rc-strong", m[2]));
+      else if (m[3] != null) parent.appendChild(el("em", "rc-italic", m[3]));
+      else if (m[4] != null) parent.appendChild(el("code", "rc-inline-code", m[4]));
       last = re.lastIndex;
     }
     if (last < src.length) parent.appendChild(document.createTextNode(src.slice(last)));
   }
   function richDiv(cls, s) { var d = el("div", cls); richText(d, s); return d; }
+  // Flow step body: interpolate first (single braces), then rich-format
+  // (chips / bold / code). Order matters — interp must not eat {{chips}}.
+  function richLine(cls, s, ctx) {
+    var d = el("div", cls);
+    richText(d, interp(String(s == null ? "" : s), ctx));
+    return d;
+  }
 
   // Unknown kinds degrade to their own content rather than a loud red box — a
   // spec addition should never blow up a whole message. Only genuinely empty
@@ -592,6 +604,29 @@
       }
       return false;
     }
+    // `<row>` was removed from the DSL, but a run of adjacent buttons is a
+    // button GROUP (a mode switcher, a set of choices) and reads badly stacked
+    // one-per-line. Collect consecutive button nodes and lay them out as a row
+    // automatically, so the author does not need a layout tag for the common
+    // case. A `block` button is explicitly full-width and stays on its own.
+    function isButton(kid) {
+      if (!kid || typeof kid !== "object") return false;
+      var k = kindOf(kid);
+      if (k !== "button") return false;
+      var hk = hydrate(kid, ctx);
+      return !(hk && hk.block);
+    }
+    function flushButtons(startIdx) {
+      var row = el("div", "rc-btn-row");
+      var j = startIdx;
+      while (j < kids.length && isButton(kids[j])) {
+        var rb = renderNode(kids[j], depth + 1, ctx);
+        if (rb) { row.appendChild(rb); n++; }
+        j++;
+      }
+      if (row.childNodes.length) container.appendChild(row);
+      return j;
+    }
     for (var i = 0; i < kids.length && n < MAX_CHILDREN; i++) {
       var kid = kids[i];
       // Collect adjacent inline text so "**" + "Planner" + "**" joins into one
@@ -605,6 +640,10 @@
         continue;
       }
       flushText();
+      if (isButton(kid)) {
+        i = flushButtons(i) - 1;
+        continue;
+      }
       var r = renderNode(kid, depth + 1, ctx);
       if (r) { container.appendChild(r); n++; }
     }
@@ -800,19 +839,30 @@
     if (!rows.length) return null;
     var labels = rows.map(function (r) { return String(r && r.label); });
     var vals = rows.map(function (r) { return Number(r && r.value) || 0; });
-    var niceMax = Math.max(1, Math.max.apply(null, vals));
-    var X0 = 8, X1 = 692, Y0 = 200, Y1 = 28;
+    // Same axis maths as R.chart, and the same class-based styling, so the two
+    // chart shapes render identically apart from the axis furniture.
+    var TICKS = 4;
+    var scale = niceScale(Math.max.apply(null, [0].concat(vals)), TICKS);
+    var niceMax = scale.max;
+    var X0 = 44, X1 = 680, Y0 = 200, Y1 = 28;
     var plotW = X1 - X0, plotH = Y0 - Y1, n = vals.length, slot = plotW / n;
-    var barW = Math.min(32, slot * 0.6);
-    function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    var barW = Math.min(48, slot * 0.55);
+    function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
     var p = ['<svg viewBox="0 0 700 230" role="img" aria-label="Bar chart">'];
+    for (var g = 0; g <= TICKS; g++) {
+      var gy = Y0 - (plotH * g / TICKS);
+      var gv = Math.round(scale.step * g * 1000) / 1000;
+      p.push('<line class="rc-chart-grid" x1="' + X0 + '" y1="' + gy + '" x2="' + X1 + '" y2="' + gy + '"/>');
+      p.push('<text class="rc-chart-axis" x="' + (X0 - 10) + '" y="' + (gy + 4) + '" text-anchor="end">' + gv + '</text>');
+    }
     vals.forEach(function (v, i) {
       var cx = X0 + slot * (i + 0.5);
       var h = (v / niceMax) * plotH;
       var by = Y0 - h;
-      p.push('<rect x="' + (cx - barW / 2).toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="6" fill="#8b5cf6"/>');
-      p.push('<text x="' + cx.toFixed(1) + '" y="' + (by - 8).toFixed(1) + '" fill="#d4d4d8" font-size="11" text-anchor="middle">' + v + '</text>');
-      p.push('<text x="' + cx.toFixed(1) + '" y="' + (Y0 + 22) + '" fill="#999" font-size="12" text-anchor="middle">' + esc(labels[i]) + '</text>');
+      var btip = labels[i] + ": " + v;
+      p.push('<rect class="rc-chart-bar" data-tip="' + esc(btip) + '" aria-label="' + esc(btip) + '" style="--i:' + i + '" x="' + (cx - barW / 2).toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="6"/>');
+      p.push('<text class="rc-chart-val" x="' + cx.toFixed(1) + '" y="' + (by - 8).toFixed(1) + '" text-anchor="middle">' + v + '</text>');
+      p.push('<text class="rc-chart-cat" x="' + cx.toFixed(1) + '" y="' + (Y0 + 22) + '" text-anchor="middle">' + esc(labels[i]) + '</text>');
     });
     p.push('</svg>');
     var wrap = el("div", "rc-chart");
@@ -820,6 +870,7 @@
     var holder = el("div", "rc-chart-svg");
     holder.innerHTML = p.join("");
     wrap.appendChild(holder);
+    attachChartHover(wrap, holder);
     return wrap;
   };
   // ══ inline text formatting ════════════════════════════════════════════
@@ -1027,9 +1078,19 @@
     var row = el("div", "rc-flow-node");
     var idx = n.index != null ? n.index : (n.step != null ? n.step : null);
     if (idx != null) row.appendChild(el("span", "rc-flow-idx", String(idx)));
-    var t = n.text != null ? n.text : (n.label != null ? n.label : null);
-    if (t != null) row.appendChild(el("span", null, interp(String(t), c)));
-    else renderChildren(n, d, row, c);
+    var body = el("div", "rc-flow-body");
+    var title = n.title != null ? n.title : null;
+    var text = n.text != null ? n.text : (n.label != null ? n.label : null);
+    if (title != null) {
+      body.appendChild(richLine("rc-flow-title", title, c));
+      if (text != null) body.appendChild(richLine("rc-flow-text", text, c));
+    } else if (text != null) {
+      body.appendChild(richLine("rc-flow-text", text, c));
+    } else {
+      renderChildren(n, d, body, c);
+    }
+    if (body.childNodes.length) row.appendChild(body);
+    if (n.status) row.setAttribute("data-state", String(n.status));
     return row.childNodes.length ? row : null;
   };
   R.listitem = function (n, d, c) {
@@ -1467,8 +1528,25 @@
   R.flow = function (node, depth, ctx) {
     var wrap = el("div", "rc-flow");
     // Three shapes are accepted: child <flow-item> elements, a `steps` array,
-    // or an `items` array. The children form was previously ignored, which
-    // made <flow><flow-item>…</flow-item></flow> render as nothing at all.
+    // or an `items` array. Each node renders as a rail-connected row — badge
+    // column + body (optional title, then text).
+    function buildNode(o, i) {
+      var n = el("div", "rc-flow-node");
+      var idx = o && o.index != null ? o.index : i + 1;
+      n.appendChild(el("span", "rc-flow-idx", String(idx)));
+      var body = el("div", "rc-flow-body");
+      var title = o && o.title != null ? o.title : null;
+      var text = o ? (o.text != null ? o.text : (o.label != null ? o.label : null)) : null;
+      if (title != null) {
+        body.appendChild(richLine("rc-flow-title", title, ctx));
+        if (text != null) body.appendChild(richLine("rc-flow-text", text, ctx));
+      } else if (text != null) {
+        body.appendChild(richLine("rc-flow-text", text, ctx));
+      }
+      if (body.childNodes.length) n.appendChild(body);
+      if (o && o.status) n.setAttribute("data-state", String(o.status));
+      return n;
+    }
     var kids = arr(node.children);
     if (kids.length) {
       kids.forEach(function (c, i) {
@@ -1477,22 +1555,26 @@
           var r = renderNode(c, depth + 1, ctx);
           if (r) wrap.appendChild(r);
         } else if (c != null) {
-          var n = el("div", "rc-flow-node");
-          n.appendChild(el("span", "rc-flow-idx", String(i + 1)));
-          n.appendChild(el("span", null, interp(String(c), ctx)));
-          wrap.appendChild(n);
+          wrap.appendChild(buildNode({ text: c }, i));
         }
       });
-      return wrap.childNodes.length ? wrap : null;
+    } else {
+      var steps = arr(node.steps || node.items);
+      steps.forEach(function (s, i) {
+        wrap.appendChild(buildNode((s && typeof s === "object") ? s : { text: s }, i));
+      });
     }
-    var steps = arr(node.steps || node.items);
-    if (!steps.length) return null;
-    steps.forEach(function (s, i) {
-      var n = el("div", "rc-flow-node");
-      n.appendChild(el("span", "rc-flow-idx", String(i + 1)));
-      n.appendChild(el("span", null, typeof s === "object" ? str(s.label || s.text) : s));
-      wrap.appendChild(n);
-    });
+    // Optional progress: <flow current="3"> dims everything before step 3 and
+    // accents it. A per-node status="done|current" overrides this.
+    var cur = node.current != null ? num(node.current, -1, -1, 1e9) : -1;
+    if (cur >= 0) {
+      Array.prototype.forEach.call(wrap.children, function (child, i) {
+        if (!child.classList || !child.classList.contains("rc-flow-node")) return;
+        if (child.getAttribute("data-state")) return;
+        if (i + 1 < cur) child.setAttribute("data-state", "done");
+        else if (i + 1 === cur) child.setAttribute("data-state", "current");
+      });
+    }
     return wrap.childNodes.length ? wrap : null;
   };
   // ── pending image (async, non-blocking) ───────────────────────────────
@@ -1707,6 +1789,11 @@
     b.type = "button";
     b.dataset.tone = tone(node.tone || node.color, "accent");
     if (node.block) b.dataset.block = "1";
+    // A run of buttons is usually a MODE SWITCHER, and a switcher has to show
+    // where it currently is. `active` may be a literal or an expression
+    // (`active={mode==="chaos"}`), which hydrate() has already resolved.
+    if (node.active || node.selected || node.current) b.dataset.active = "1";
+    if (node.active || node.selected) b.setAttribute("aria-pressed", "true");
     if (node.icon) b.insertBefore(renderIcon({ name: node.icon, size: "sm" }), b.firstChild);
     if (binding) {
       bindClick(b, binding, ctx);
@@ -1738,6 +1825,103 @@
     wrap.appendChild(body);
     return wrap;
   };
+
+  // ── quiz: a stepper over several <choices> ────────────────────────────
+  // Without this, N <choices> children dump N cards into the transcript at
+  // once. <quiz> shows one at a time, gates "Next" until the current step is
+  // answered, and ends on a score card. The index and per-step results live in
+  // ctx.state so they survive the full tree rebuild that ctx.set() triggers.
+  R.quiz = function (node, depth, ctx) {
+    var kids = arr(node.children).filter(function (c) {
+      return c && typeof c === "object" && kindOf(c) === "choices";
+    });
+    if (!kids.length) return null;
+
+    var sig = kids.map(function (c) {
+      return String((c && (c.title || c.text)) || "").slice(0, 24);
+    }).join("|");
+    var key = node.state || node.id || ("__quiz__" + kids.length + "_" + sig);
+    var total = kids.length;
+    var idx = num(ctx.state[key + ":i"], 0, 0, total - 1);
+    var done = ctx.state[key + ":done"] === true;
+    var wrap = el("div", "rc-quiz");
+
+    if (done) {
+      var results = ctx.state[key + ":results"] || [];
+      var scored = 0, score = 0;
+      for (var r = 0; r < results.length; r++) {
+        if (results[r] === 1 || results[r] === 0) scored++;
+        if (results[r] === 1) score++;
+      }
+      var card = el("div", "rc-quiz-summary");
+      var sc = el("div", "rc-quiz-score");
+      sc.appendChild(el("span", null, String(score)));
+      sc.appendChild(el("small", null, "/" + (scored || total)));
+      card.appendChild(sc);
+      card.appendChild(el("div", "rc-quiz-score-label",
+        !scored ? "Thanks for answering."
+          : score === scored ? "Full marks — you know this."
+          : score >= Math.ceil(scored / 2) ? "Solid. Review the ones you missed."
+          : "Worth another pass through the material."));
+      var again = el("button", "rc-quiz-btn", "Try again");
+      again.type = "button";
+      again.addEventListener("click", function (e) {
+        e.preventDefault();
+        // Wipe every per-step answer slot too, or the questions rehydrate with
+        // the previous run's picks still marked.
+        Object.keys(ctx.state).forEach(function (k) {
+          if (k.indexOf(key + ":c") === 0) delete ctx.state[k];
+        });
+        ctx.state[key + ":results"] = [];
+        ctx.state[key + ":done"] = false;
+        ctx.set(key + ":i", 0);
+      });
+      card.appendChild(again);
+      wrap.appendChild(card);
+      return wrap;
+    }
+
+    // Render ONLY the current step. Its own picked/correct state rehydrates
+    // from ctx.state, so an answered step stays answered across rebuilds.
+    var child = Object.assign({}, kids[idx]);
+    if (child.step == null) child.step = idx + 1;
+    if (child.of == null) child.of = total;
+    // Scope this step's answer state to the quiz + step. Without it, R.choices
+    // falls back to a key derived from the option labels -- so two questions
+    // with the same labels shared one `saved` slot, and "Try again" had no
+    // prefix to clear. That was the answer that wouldn't reset.
+    if (child.state == null && child.id == null && child.bind == null) {
+      child.state = key + ":c" + idx;
+    }
+    var stage = el("div", "rc-quiz-stage");
+    var rendered = renderNode(child, depth + 1, ctx);
+    if (rendered) stage.appendChild(rendered);
+    wrap.appendChild(stage);
+
+    // Answered = the step produced a verdict banner or a marked option.
+    var answered = !!(rendered && rendered.querySelector(
+      ".rc-quiz-result, .rc-choice-picked, .rc-choice-correct, .rc-choice-wrong"));
+
+    var nav = el("div", "rc-quiz-nav");
+    var next = el("button", "rc-quiz-btn", idx === total - 1 ? "See result" : "Next question");
+    next.type = "button";
+    if (!answered) { next.disabled = true; next.classList.add("rc-quiz-btn-off"); }
+    next.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (next.disabled) return;
+      var hasVerdict = !!(rendered && rendered.querySelector(".rc-quiz-result"));
+      var ok = !!(rendered && rendered.querySelector(".rc-quiz-result.rc-ok"));
+      var results = ctx.state[key + ":results"] || [];
+      results[idx] = hasVerdict ? (ok ? 1 : 0) : -1;  // -1 = poll, not scored
+      ctx.state[key + ":results"] = results;
+      if (idx === total - 1) ctx.set(key + ":done", true);
+      else ctx.set(key + ":i", idx + 1);
+    });
+    nav.appendChild(next);
+    wrap.appendChild(nav);
+    return wrap;
+  };
+
   R.choices = function (node, depth, ctx) {
     var opts = optArr(node.options || node.items || node.children);
     if (!opts.length) return null;
@@ -1758,7 +1942,20 @@
     var saved = (ctx && ctx.state && ctx.state[key]) || null;
 
     var wrap = el("div", "rc-choices");
-    if (node.title) wrap.appendChild(el("div", "rc-choices-title", interp(String(node.title), ctx)));
+    // Header: an unmistakable "this is a quiz" label, then the question.
+    var head = el("div", "rc-quiz-head");
+    var kicker = el("div", "rc-quiz-kicker");
+    kicker.appendChild(el("span", "rc-quiz-icon", "?"));
+    kicker.appendChild(el("span", null, hasCorrect ? "Quick check" : "Poll"));
+    // Optional progress chip: <choices step="1" of="3"> renders "1 / 3".
+    var stepN = node.step != null ? num(node.step, 0, 0, 1e6) : null;
+    var ofN = node.of != null ? num(node.of, 0, 0, 1e6) : null;
+    if (stepN != null && ofN != null) {
+      kicker.appendChild(el("span", "rc-quiz-progress", stepN + " / " + ofN));
+    }
+    head.appendChild(kicker);
+    if (node.title) head.appendChild(el("div", "rc-choices-title", interp(String(node.title), ctx)));
+    wrap.appendChild(head);
     var list = el("div", "rc-choices-list");
     var btns = [];
     var feedback = null;
@@ -1777,19 +1974,35 @@
       if (feedback) { feedback.remove(); feedback = null; }
       if (hasCorrect) {
         var gotIt = btns.some(function (b) { return b.dataset.correct === "1" && b.dataset.value === String(picked); });
-        feedback = el("div", "rc-choices-feedback " + (gotIt ? "rc-ok" : "rc-no"), gotIt ? "Correct." : "Not quite.");
-        wrap.appendChild(feedback);
-        if (explain != null) wrap.appendChild(el("div", "rc-choices-explain", interp(String(explain), ctx)));
+        // Result banner: big icon + verdict, then the explanation underneath.
+        var banner = el("div", "rc-quiz-result " + (gotIt ? "rc-ok" : "rc-no"));
+        var mark = el("span", "rc-quiz-mark", gotIt ? "✓" : "✕");
+        var text = el("div", "rc-quiz-verdict");
+        text.appendChild(el("div", "rc-quiz-verdict-main", gotIt ? "Correct" : "Not quite"));
+        if (!gotIt) {
+          var right = opts.filter(isRight)[0];
+          var rl = right ? str(typeof right === "object" ? (right.text || right.label) : right) : null;
+          if (rl) text.appendChild(el("div", "rc-quiz-verdict-sub", "Answer: " + rl));
+        }
+        banner.appendChild(mark);
+        banner.appendChild(text);
+        wrap.appendChild(banner);
+        if (explain != null) wrap.appendChild(richLine("rc-choices-explain", explain, ctx));
+        feedback = banner;
       }
     }
 
-    opts.forEach(function (o) {
+    opts.forEach(function (o, oi) {
       var isObj = o && typeof o === "object";
       var label = isObj ? str(o.text || o.label) : str(o);
       var val = isObj ? (o.value != null ? o.value : label) : o;
       var b = el("button", "rc-choice", interp(label, ctx));
       b.type = "button";
       b.dataset.value = String(val);
+      b.dataset.letter = oi < 26 ? String.fromCharCode(65 + oi) : String(oi + 1);
+      // Stagger index — the reveal animation delays each row by ~40ms so the
+      // eye sweeps down the list instead of every row flashing at once.
+      b.style.setProperty("--i", String(oi));
       if (isObj && isRight(o)) b.dataset.correct = "1";
       if (saved) {
         b.disabled = true;
@@ -1810,49 +2023,170 @@
   };
   // SVG bar chart. Geometry mirrors the reference exactly:
   //   viewBox 0 0 700 250 · plot box x[44..680] y[210..30] · bar rx=4
-  //   gridlines + y-axis labels every 20 units · value label above each bar
-  //   day label below · bar fill #8b5cf6
+  //   gridlines + y-axis labels on nice ticks · value label above each bar
+  //   day label below · bar fill via .rc-chart-bar (theme token, not hex)
+  // "Nice" axis scale shared by both chart shapes. Returns a tick step and an
+  // axis top derived from it, so gridlines land on readable numbers instead of
+  // raw data fractions. No floor — a max of 3 must not become an axis of 20.
+  function niceScale(max, ticks) {
+    if (!(max > 0)) return { step: 1, max: ticks };
+    var raw = max / ticks;
+    var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var n = raw / mag;
+    var s = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    var step = s * mag;
+    return { step: step, max: step * ticks };
+  }
+  // Cursor-following tooltip for chart bars. One element per chart card, kept
+  // inside the card so it stays under .rc-root and inherits the theme tokens
+  // (a body-level tooltip would fall outside the scoped var block). The label
+  // is read from the bar's own <title>, so there is no second escaping path.
+  function attachChartHover(wrap, holder) {
+    var tip = el("div", "rc-chart-tip");
+    wrap.appendChild(tip);
+    holder.addEventListener("mousemove", function (e) {
+      var bar = e.target && e.target.closest ? e.target.closest(".rc-chart-bar") : null;
+      if (!bar || !bar.getBoundingClientRect().height) { tip.classList.remove("on"); return; }
+      // Prefer data-tip. A native <title> would ALSO fire the browser's own
+      // delayed tooltip, so chart bars carry data-tip + aria-label instead.
+      var txt = bar.getAttribute("data-tip") || "";
+      if (!txt) { var t = bar.querySelector("title"); txt = t ? t.textContent : ""; }
+      if (!txt) { tip.classList.remove("on"); return; }
+      tip.textContent = txt;
+      tip.classList.add("on");
+      var r = wrap.getBoundingClientRect();
+      tip.style.left = (e.clientX - r.left) + "px";
+      tip.style.top = (e.clientY - r.top) + "px";
+    });
+    holder.addEventListener("mouseleave", function () { tip.classList.remove("on"); });
+  }
   R.chart = function (node, depth, ctx) {
-    var c = (node.content && typeof node.content === "object") ? node.content : node;
-    var rows = arr(c.data), series = arr(c.series);
-    if (!rows.length || !series.length || !c.xKey) return null;
+    // `content` arrives two ways: as a real object when written
+    // `content={{…}}` (a DIL expression), or as a raw JSON *string* when
+    // written `content='{…}'` — which is the form the docs show. The string
+    // form used to fall straight through to `node`, find no `.data`, and
+    // silently render nothing. Parse it here.
+    var raw = node.content;
+    if (typeof raw === "string") {
+      var t = raw.trim();
+      if (t && (t[0] === "{" || t[0] === "[")) {
+        try { raw = JSON.parse(t); } catch (e) { raw = null; }
+      } else {
+        raw = null;
+      }
+    }
+    var c = (raw && typeof raw === "object") ? raw : node;
+    var rows = arr(c.data), rawSeries = arr(c.series);
+    if (!rows.length || !rawSeries.length || !c.xKey) return null;
+
+    // Normalise the series list. Accepts ["water","sleep"] or
+    // [{dataKey,name}, …], capped at 4 — past that the bars are unreadable.
+    // Previously only series[0] was ever plotted, so a multi-series payload
+    // silently dropped every column but the first.
+    var defs = [];
+    for (var di = 0; di < rawSeries.length && defs.length < 4; di++) {
+      var s = rawSeries[di];
+      var skey = typeof s === "string"
+        ? s
+        : (s && (s.dataKey != null ? s.dataKey : (s.key != null ? s.key : s.name)));
+      if (!skey) continue;
+      defs.push({
+        key: skey,
+        name: typeof s === "string" ? s : (s.name || s.label || skey)
+      });
+    }
+    if (!defs.length) return null;
+
     var labels = rows.map(function (r) { return String(r[c.xKey]); });
-    var vals = rows.map(function (r) { return Number(r[series[0].dataKey]) || 0; });
-    var rawMax = Math.max.apply(null, [1].concat(vals));
-    var niceMax = Math.max(20, Math.ceil(rawMax / 20) * 20);
+    var allVals = [];
+    var matrix = rows.map(function (r) {
+      return defs.map(function (d) {
+        var v = Number(r[d.key]) || 0;
+        allVals.push(v);
+        return v;
+      });
+    });
 
-    var X0 = 44, X1 = 680, Y0 = 210, Y1 = 30;
+    // Axis scale. Pick a "nice" tick step from the data, then derive the top of
+    // the axis as step*ticks. The old code hard-floored the max at 20, so a
+    // dataset peaking at 3 was squashed into the bottom 15% of the plot.
+    var TICKS = 4;
+    var scale = niceScale(Math.max.apply(null, [0].concat(allVals)), TICKS);
+    var niceMax = scale.max;
+    var avg = allVals.length
+      ? allVals.reduce(function (a, b) { return a + b; }, 0) / allVals.length
+      : 0;
+
+    // X1 stops short of the viewBox edge to leave a gutter for the avg label.
+    var X0 = 44, X1 = 656, Y0 = 210, Y1 = 30;
     var plotW = X1 - X0, plotH = Y0 - Y1;
-    var n = vals.length, slot = plotW / n;
-    var barW = Math.min(48, slot * 0.55);
+    var n = rows.length, slot = plotW / n;
+    var multi = defs.length > 1;
+    var gap = multi ? 4 : 0;
+    var groupW = Math.min(60, slot * 0.64);
+    var barW = multi
+      ? Math.max(4, Math.min(22, (groupW - gap * (defs.length - 1)) / defs.length))
+      : Math.min(48, slot * 0.55);
 
+    // Quotes are escaped too: labels land inside data-tip="…" attributes, and
+    // a stray " in a category name would otherwise break out of the attribute.
     function esc(s) {
-      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
     var p = [];
     p.push('<svg viewBox="0 0 700 250" role="img" aria-label="Bar chart">');
-    var steps = 4;
-    for (var g = 0; g <= steps; g++) {
-      var gy = Y0 - (plotH * g / steps);
-      var gv = Math.round(niceMax * g / steps);
-      p.push('<line x1="' + X0 + '" y1="' + gy + '" x2="' + X1 + '" y2="' + gy + '" stroke="#282828" stroke-width="1"/>');
-      p.push('<text x="' + (X0 - 10) + '" y="' + (gy + 4) + '" fill="#777" font-size="11" text-anchor="end">' + gv + '</text>');
+    for (var g = 0; g <= TICKS; g++) {
+      var gy = Y0 - (plotH * g / TICKS);
+      var gv = Math.round(scale.step * g * 1000) / 1000;
+      p.push('<line class="rc-chart-grid" x1="' + X0 + '" y1="' + gy + '" x2="' + X1 + '" y2="' + gy + '"/>');
+      p.push('<text class="rc-chart-axis" x="' + (X0 - 10) + '" y="' + (gy + 4) + '" text-anchor="end">' + gv + '</text>');
     }
-    vals.forEach(function (v, i) {
+    // Mean reference line — the one summary stat a bare bar chart can't show.
+    if (allVals.length > 1) {
+      var ay = Y0 - (avg / niceMax) * plotH;
+      p.push('<line class="rc-chart-avg" x1="' + X0 + '" y1="' + ay.toFixed(1) + '" x2="' + X1 + '" y2="' + ay.toFixed(1) + '"/>');
+      p.push('<text class="rc-chart-avg-label" x="' + (X1 + 7) + '" y="' + (ay + 4).toFixed(1) + '">avg ' + (Math.round(avg * 10) / 10) + '</text>');
+    }
+    rows.forEach(function (r, i) {
       var cx = X0 + slot * (i + 0.5);
-      var h = (v / niceMax) * plotH;
-      var by = Y0 - h;
-      var bx = cx - barW / 2;
-      p.push('<rect x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="4" fill="#8b5cf6"/>');
-      p.push('<text x="' + cx.toFixed(1) + '" y="' + (by - 10).toFixed(1) + '" fill="#d4d4d8" font-size="11" text-anchor="middle">' + v + '</text>');
-      p.push('<text x="' + cx.toFixed(1) + '" y="' + (Y0 + 22) + '" fill="#999" font-size="12" text-anchor="middle">' + esc(labels[i]) + '</text>');
+      var gStart = cx - (barW * defs.length + gap * (defs.length - 1)) / 2;
+      defs.forEach(function (d, si) {
+        var v = matrix[i][si];
+        var h = (v / niceMax) * plotH;
+        var bx = gStart + si * (barW + gap);
+        var by = Y0 - h;
+        var tipTxt = labels[i] + (multi ? " · " + d.name : "") + ": " + v;
+        p.push('<rect class="rc-chart-bar" data-s="' + si + '" data-tip="' + esc(tipTxt) + '" aria-label="' + esc(tipTxt) + '" style="--i:' + i + '" x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="4"/>');
+        // Value labels only when there is room — a multi-series group would
+        // stack them into each other. The hover tooltip covers that case.
+        if (!multi) {
+          p.push('<text class="rc-chart-val" x="' + cx.toFixed(1) + '" y="' + (by - 10).toFixed(1) + '" text-anchor="middle">' + v + '</text>');
+        }
+      });
+      p.push('<text class="rc-chart-cat" x="' + cx.toFixed(1) + '" y="' + (Y0 + 22) + '" text-anchor="middle">' + esc(labels[i]) + '</text>');
     });
     p.push('</svg>');
 
     var wrap = el("div", "rc-chart");
+    var head = el("div", "rc-chart-head");
+    if (node.title) head.appendChild(el("div", "rc-chart-title", interp(String(node.title), ctx)));
+    if (multi) {
+      var legend = el("div", "rc-chart-legend");
+      defs.forEach(function (d, si) {
+        var item = el("span", "rc-chart-legend-item");
+        var sw = el("i", "rc-chart-swatch");
+        sw.dataset.s = String(si);
+        item.appendChild(sw);
+        item.appendChild(document.createTextNode(d.name));
+        legend.appendChild(item);
+      });
+      head.appendChild(legend);
+    }
+    if (head.childNodes.length) wrap.appendChild(head);
     var holder = el("div", "rc-chart-svg");
     holder.innerHTML = p.join("");
     wrap.appendChild(holder);
+    attachChartHover(wrap, holder);
     var foot = (c.meta && c.meta.footer) || c.caption;
     if (foot) wrap.appendChild(el("div", "rc-cap", String(foot)));
     return wrap;

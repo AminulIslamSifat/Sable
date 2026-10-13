@@ -130,14 +130,15 @@ A raw array handed to the renderer is **not parsed** — it leaks into the chat 
 <render_component>
 {@body const [mode, setMode] = DIL.useState("Balanced")}
 <card title="Execution mode">
-  <text size="sm">Pick one — the card updates itself.</text>
-  <row gap="10" wrap>
-    <button onClick={()=>setMode("Fast")}>Fast</button>
-    <button onClick={()=>setMode("Balanced")}>Balanced</button>
-    <button onClick={()=>setMode("Thorough")}>Thorough</button>
-  </row>
-  <divider/>
-  <text>Selected: <b>{mode}</b></text>
+  Pick one — the card updates itself.
+
+  <button onClick={()=>setMode("Fast")}>Fast</button>
+  <button onClick={()=>setMode("Balanced")}>Balanced</button>
+  <button onClick={()=>setMode("Thorough")}>Thorough</button>
+
+  ---
+
+  Selected: **{mode}**
 </card>
 </render_component>
 ```
@@ -148,7 +149,7 @@ Declare state with `DIL.useState`, read it with `{key}`, mutate it from a handle
 
 ```
 {@body const [n, setN] = DIL.useState(0)}
-<text>Count: {n}</text>
+Count: **{n}**
 <button onClick={()=>setN(n + 1)}>+1</button>
 ```
 
@@ -180,35 +181,32 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
 
 ### Layout
 
+> [!IMPORTANT] Layout and prose formatting are **markdown**, not DSL.
+> Headings (`#`), lists (`-` / `1.`), blockquotes (`>`), code fences, tables,
+> `---` dividers, `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `$math$`
+> and `[links](url)` all render natively. **Never wrap them in a component
+> tag** — write them straight into the message.
+
+There is one surface tag, for a titled bordered block that isn't a callout:
+
 | Tag | Does | Key attributes |
 |---|---|---|
 | `<box>` `<card>` `<panel>` | bordered surface | `title`, `tone`, `border`, `radius`, `padding`, `gap` |
-| `<row>` `<hstack>` | horizontal | `gap`, `align`, `justify`, `wrap` |
-| `<col>` `<vstack>` | vertical | `gap` |
-| `<grid>` | columns | `cols` (1-6), `gap` |
-| `<grid-item>` | grid cell | — |
-| `<divider>` `<hr>` | rule | — |
-| `<spacer>` | vertical gap | `size` |
+
+There is no `row` / `col` / `grid` / `spacer` / `divider` — use `---` for a rule, and a markdown table for anything columnar. Let the content flow.
 
 ### Text
 
+Prose formatting is **markdown**. Inside a component body, just **write the words directly** — don't wrap them in `<text>`. Bare prose is collected and rendered as rich text, so `<text>Hello **world**</text>` and `Hello **world**` produce the same thing. Same for bold, italic, strike, code, quotes, lists, headings, math and links — markdown, written straight in.
+
+Inline `{{term}}` renders a small chip inside any rich body (flow items, callouts, quiz explanations) — that is the only chip syntax.
+
+Only these three have no markdown equivalent:
+
 | Tag | Does | Key attributes |
 |---|---|---|
-| `<text>` | prose | `size` (xs/sm/md/lg), `tone`, `weight`, `color`, `align` |
-| `<title>` `<heading>` `<h1>`–`<h4>` | heading | `size` (xl/lg/md/sm), `level` (1-4), `tone`, `color` |
-| `<caption>` | small caption | `text` |
-| `<bold>` `<b>` `<strong>` | bold (inline) | — |
-| `<italic>` `<i>` `<em>` | italic (inline) | — |
-| `<underline>` `<u>` | underline | — |
-| `<strikethrough>` `<s>` | strike | — |
-| `<math>` | TeX span | `text` (raw TeX, never evaluated) |
 | `<badge>` | pill | `tone`, `text` |
-| `<chips>` `<chip>` | chip row | child `<chip text="…"/>` |
-| `<quote>` `<blockquote>` | blockquote | `text`, `cite` |
-| `<code>` `<pre>` | code block | `text` |
 | `<callout>` | callout card | `tone`, `title`, `text`/`body` |
-| `<list>` | bullets / numbers | child `<list-item text="…"/>`, `ordered` |
-| `<list-item>` | one item | `text` |
 | `<kv>` `<keyvalue>` | key/value rows | `pairs='{...}'`, `title` |
 
 ### Data
@@ -219,16 +217,17 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
 | `<stats>` | stat row | child `<stat value="…" label="…"/>` |
 | `<progress>` `<bar>` `<meter>` | progress bar | `value`, `max`, `label`, `tone` |
 | `<table>` | table | child `<table-row>` / `<table-cell>` |
-| `<chart>` | bar chart | `content='{...}'` |
+| `<chart>` | bar chart (1–4 series, axes + avg line) | `content={{data:[…], series:[…], xKey:"label"}}` — all three required or it renders nothing |
+| `<barchart>` | bar chart (simpler, single series) | `data={[{label:"…",value:0}]}`, optional `title` |
 | `<timeline>` | dotted timeline | child `<timeline-item title="…" text="…"/>` |
-| `<flow>` `<steps>` | numbered steps | child `<flow-item text="…"/>` |
-| `<flow-item>` | one step | `text`, `index` |
+| `<flow>` `<steps>` | numbered steps | `current` (1-based step to accent), child `<flow-item/>` |
+| `<flow-item>` | one step | `title`, `text`, `index`, `status` (`done`/`current`) |
 
 ### Inputs
 
 | Tag | Does | Key attributes |
 |---|---|---|
-| `<button>` | clickable | `onClick`, `set`, `toggle`, `send`, `action`, `tone`, `icon`, `block` |
+| `<button>` | clickable | `onClick`, `set`, `toggle`, `send`, `action`, `tone`, `icon`, `block`, `active` |
 | `<input>` | text field | `state`, `placeholder`, `inputType`, `value` |
 | `<textarea>` | multiline | `state`, `placeholder`, `rows` |
 | `<checkbox>` | boolean input | `state`, `label` |
@@ -239,7 +238,8 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
 | `<slider>` | range | `state`, `min`, `max`, `step`, `label` |
 | `<date-picker>` | date | `state`, `value` |
 | `<form>` | field container | `title` |
-| `<choices>` `<options>` | quiz / poll | child `<option label="…" value="…" correct?/>` |
+| `<choices>` `<options>` | quiz / poll (single card) | `title`, `explain`, `step`, `of`, child `<option label="…" value="…" correct?/>` |
+| `<quiz>` | multi-question stepper | child `<choices/>` (one per question), `id` |
 | `<toggle>` `<collapse>` `<accordion>` | collapsible | `title` |
 | `<checklist>` `<check>` | checklist (read-only rows) | child `<check-item text="…" done?/>`, `title` |
 | `<pressable>` | radio-style row | `state`, `value`, `onClick` |
@@ -253,7 +253,6 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
 | `<async-image>` | image (async) | `src`, `caption` |
 | `<video>` | video | `src`, `poster`, `controls` |
 | `<file>` `<attachment>` | file link | `path`, `name` |
-| `<link>` `<a>` | link | `href`, `label` |
 | `<icon>` | lucide icon | `name`, `size`, `color` |
 | `<favicon>` | site favicon | `src`/`url` |
 | `<svg>` | inline SVG | `markup` (gated — genuine `<svg>` only, no scripts) |
@@ -276,13 +275,13 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
 
 ```
 {#if mode === "Fast"}
-  <text>Fast path.</text>
+  Fast path.
 {:else}
-  <text>Normal path.</text>
+  Normal path.
 {/if}
 
 {#each items as it, i}
-  <text>{i}. {it.name}</text>
+  {i}. {it.name}
 {/each}
 ```
 
@@ -300,9 +299,17 @@ Host actions available: `GenUI.openUrl(url)`, `GenUI.copy(text)`, `GenUI.issueNe
   block instead of executing).
 
 
-## Quiz rule
+## Quiz rules
 
-Mark the correct answer with the bare `correct` attribute on that `<option>` — never as prose around the card. Put any explanation in an `explain` attribute on `<choices>`; it only reveals after the user answers.
+> [!IMPORTANT] First, count the questions
+> **1 question → `<choices>`.** **2 or more → wrap them in `<quiz>`.**
+> Never emit several bare `<choices>` cards in one message — that dumps every
+> question on screen at once and there is no Next button. `<quiz>` is the only
+> way to get a stepper.
+
+Inside either form, mark the correct answer with the bare `correct` attribute on that `<option>` — never as prose around the card. Put any explanation in an `explain` attribute; it only reveals after the user answers.
+
+### A single question — `<choices>`
 
 ```
 <choices title="Which one?" explain="The rotating field induces rotor current.">
@@ -311,6 +318,78 @@ Mark the correct answer with the bare `correct` attribute on that `<option>` —
   <option label="A gearbox on the stator" value="c"/>
 </choices>
 ```
+
+Renders as a framed block with a `QUICK CHECK` kicker (or `POLL` when no option is marked `correct`), lettered options (A/B/C/D…), an inset colour bar plus `✓`/`✕` chip on reveal, and a result banner that names the right answer on a miss. Add `step="2" of="3"` to show a progress chip — useful only when the question is part of a series you are describing, not controlling.
+
+### Two or more questions — `<quiz>`
+
+This is the one to reach for whenever a message contains a short series. It shows one question at a time, keeps *Next question* disabled until the current one is answered, injects the `1 / N` counter itself, and ends on a score card with a *Try again* button.
+
+```
+<quiz>
+  <choices title="Why can't it start with DC on?" explain="…">
+    <option label="…" correct/>
+    <option label="…"/>
+  </choices>
+  <choices title="When is field excitation switched on?" explain="…">
+    <option label="…"/>
+    <option label="Near 95–97% of Ns" correct/>
+  </choices>
+</quiz>
+```
+
+Each child is a normal `<choices>` — same `title` / `explain` / `correct` rules. The stepper owns the `1 / N` chip, so do **not** set `step`/`of` on children of a `<quiz>`.
+
+> [!NOTE] Quiz vs. conversation
+> A `<quiz>` is a self-contained scored run. If you just want to check understanding once, a bare `<choices>` is fine — do not wrap a single question in `<quiz>` for the sake of it.
+
+### Button rows and active state
+
+Consecutive `<button>` elements are laid out **automatically as a row** — write them one after another and they sit side by side. No layout tag needed.
+
+For a mode switcher, mark the current one with `active`. It fills with the accent so the user can see where they are:
+
+```
+<button active={mode==="chaos"} set='{"mode":"chaos"}'>Chaos</button>
+<button active={mode==="focus"} set='{"mode":"focus"}'>Focus</button>
+<button active={mode==="soft"}  set='{"mode":"soft"}'>Soft</button>
+```
+
+Without `active`, four mode buttons render identically and the card cannot show its own state.
+
+### Chart rule
+
+Two shapes, both theme-aware:
+
+```
+<barchart title="Sifat's fuel levels today" data={[{label:"Sleep",value:2},{label:"Water",value:1},{label:"Food",value:0},{label:"Tea",value:3}]}/>
+```
+
+Use `<barchart>` for a single series — it is the simpler form. Use `<chart>` when you need several series on one axis, which renders grouped bars plus a legend and a dashed mean line:
+
+```
+<chart content={{xKey:"day", series:["sleep","water","tea"], data:[{day:"Mon",sleep:6,water:3,tea:2},{day:"Tue",sleep:5,water:4,tea:4}]}}/>
+```
+
+`series` accepts plain keys (`["sleep","water"]`) or objects (`[{dataKey:"sleep",name:"Sleep"}]`), max 4. The axis scales to the data — never assume a fixed range. Write `content` as an **expression** (`content={{…}}`), not a quoted string.
+
+### Steps rule
+
+`<flow>` renders a rail-connected sequence. Give each `<flow-item>` a short `title` (bright, bold) and a `text` (dim explanation) — one string alone still works but loses the hierarchy.
+
+```
+<flow current="3">
+  <flow-item title="Apply three-phase AC" text="The RMF induces current in the {{damper bars}}."/>
+  <flow-item title="Switch on DC excitation" text="Rotor poles become real magnets."/>
+  <flow-item title="Pull into synchronism" text="Snaps to exactly {{Ns}}."/>
+</flow>
+```
+
+`current="N"` marks every step before N as done and N as current. A per-item `status="done|current"` overrides it. Use `current` for “where we are now” explanations; omit it for a plain ordered list.
+
+### Inline chips
+
+Any rich body (flow item, callout, choices explanation) understands `{{term}}` — it renders as a small monospace chip. Use it for symbols, units and key terms (`{{Ns}}`, `{{RMF}}`, `{{0 Hz}}`). `**bold**`, `*italic*` and `` `code` `` also work in these bodies.
 
 ***
 

@@ -953,6 +953,19 @@
     .md-active-tail { display: contents; }
     .md-content > *:first-child { margin-top: 0; }
     .md-content > *:last-child { margin-bottom: 0; }
+    /* Gap around a rendered <render_component> block.
+       Two earlier attempts at this were both wrong:
+         .md-content .ui-block  -- descendant, but the host carries BOTH
+                                   classes on the SAME element, so it matched
+                                   nothing and every card sat flush.
+         .md-content.ui-block   -- works for sse.js, but agents.js creates its
+                                   host as class="md-content" with no ui-block.
+       Key it on the thing that actually matters: a host directly holding a
+       rendered component root. :has() is already used elsewhere in this file. */
+    .md-content:has(> .rc-root) { margin: 6px 0; }
+    .md-content:has(> .rc-root):first-child { margin-top: 0; }
+    .md-content:has(> .rc-root):last-child { margin-bottom: 0; }
+
 
     .md-content h1, .md-content h2, .md-content h3,
     .md-content h4, .md-content h5, .md-content h6 {

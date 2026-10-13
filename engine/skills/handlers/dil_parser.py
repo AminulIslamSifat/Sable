@@ -609,16 +609,29 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         (<bold>x</bold>) stay separated, and hoist text-only children."""
         out = []
         buf = []
+        # True only while the buffer sits at the START of a paragraph — i.e.
+        # nothing inline has been emitted since the last block element. Only
+        # there is leading whitespace disposable.
+        #
+        # This used to be an unconditional `.lstrip()` on every flush, which
+        # ate the space in any run that followed an `{expr}` node. A body like
+        # `{clicks} mode-switch{cond ? "" : "es"} logged.` coalesced to
+        # `0mode-switcheslogged.` — the inner spaces between the expression and
+        # the surrounding prose were silently destroyed.
+        at_start = [True]
 
         def flush(final):
             if not buf:
                 return
-            joined = re.sub(r"[ \t\r\n]+", " ", "".join(buf)).lstrip()
+            joined = re.sub(r"[ \t\r\n]+", " ", "".join(buf))
+            if at_start[0]:
+                joined = joined.lstrip()
             if final:
                 joined = joined.rstrip()
+            buf.clear()
             if joined:
                 out.append({"kind": "text", "text": joined})
-            buf.clear()
+                at_start[0] = False
 
         def _is_inline(nd):
             k = nd.get("kind")
@@ -638,10 +651,16 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 if nd.get("__expr__") is not None:
                     flush(False)
                     out.append(nd)
+                    # An expression is inline content: whatever text run comes
+                    # next is mid-paragraph, so its leading space is real.
+                    at_start[0] = False
                     continue
                 buf.append(nd.get("text") or "")
                 continue
             flush(False)
+            # A block element terminates the paragraph; the next text run
+            # starts fresh and may safely drop its indentation whitespace.
+            at_start[0] = True
             kids = nd.get("children")
             if isinstance(kids, list) and len(kids) == 1 and isinstance(kids[0], dict) and kids[0].get("kind") in ("__text__", "text"):
                 child = kids[0]
