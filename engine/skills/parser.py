@@ -238,6 +238,19 @@ def _scan_tag_end(buf: str, i: int) -> int:
     return -1
 
 
+def _inside_code_span(buf: str, pos: int) -> bool:
+    """Is `pos` inside a markdown code span or fenced code block?
+
+    A render tag written inside backticks (inline code) or a fenced block is
+    being QUOTED, not requested. Intercepting it spawns a phantom pane and
+    eats the surrounding prose.
+    """
+    before = buf[:pos]
+    if before.count("```") % 2 == 1:
+        return True
+    return before.replace("```", "").count("`") % 2 == 1
+
+
 def _find_bare_open(buf: str):
     """Locate the first bare markup tag. Returns (name, start, end) or None.
 
@@ -660,6 +673,12 @@ class SkillParser:
     def __init__(self, known_tags: tuple[str, ...] | None = None) -> None:
         self._known_tags = set(known_tags or KNOWN_TAGS)
         self.buf = ""
+        # Parity of backticks across the WHOLE fed stream. The buffer is
+        # sliced ~20 ways during parsing, so the backtick that opened a code
+        # span is usually gone by the time a render tag shows up; counting
+        # per-buffer misses it and spawns phantom panes. Stream parity
+        # survives every slice.
+        self._bt_parity = 0
         self._in_action = False
         self._in_dsml = False
         self._pending_tag: str | None = None
@@ -758,6 +777,7 @@ class SkillParser:
     def feed(self, text: str) -> Generator[dict[str, Any], None, None]:
         """Feed a chunk of streamed text. Yields events as calls/prose are resolved."""
         self.buf += text
+        self._bt_parity ^= (text.count("`") & 1)
 
         while True:
             if not self._in_action:
@@ -767,16 +787,22 @@ class SkillParser:
                 # handler instead of leaking into the transcript as raw text.
                 _bare = _find_bare_open(self.buf)
                 if _bare is not None:
-                    # A bare tag that falls inside an UNCLOSED tool-call
-                    # wrapper is part of the call's arguments (e.g. a file
-                    # edit whose body writes a render block), not a
-                    # presentation block. Intercepting it corrupts the call.
+                    # A bare tag inside an UNCLOSED tool-call wrapper is
+                    # part of the call's arguments (e.g. an edit whose
+                    # body writes a render block), not a presentation
+                    # block. Intercepting it corrupts the call and leaks
+                    # the fragment into the transcript.
                     _bsp = _bare[1]
                     _lo = None
                     for _m in self._ACTION_OPEN.finditer(self.buf, 0, _bsp):
                         _lo = _m
                     if _lo is not None and self._ACTION_CLOSE.search(
                             self.buf, _lo.end(), _bsp) is None:
+                        _bare = None
+                    elif (self._bt_parity
+                          ^ (self.buf[_bsp:].count("`") & 1)):
+                        # Odd parity => this tag sits inside a code span that
+                        # opened in an earlier chunk. Quoted, not requested.
                         _bare = None
                 if _bare is not None:
                     _bname, _bs, _be = _bare
