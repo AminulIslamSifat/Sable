@@ -68,6 +68,11 @@ _SVG_VOID = frozenset({
     "stop", "use", "image", "animate", "animatetransform", "animatemotion",
 })
 
+# Raw-text containers inside an SVG. Their children are character data, so the
+# expression scan must never descend into them and the serializer must never
+# escape them.
+_SVG_RAW_TEXT = frozenset({"style", "script"})
+
 # Escape an attribute value for safe embedding in rebuilt markup.
 def _svg_attr_escape(v: str) -> str:
     return (str(v).replace("&", "&amp;").replace('"', "&quot;")
@@ -90,6 +95,10 @@ def _svg_node_to_markup(node: Any, depth: int = 0) -> str:
         return ""
     tag = str(node.get("kind") or node.get("type") or "").strip()
     if not tag:
+        return ""
+    # Defence in depth: never serialize a <script>, whatever slipped through.
+    # The tokenizer already drops them; this catches a hand-built node tree.
+    if tag.lower() == "script":
         return ""
     # Text runs inside SVG (e.g. <text>label</text>) are node dicts too.
     if tag == "__text__":
@@ -115,6 +124,18 @@ def _svg_node_to_markup(node: Any, depth: int = 0) -> str:
         return "".join(parts)
 
     parts.append(">")
+    # Raw-text element (<style>/<script>): its content is CSS/JS, not markup.
+    # Escaping it corrupts the sheet — `>` becomes `&gt;`, `.a>b{}` stops
+    # parsing, and a `content:"<"` declaration silently mangles. Emit verbatim.
+    # Safety is the sanitizer's job, not the serializer's.
+    if tag.lower() in _SVG_RAW_TEXT:
+        if text_child:
+            parts.append(str(text_child))
+        for kid in kids:
+            if isinstance(kid, dict) and str(kid.get("kind") or kid.get("type")) == "__text__":
+                parts.append(str(kid.get("text") or ""))
+        parts.append(f"</{tag}>")
+        return "".join(parts)
     if text_child and not kids:
         parts.append(_svg_escape_text(text_child))
     for kid in kids:
@@ -166,6 +187,13 @@ def _svg_subtree_has_expr(obj: Any, depth: int = 0) -> bool:
     if depth > _MAX_NODE_DEPTH:
         return False
     if isinstance(obj, dict):
+        # Never scan raw-text containers. CSS/JS legitimately contains `{` and
+        # `}`; if any of it ever got stamped `__expr__`, treating it as a live
+        # expression would (a) freeze the drawing onto the client's
+        # `buildSvgTree` path and (b) make `_resolve_svg_node` refuse to build
+        # `markup`, so the SVG never reaches the sanitizer at all.
+        if str(obj.get("kind") or obj.get("type") or "").lower() in _SVG_RAW_TEXT:
+            return False
         for k, v in obj.items():
             if isinstance(k, str) and k.startswith("__expr__"):
                 return True

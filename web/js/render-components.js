@@ -922,19 +922,28 @@
   // carries `__expr__` coordinates and was therefore NOT flattened to markup
   // server-side — `hydrate()` resolves each attr expression against current
   // state here, so dragging a slider actually moves the drawing.
+  // Raw-text containers: children are character data, never child elements.
+  // `<style>` inside SVG is legitimate and load-bearing — a stylesheet written
+  // with `class="peg"` selectors has no inline presentation attribute to fall
+  // back on, so losing it renders the drawing in SVG defaults (black fills,
+  // `stroke: none`). Treat the content as text and never recurse into it.
+  var SVG_RAW_TEXT = { style: 1, script: 1 };
+
   function buildSvgTree(node, ctx) {
     var h = hydrate(node, ctx);
-    var tag = String(h.kind || h.type || "").toLowerCase();
-    if (!tag || tag === "__text__" || tag === "text") {
-      // bare text run inside SVG (e.g. <text>…</text> content) is handled by
-      // the parent, but a stray one still renders as a tspan-free text node.
-      if (h.kind === "__text__" || h.kind === "text") {
-        var tn = document.createElementNS(SVG_NS, "text");
-        tn.textContent = String(h.text || "");
-        return tn;
-      }
-      return null;
+    var kind = String(h.kind || h.type || "");
+    // A text run is NOT an SVG <text> element. The parser emits bare prose as
+    // `{kind:"text"}` and expression output as `{kind:"__text__"}`, and both
+    // collide with the SVG element literally named `text`. The old code turned
+    // every one of them into a real <text> node — which is exactly how a
+    // stylesheet's rule text ended up nested inside <style> as
+    // `<text>.peg</text>` and died.
+    if (kind === "__text__" || (kind === "text" && !h.children)) {
+      var tn = document.createTextNode(String(h.text || ""));
+      return tn;
     }
+    var tag = kind.toLowerCase();
+    if (!tag) return null;
     var e = document.createElementNS(SVG_NS, tag);
     for (var k in h) {
       if (k === "kind" || k === "type" || k === "children" || k === "text") continue;
@@ -942,6 +951,19 @@
       var v = h[k];
       if (v == null || typeof v === "object") continue;
       try { e.setAttribute(k, String(v)); } catch (err) {}
+    }
+    if (SVG_RAW_TEXT[tag]) {
+      // Concatenate the raw characters verbatim. `textContent` on a <style> is
+      // the one correct way to install a stylesheet via DOM, and it keeps CSS
+      // out of the HTML parser's reach entirely.
+      var buf = h.text != null ? String(h.text) : "";
+      var rawKids = arr(h.children);
+      for (var r = 0; r < rawKids.length; r++) {
+        var rk = rawKids[r];
+        if (rk && typeof rk === "object") buf += String(rk.text != null ? rk.text : "");
+      }
+      e.textContent = buf;
+      return e;
     }
     if (h.text != null && h.text !== "") e.textContent = String(h.text);
     var kids = arr(h.children);
@@ -962,6 +984,10 @@
   // tree before it is ever inserted.
   var SVG_OK_ELEMS = {
     svg: 1, g: 1, defs: 1, symbol: 1, use: 1, title: 1, desc: 1,
+    // `style` is allowed, but its TEXT content is checked separately in the
+    // prune below — the allowlist alone would let a sheet reach out of the
+    // sandbox. A <script> is never allowed through on either path.
+    style: 1,
     path: 1, rect: 1, circle: 1, ellipse: 1, line: 1, polyline: 1, polygon: 1,
     text: 1, tspan: 1, textpath: 1,
     lineargradient: 1, radialgradient: 1, stop: 1,
@@ -996,13 +1022,43 @@
       } catch (e2) { root = null; }
     }
     if (!root) return null;
+    // External references a stylesheet can smuggle in. `url(...)` is the only
+    // way CSS reaches the network, so every URL is dropped unless it is a
+    // local `#fragment` (a filter/gradient) or an inline data: URI. @import is
+    // killed outright — it is a stylesheet fetch in one line.
+    function scrubCss(css) {
+      var out = String(css || "");
+      out = out.replace(/@import[^;]*;?/gi, "");
+      out = out.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, function (m, q, u) {
+        var t = String(u || "").trim();
+        if (t.charAt(0) === "#" || /^data:/i.test(t)) return m;
+        return "none";
+      });
+      // `javascript:` and expression() are legacy execution vectors in old
+      // SVG/CSS parsers. Neither belongs in a generated diagram.
+      out = out.replace(/expression\s*\(/gi, "none(");
+      out = out.replace(/javascript:/gi, "");
+      return out;
+    }
     (function prune(node) {
       var kids = Array.prototype.slice.call(node.childNodes || []);
       for (var i = 0; i < kids.length; i++) {
         var ch = kids[i];
+        if (ch.nodeType === 3 || ch.nodeType === 4) {
+          // Text/CDATA is only meaningful under a raw-text element. The parent
+          // was already vetted, so this is safe to leave in place.
+          continue;
+        }
         if (ch.nodeType !== 1) continue;
         var nm = String(ch.nodeName).toLowerCase();
+        if (nm === "script") { ch.parentNode.removeChild(ch); continue; }
         if (!SVG_OK_ELEMS[nm]) { ch.parentNode.removeChild(ch); continue; }
+        if (nm === "style") {
+          // Content is the sheet itself — sanitize the CSS, then do NOT recurse
+          // into it (its children are text nodes, not elements).
+          ch.textContent = scrubCss(ch.textContent);
+          continue;
+        }
         var attrs = Array.prototype.slice.call(ch.attributes || []);
         for (var a = 0; a < attrs.length; a++) {
           var an = String(attrs[a].name).toLowerCase();

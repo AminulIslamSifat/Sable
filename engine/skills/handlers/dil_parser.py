@@ -26,6 +26,19 @@ __all__ = ["parse"]
 
 # ── tokenizer ──────────────────────────────────────────────────────────────
 
+# HTML/SVG raw-text elements: their content is character data, not markup.
+#
+# Brace-tokenizing CSS (`.a{fill:red}`) or JS (`if(x){y()}`) inside these turned
+# every rule body into a DIL `{expr}`. `_eval` cannot resolve CSS, so it fell
+# through to `_literal` and returned a `("raw", ...)` tuple — and the node got a
+# bogus `__expr__` stamped on it. Downstream that made
+# `_svg_subtree_has_expr()` true, which BLOCKED the SVG from being flattened to
+# `markup` and forced it down the client's `buildSvgTree` path, where the
+# `<style>` children were rebuilt as SVG `<text>` elements — destroying the
+# stylesheet. An unstyled SVG reads as "the drawing failed to render".
+_RAW_TEXT_TAGS = ("style", "script")
+
+
 class _Tok:
     __slots__ = ("kind", "val")
 
@@ -64,7 +77,38 @@ def _tokenize(src: str) -> list[_Tok]:
             if j >= n:
                 out.append(_Tok("text", src[i:]))
                 break
-            out.append(_Tok("tag", src[i:j + 1]))
+            tag_src = src[i:j + 1]
+            # Raw-text region: everything up to the matching close tag is
+            # opaque character data, so `{` inside it must NOT start an
+            # expression token. This is the whole fix for CSS/JS in SVG.
+            #
+            # The `rawtext`/tag tokens for a matching open are emitted BELOW,
+            # after the check — emitting the open tag first let a <script> slip
+            # into the tree as a real node that then swallowed its following
+            # siblings as children.
+            m = re.match(r"<\s*(%s)\b" % "|".join(_RAW_TEXT_TAGS), tag_src, re.I)
+            if m and not tag_src.rstrip().endswith("/>"):
+                # `i` still points AT the opening `<`, so the body starts after
+                # the tag and the close-tag search must be offset from there.
+                body_start = j + 1
+                close = re.search(r"</\s*%s\s*>" % m.group(1), src[body_start:], re.I)
+                body_end = (body_start + close.start()) if close else n
+                after = (body_start + close.end()) if close else n
+                if m.group(1).lower() == "script":
+                    # Drop <script>, its body, AND its close tag at the source.
+                    # The server has no DOM to prune against, so shipping the
+                    # element at all leaves the client sanitizer as the only
+                    # thing between it and execution. A generated diagram never
+                    # needs one.
+                    pass
+                else:
+                    out.append(_Tok("tag", tag_src))
+                    out.append(_Tok("rawtext", src[body_start:body_end]))
+                    if close:
+                        out.append(_Tok("tag", src[body_start + close.start():after]))
+                i = after
+                continue
+            out.append(_Tok("tag", tag_src))
             i = j + 1
             continue
         if c == "{":
@@ -183,6 +227,19 @@ def _literal(s: str) -> Any:
     if s[0] in "[{" and s[-1] in "]}":
         return _loads_loose(s)
     return ("raw", s)
+
+
+def _display(v: Any) -> str:
+    """Stringify an evaluated value for display.
+
+    An unresolvable expression degrades to the `("raw", src)` tuple that
+    `_literal` returns. A plain `str()` on that leaked the Python repr into the
+    output — `('raw', 'fill:none;stroke:#8b95a7')` showed up as visible text
+    inside a drawing. Show the original source instead.
+    """
+    if isinstance(v, tuple) and len(v) == 2 and v[0] == "raw":
+        return str(v[1])
+    return str(v)
 
 
 def _dig(obj: dict, dotted: str) -> Any:
@@ -691,6 +748,14 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             if t.kind == "decl":
                 advance()
                 continue
+            if t.kind == "rawtext":
+                # Opaque content of <style>/<script>. Never tokenized, never
+                # entity-decoded, never evaluated — emitted verbatim so the CSS
+                # survives into the rebuilt markup byte-for-byte.
+                advance()
+                if t.val:
+                    out.append({"kind": "__text__", "text": t.val})
+                continue
             if t.kind == "text":
                 advance()
                 if t.val.strip():
@@ -713,7 +778,7 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 # `0` is a legitimate value — `v in (None, "", False)` would
                 # wrongly blank it (`0 == False`). Check explicitly.
                 blank = v is None or v == "" or v is False
-                node: dict[str, Any] = {"kind": "__text__", "text": "" if blank else str(v)}
+                node: dict[str, Any] = {"kind": "__text__", "text": "" if blank else _display(v)}
                 node["__expr__"] = t.val
                 out.append(node)
                 continue
@@ -846,7 +911,7 @@ def parse(src: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 blank = v is None or v == "" or v is False
                 return {
                     "kind": "__text__",
-                    "text": "" if blank else str(v),
+                    "text": "" if blank else _display(v),
                     "__expr__": raw,
                 }
             return node

@@ -84,6 +84,19 @@ _CONTENT_PARAM_KEYS = ("body", "content", "command")
 # native `ui_block` event the frontend renders directly; nothing goes through
 # the skill engine, middleware, or tool feedback.
 _BARE_TAG_NAMES = ("render_component", "render_html")
+
+# Top-level render markup tags a model may write BARE - no <render_component>
+# wrapper. `<flow current="2"> ... </flow>` on its own is a presentation block,
+# not prose; the parser rebuilds the element and emits the same ui_block the
+# wrapper would have produced. Keep this list to BLOCK-level containers: adding
+# inline tags (<b>, <p>, <a>) would swallow ordinary prose.
+_BARE_UI_TAGS = (
+    "flow", "steps", "timeline", "checklist", "kv", "keyvalue",
+    "stats", "card", "box", "panel", "callout", "toggle", "accordion",
+    "quiz", "choices", "chart", "barchart",
+)
+_ALL_BARE_TAGS = frozenset(_BARE_TAG_NAMES + _BARE_UI_TAGS)
+
 _HTML_MAX_BYTES = 200_000
 _HTML_MIN_CHUNK_CHARS = 120
 
@@ -257,25 +270,27 @@ def _find_bare_open(buf: str):
     Attributes ARE allowed (`<render_html title="…">`): the tag name must be
     followed by whitespace, '>', or '/', then a quote-aware scan finds the
     real end of the open tag.
+
+    Single left-to-right scan: the earlier per-name `str.find` loop was O(N *
+    tags) over the whole (still-growing) buffer, and with the bare UI tags in
+    the set that is a lot of re-scanning for one streamed block.
     """
     low = buf.lower()
-    best = None
-    for name in _BARE_TAG_NAMES:
-        needle = "<" + name
-        i = 0
-        while True:
-            j = low.find(needle, i)
-            if j < 0:
-                break
-            k = j + len(needle)
-            if k < len(buf) and (buf[k].isspace() or buf[k] in ">/"):
-                end = _scan_tag_end(buf, k)
-                if end != -1:
-                    if best is None or j < best[1]:
-                        best = (name, j, end)
-                break
-            i = j + 1
-    return best
+    i, n = 0, len(buf)
+    while True:
+        j = low.find("<", i)
+        if j < 0:
+            return None
+        m = re.match(r"<([a-z][a-z0-9_-]*)", low[j:])
+        if m:
+            name = m.group(1)
+            if name in _ALL_BARE_TAGS:
+                k = j + 1 + len(name)
+                if k < n and (buf[k].isspace() or buf[k] in ">/"):
+                    end = _scan_tag_end(buf, k)
+                    if end != -1:
+                        return (name, j, end)
+        i = j + 1
 
 
 def _find_bare_close(buf: str, name: str, start: int):
@@ -739,7 +754,7 @@ class SkillParser:
         self._html_sent_len = len(body)
         yield {"type": "html_chunk", "id": self._html_cur_id, "text": delta}
 
-    def _emit_ui_partial(self, body: str) -> Generator[dict[str, Any], None, None]:
+    def _emit_ui_partial(self, body: str, prefix: str = "") -> Generator[dict[str, Any], None, None]:
         """Parse a still-open <render_component> body and stream a partial tree.
 
         Fires only when the body grew enough to be worth re-parsing, and only
@@ -757,7 +772,7 @@ class SkillParser:
             return
         try:
             from engine.ui_format import parse_ui_block
-            _ui = parse_ui_block(trimmed, {})
+            _ui = parse_ui_block(prefix + trimmed, {})
         except Exception:
             _ui = None
         if not _ui:
@@ -837,6 +852,26 @@ class SkillParser:
                                 # client to drop whatever partial it drew.
                                 yield {"type": "ui_block", "id": _bid, "remove": True}
                             continue
+                        if _bname in _BARE_UI_TAGS:
+                            # A block-level render tag written WITHOUT the
+                            # <render_component> wrapper. Rebuild the element
+                            # (open tag + body + close) and parse it exactly as
+                            # the wrapper would have been, so the client gets a
+                            # normal ui_block instead of raw markup in the
+                            # transcript.
+                            _bid = self._ui_cur_id or self._next_ui_id()
+                            self._reset_ui_partial()
+                            _markup = _open_head + _bbody + "</" + _bname + ">"
+                            try:
+                                from engine.ui_format import parse_ui_block
+                                _ui = parse_ui_block(_markup, {})
+                            except Exception:
+                                _ui = None
+                            if _ui:
+                                yield {"type": "ui_block", "payload": _ui, "id": _bid, "partial": False}
+                            else:
+                                yield {"type": "ui_block", "id": _bid, "remove": True}
+                            continue
                         if _bname == "render_html":
                             # Raw HTML pane. Three ways to fill it:
                             #   (inline body)  the model writes the document
@@ -905,6 +940,11 @@ class SkillParser:
                         _bs = 0
                     if _bname == "render_component":
                         yield from self._emit_ui_partial(self.buf[_be:])
+                    elif _bname in _BARE_UI_TAGS:
+                        # Same streaming treatment, but the open tag itself
+                        # carries the props — feed it back in as a prefix so the
+                        # partial tree keeps its attributes (current="2", etc).
+                        yield from self._emit_ui_partial(self.buf[_be:], self.buf[:_be])
                     elif _bname == "render_html":
                         # src=/url= carry no streamed body — the source is read
                         # (src) or framed (url) at seal time. Streaming the
@@ -1643,7 +1683,7 @@ class SkillParser:
             # FINAL block so the client seals any partial it already drew,
             # instead of flushing the whole thing as dead text.
             _b = _find_bare_open(self.buf)
-            if _b is not None and _b[0] == "render_component":
+            if _b is not None and (_b[0] == "render_component" or _b[0] in _BARE_UI_TAGS):
                 _bname, _bs, _be = _b
                 _had_partial = self._ui_cur_id is not None
                 _bid = self._ui_cur_id or self._next_ui_id()
@@ -1652,9 +1692,16 @@ class SkillParser:
                     _before = self.buf[:_bs]
                     if _before.strip():
                         yield {"type": "text", "text": self._strip_orphan_tags(_before)}
+                _body = self.buf[_be:]
+                # A bare block tag never had its close tag — feed the open tag
+                # back so the rebuild matches the sealed feed() path.
+                if _bname in _BARE_UI_TAGS:
+                    _src = self.buf[:_be] + _trim_incomplete_markup(_body)
+                else:
+                    _src = _trim_incomplete_markup(_body)
                 try:
                     from engine.ui_format import parse_ui_block
-                    _ui = parse_ui_block(_trim_incomplete_markup(self.buf[_be:]), {})
+                    _ui = parse_ui_block(_src, {})
                 except Exception:
                     _ui = None
                 if _ui:
