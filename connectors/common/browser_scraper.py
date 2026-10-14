@@ -44,6 +44,13 @@ class ScraperSpec:
     sse_target: str | None = None            # URL substring whose SSE stream to tap
     stealth_mode: bool = True
     instruction_provider: str | None = None  # provider key for instruction_builder
+    # Selector whose matching elements get tagged `data-ghost-old="true"` right
+    # before Send, so capture scopes to THIS turn. MUST be provider-specific:
+    # the generic default used to be a hardcoded DeepSeek selector list, which
+    # matched nothing on claude.ai/qwen — leaving every previous turn unmarked,
+    # so `:not([data-ghost-old='true'])` matched stale panels and `.last`
+    # returned the PREVIOUS answer.
+    old_mark_selector: str | None = None
 
     def sel(self, key: str, default: str = "") -> str:
         return self.selectors.get(key, default)
@@ -840,13 +847,19 @@ class BaseBrowserEngine:
                 # through `:not([data-ghost-old='true'])`, so an unmarked panel
                 # from a previous turn matches the filter, `.last` returns that
                 # stale text, and it is emitted as this turn's thinking.
-                _thoughts_sel = self.spec.sel("thoughts") or "div.ds-think-content"
-                await self.page.evaluate(
-                    "(sel) => document.querySelectorAll("
-                    "'div.ds-message, div.ds-assistant-message-main-content, ' + sel)"
-                    ".forEach(el => el.dataset.ghostOld = 'true')",
-                    _thoughts_sel,
-                )
+                _mark_parts: list[str] = []
+                for _key in ("response", "content", "thoughts"):
+                    _s = self.spec.sel(_key)
+                    if _s and _s not in _mark_parts:
+                        _mark_parts.append(_s)
+                if self.spec.old_mark_selector:
+                    _mark_parts.append(self.spec.old_mark_selector)
+                if _mark_parts:
+                    await self.page.evaluate(
+                        "(sel) => document.querySelectorAll(sel)"
+                        ".forEach(el => el.dataset.ghostOld = 'true')",
+                        ", ".join(_mark_parts),
+                    )
 
                 send_sel = self.spec.sel("send_btn")
                 sent = False

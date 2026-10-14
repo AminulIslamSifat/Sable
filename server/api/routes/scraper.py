@@ -30,6 +30,45 @@ async def get_scraper_models() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Per-model browser connectors (connectors/ registry) — dynamic UI metadata
+#
+# The legacy /api/scraper/models above serves engine/scraper_engines (the
+# global scraper-mode toggle). These endpoints serve the newer per-model
+# browser backends, which are selectable as their own models and are NOT tied
+# to that toggle. Model list is read LIVE from the page so plan-locked models
+# are never advertised.
+# ---------------------------------------------------------------------------
+
+@router.get("/api/connectors/{backend}/models")
+async def get_connector_models(backend: str) -> dict[str, Any]:
+    """Live model list + active model for a browser connector backend."""
+    connector = _resolve_connector(backend)
+    meta_fn = getattr(connector, "get_ui_metadata", None)
+    if meta_fn is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"backend '{backend}' does not expose UI metadata",
+        )
+    return await meta_fn()
+
+
+@router.post("/api/connectors/{backend}/model")
+async def switch_connector_model(backend: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Switch the active model on a browser connector backend."""
+    connector = _resolve_connector(backend)
+    switch_fn = getattr(connector, "switch_model", None)
+    if switch_fn is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"backend '{backend}' does not support model switching",
+        )
+    model_type = str(payload.get("model_type") or "").strip()
+    if not model_type:
+        raise HTTPException(status_code=422, detail="model_type is required")
+    return await switch_fn(model_type)
+
+
+# ---------------------------------------------------------------------------
 # Diagnostics endpoints — internal session health monitoring
 # ---------------------------------------------------------------------------
 

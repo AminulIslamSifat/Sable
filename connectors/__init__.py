@@ -120,6 +120,11 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     elif backend == "mistral_web":
         from connectors.mistral_web.client import get_client
         _registry[backend] = get_client()
+    elif backend == "claude_scraper":
+        # Experimental per-model transport: headed browser + DOM/SSE scrape
+        # of claude.ai (Anthropic-style event stream on /completion).
+        from connectors.claude_scraper.client import get_client
+        _registry[backend] = get_client()
     elif backend == "openai":
         from connectors.openai.client import get_client
         _registry[backend] = get_client()

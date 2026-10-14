@@ -283,6 +283,12 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
     "kimi": _TOOL_FORMAT_QWEN,
     "chatgpt": _TOOL_FORMAT_QWEN,
     "mistral_web": _TOOL_FORMAT_QWEN,
+    # Claude web: the SPA is Anthropic-hosted, but Sable drives it through the
+    # browser and parses the reply text itself — so it needs a PROMPT-INJECTED
+    # tool format like the other scrapers. Qwen/action style is the shared
+    # default for every browser-scraped provider here.
+    "claude_scraper": _TOOL_FORMAT_QWEN,
+    "claude": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }
@@ -300,6 +306,9 @@ _FORMAT_PROVIDER_ALIASES: dict[str, str] = {
     "url": "native",
     "deepseek_scraper": "deepseek",
     "qwen_scraper": "qwen",
+    # Claude web connector -> canonical settings/UI key.
+    "claude": "claude_scraper",
+    "anthropic": "claude_scraper",
 }
 
 

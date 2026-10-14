@@ -140,6 +140,7 @@ BROWSER_PROVIDERS: tuple[str, ...] = (
     "kimi",
     "chatgpt",
     "mistral_web",
+    "claude_scraper",
 )
 PRIMARY_BROWSER_PROVIDER = "qwen"
 
@@ -751,6 +752,34 @@ MODELS = [
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "fast"},
             {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "thinking"},
+        ],
+    },
+    # ── Claude (claude.ai) — EXPERIMENTAL per-model headed-browser transport ──
+    # Drives the real claude.ai SPA with a logged-in profile and taps the
+    # in-page SSE stream on POST .../completion (Anthropic event format:
+    # content_block_delta -> delta.text_delta.text). NOT tied to the global
+    # scraper-mode toggle. Selectable as its own model.
+    # thinking_mode maps to the request's "effort" / "thinking_mode" fields.
+    {
+        "id": "claude-sonnet",
+        "label": "Claude (web)",
+        "api_backend": "claude_scraper",
+        # No model pinning: the SPA uses whatever model the account is set to.
+        # The engine only ever types into the composer and sends — it never
+        # touches the model picker — so the active model is whatever the user
+        # last chose on claude.ai itself.
+        "api_model_type": None,
+        "experimental": True,
+        # Matched to deepseek-scraper (same browser-scraped transport class).
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        # Same Fast/Thinking shape as deepseek-scraper. "thinking_mode" maps to
+        # Claude's request "effort" field: auto = no extended thinking,
+        # medium/high = extended thinking effort levels.
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "auto"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "medium"},
+            {"id": "high", "label": "Thinking (High)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "high"},
         ],
     },
 ]
@@ -1426,6 +1455,8 @@ _PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "kimi": ("kimi",),
     "chatgpt": ("chatgpt", "openai_chatgpt", "gpt"),
     "mimo": ("mimo", "mimo_studio", "xiaomimimo"),
+    "claude_scraper": ("claude_scraper", "claude", "anthropic"),
+    "claude": ("claude_scraper", "claude", "anthropic"),
 }
 
 

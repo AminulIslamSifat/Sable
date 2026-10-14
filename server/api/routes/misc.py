@@ -307,6 +307,40 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend chatgpt unavailable: %s", exc)
 
+    # Claude (Web): headed-browser transport of claude.ai. Available if a
+    # profile holds a `sessionKey` cookie on .claude.ai — the only cookie that
+    # proves a real login (cf_clearance/hmt_id exist pre-login). Pinned
+    # provider account is checked first, then any browser-data-* profile.
+    try:
+        import sqlite3 as _sqlite3
+        from engine.config import _SYSTEM as _sys_dir7
+        from engine.config import get_provider_account as _get_cl_pin
+        candidates = []
+        pinned = _get_cl_pin("claude_scraper")
+        if pinned:
+            candidates.append(_sys_dir7 / pinned)
+        if _sys_dir7.is_dir():
+            candidates += [d for d in _sys_dir7.iterdir()
+                           if d.is_dir() and d.name.startswith("browser-data-")]
+        for d in candidates:
+            try:
+                ck = d / "Default" / "Cookies"
+                if ck.is_file():
+                    conn = _sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
+                    try:
+                        cur = conn.execute(
+                            "SELECT 1 FROM cookies WHERE host_key LIKE '%claude.ai%' "
+                            "AND name = 'sessionKey' LIMIT 1"
+                        )
+                        if cur.fetchone() is not None:
+                            available.add("claude_scraper"); break
+                    finally:
+                        conn.close()
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("Backend claude_scraper unavailable: %s", exc)
+
     # API-key-based providers
     _key_providers = {
         "gemini": "connectors.gemini.client",

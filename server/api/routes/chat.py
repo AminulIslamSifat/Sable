@@ -1398,6 +1398,14 @@ async def chat(request: ChatRequest):
                 if "path" in f:
                     resolved_files.append({"path": f["path"]})
                 continue
+            # Claude (Web): BaseScraperConnector declares `files: list[str]` and
+            # calls engine.upload_file(path) itself, then does string concat on
+            # the value for its status event. So append the RAW PATH STRING —
+            # a {"path": ...} dict (the chatgpt shape) would TypeError there.
+            if _backend == "claude_scraper":
+                if "path" in f:
+                    resolved_files.append(f["path"])
+                continue
             # Provider-specific upload: DeepSeek has its own endpoint
             if _backend == "deepseek":
                 if "path" in f:

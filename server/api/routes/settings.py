@@ -238,7 +238,13 @@ async def _restart_chatgpt_ghost_sessions() -> list[str]:
 
 # system/settings.json keys
 _GHOST_KEY = {"qwen": "qwen_use_ghost", "deepseek": "deepseek_use_ghost", "chatgpt": "chatgpt_use_ghost"}
-_HEADLESS_SETTINGS_KEY = {"qwen": "qwen_headless", "deepseek": "deepseek_headless"}
+_HEADLESS_SETTINGS_KEY = {
+    "qwen": "qwen_headless",
+    "deepseek": "deepseek_headless",
+    # Claude scraper keeps its own launch mode — it must NOT share the global
+    # scraper-engine `headless` flag with the Qwen/DeepSeek engines.
+    "claude_scraper": "claude_headless",
+}
 
 
 def _connector_capabilities() -> dict[str, dict[str, Any]]:
@@ -252,6 +258,10 @@ def _connector_capabilities() -> dict[str, dict[str, Any]]:
         # Kimi: ghost-only AND its browser is token-refresh-only — going headed
         # is not supported, so both knobs are locked/omitted.
         "kimi": {"label": "Kimi", "transport": False, "headless": False},
+        # Claude: drives the real claude.ai SPA through the generic browser
+        # engine — no ghost/curl split exists, so transport is None (the row is
+        # omitted entirely, not shown locked). Launch mode IS user-controlled.
+        "claude_scraper": {"label": "Claude", "transport": None, "headless": True},
     }
 
 
@@ -276,11 +286,16 @@ async def get_connectors_settings() -> dict[str, Any]:
             headless = bool(sys_settings.get(_HEADLESS_SETTINGS_KEY[pid], False))
         else:
             headless = None
-        transport = "ghost"
-        if cap["transport"]:
-            key = _GHOST_KEY.get(pid)
-            # ghost enabled (default True) → transport "ghost" else "curl"
-            transport = "ghost" if (key is None or bool(sys_settings.get(key, True))) else "curl"
+        if cap["transport"] is None:
+            # Provider has no ghost/curl split at all — report null so the UI
+            # omits the row instead of mislabelling it "ghost".
+            transport = None
+        else:
+            transport = "ghost"
+            if cap["transport"]:
+                key = _GHOST_KEY.get(pid)
+                # ghost enabled (default True) → transport "ghost" else "curl"
+                transport = "ghost" if (key is None or bool(sys_settings.get(key, True))) else "curl"
         out[pid] = {
             "label": cap["label"],
             "transport": transport,
@@ -303,6 +318,38 @@ async def _restart_qwen_ghost() -> list[str]:
             done.append("qwen")
     except Exception as exc:
         logger.warning("qwen ghost restart failed: %s", exc)
+    return done
+
+
+async def _restart_claude_scraper() -> list[str]:
+    """Tear down live Claude scraper engines so the next turn relaunches.
+
+    The connector caches one engine per account, and the engine owns the
+    Chromium process with the old launch flag. Shutting the cached clients down
+    is what makes the head/headless toggle take effect on an already-open
+    Claude browser. Returns the connectors that were reset.
+    """
+    done: list[str] = []
+    try:
+        from connectors.claude_scraper.client import (
+            _clients as _cl_clients,
+            _default_client as _cl_default,
+        )
+    except Exception as exc:
+        logger.warning("claude scraper restart import failed: %s", exc)
+        return []
+
+    seen: set[int] = set()
+    _all = list(_cl_clients.values()) + ([_cl_default] if _cl_default else [])
+    for client in _all:
+        if client is None or id(client) in seen:
+            continue
+        seen.add(id(client))
+        try:
+            await client.shutdown()
+            done.append(getattr(client, "backend_name", "claude_scraper"))
+        except Exception as exc:
+            logger.warning("claude scraper restart failed: %s", exc)
     return done
 
 
@@ -367,6 +414,8 @@ async def update_connectors_settings(payload: dict[str, Any]) -> dict[str, Any]:
                 restarted += await _restart_qwen_ghost()
             elif provider == "deepseek":
                 restarted += await _restart_deepseek_ghost()
+            elif provider == "claude_scraper":
+                restarted += await _restart_claude_scraper()
 
     if sys_dirty:
         _write_system_settings(sys_settings)
@@ -2059,7 +2108,8 @@ async def list_accounts_by_provider() -> dict[str, Any]:
           * mistral → ``.mistral_web_auth.json`` cookie-jar snapshot
           * chatgpt → no snapshot source, always needs the DB
         """
-        result = {"kimi": False, "chatgpt": False, "mistral_web": False}
+        result = {"kimi": False, "chatgpt": False, "mistral_web": False,
+                  "claude_scraper": False}
 
         # --- Snapshot-first (no DB open) ---
         try:
@@ -2105,6 +2155,17 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     )
                     if cur.fetchone() is not None:
                         result["mistral_web"] = True
+                if not result["claude_scraper"]:
+                    # Claude web auth cookie is `sessionKey` on .claude.ai
+                    # (verified live). cf_clearance/hmt_id also exist but are
+                    # bot cookies present BEFORE login — only sessionKey proves
+                    # a real session.
+                    cur = conn.execute(
+                        "SELECT 1 FROM cookies WHERE host_key LIKE '%claude.ai%' "
+                        "AND name = 'sessionKey' LIMIT 1"
+                    )
+                    if cur.fetchone() is not None:
+                        result["claude_scraper"] = True
             finally:
                 conn.close()
         except Exception:
@@ -2146,6 +2207,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 _has_kimi = _auth["kimi"]
                 _has_chatgpt = _auth["chatgpt"]
                 _has_mistral_web = _auth["mistral_web"]
+                _has_claude_scraper = _auth["claude_scraper"]
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -2160,6 +2222,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "has_kimi": _has_kimi,
                     "has_chatgpt": _has_chatgpt,
                     "has_mistral_web": _has_mistral_web,
+                    "has_claude_scraper": _has_claude_scraper,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
                     "browser_path": browser_path,
@@ -2307,6 +2370,15 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     mistral_web_accounts = list(browser_accounts)
     mistral_web_accounts += [a for a in unregistered_browser_data if a.get("has_mistral_web")]
     providers["mistral_web"] = _browser_provider("mistral_web", "Mistral (Web)", mistral_web_accounts, avail_key="has_mistral_web")
+
+    # Claude (Web): browser-based transport of claude.ai. Auth is the
+    # `sessionKey` cookie on .claude.ai. Lists every profile holding a login —
+    # both standard acc* profiles AND dedicated non-acc dirs (e.g. acc5).
+    claude_scraper_accounts = list(browser_accounts)
+    claude_scraper_accounts += [a for a in unregistered_browser_data if a.get("has_claude_scraper")]
+    providers["claude_scraper"] = _browser_provider(
+        "claude_scraper", "Claude (Web)", claude_scraper_accounts,
+        avail_key="has_claude_scraper")
 
     # DeepSeek (scraper): headed-browser transport. It is its OWN browser
     # provider with its own active-account slot — separate from the DeepSeek
@@ -2493,7 +2565,7 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
 # just another provider with its own slot, no longer a special global).
 _BROWSER_PROVIDERS_ALL = (
     "qwen", "deepseek", "deepseek_scraper", "qwen_scraper", "zai", "gemini_web", "gemini",
-    "mimo", "kimi", "mistral_web", "chatgpt",
+    "mimo", "kimi", "mistral_web", "chatgpt", "claude_scraper",
 )
 # Back-compat alias (older references).
 _PER_PROVIDER_SWITCH = _BROWSER_PROVIDERS_ALL

@@ -680,6 +680,72 @@ class BaseScraperConnector:
             "error": error,
         }
 
+    async def get_ui_metadata(self) -> dict[str, Any]:
+        """Live UI metadata for this backend (models, thinking modes, active).
+
+        Unlike the legacy engine/scraper_engines path — where this lived on the
+        engine and was invoked synchronously — connector engines are async and
+        the model list must be read from the live page. So this is async and
+        the route awaits it.
+
+        Returns {"models": [{"id","label"}], "active_model": str|None,
+                 "thinking_modes": [...]}
+        Engines that don't support dynamic model listing get a safe default.
+        """
+        fallback = {
+            "models": [{"id": "default", "label": self.provider_name.title()}],
+            "active_model": None,
+            "thinking_modes": [
+                {"id": "fast", "label": "Fast"},
+                {"id": "thinking", "label": "Thinking"},
+            ],
+        }
+        try:
+            account = self.account
+            engine = await self._get_engine(account, account)
+            lister = getattr(engine, "list_models", None)
+            if lister is None:
+                return fallback
+            meta = await lister()
+            models = meta.get("models") or []
+            if not models:
+                return fallback
+            return {
+                "models": models,
+                "active_model": meta.get("active"),
+                "thinking_modes": fallback["thinking_modes"],
+            }
+        except Exception as exc:
+            logger.warning("[%s] get_ui_metadata failed: %s", self.backend_name, exc)
+            return fallback
+
+    async def switch_model(self, model_type: str) -> dict[str, Any]:
+        """Switch the active model on the live browser engine.
+
+        Returns {"status": "ok"|"error", ...} so the route can report cleanly
+        instead of raising.
+        """
+        try:
+            account = self.account
+            engine = await self._get_engine(account, account)
+            switcher = getattr(engine, "switch_model", None)
+            if switcher is None:
+                return {"status": "error",
+                        "message": f"{self.backend_name} engine does not support model switching"}
+            ok = await switcher(model_type)
+            if ok:
+                # Force a fresh upstream chat: the model is bound per-conversation,
+                # so staying in the old chat would keep answering with the old one.
+                try:
+                    setattr(engine, "active_chat_id", None)
+                except Exception:
+                    pass
+                return {"status": "ok", "model_type": model_type}
+            return {"status": "error", "message": f"Could not switch to {model_type}"}
+        except Exception as exc:
+            logger.warning("[%s] switch_model failed: %s", self.backend_name, exc)
+            return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
     async def cancel(self) -> bool:
         # Cancels every engine scoped to this account — the parent chat's engine
         # AND any isolated sub-chat engines (critique/agent) sharing the prefix.

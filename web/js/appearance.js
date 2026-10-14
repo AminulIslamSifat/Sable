@@ -214,10 +214,13 @@ window.safeCopy = async function(text) {
         out += _renderToggle(`connTransport_${pid}`, isGhost,
           `Transport: ${isGhost ? 'Ghost tab' : 'Curl (raw API)'}`,
           `Ghost runs the request inside a real browser tab (genuine TLS + live cookies). Curl uses the raw impersonated HTTP path. Changing this restarts the ${cap.label} browser.`);
-      } else {
+      } else if (cap.transport !== null && cap.transport !== undefined) {
         out += _renderLockedToggle('Transport: Ghost tab only',
           `${cap.label} has no curl fallback — it always uses the ghost browser.`);
       }
+      // cap.transport === null → provider has no ghost/curl split at all
+      // (Claude drives the SPA directly) — omit the row rather than show a
+      // misleading "ghost only" locked toggle.
       // --- headless: head vs headless ---
       if (cap.headless_toggleable) {
         const headless = !!cap.headless;
@@ -338,7 +341,7 @@ window.safeCopy = async function(text) {
 
     // Every browser provider now owns its OWN active account — qwen included.
     // Mirrors _BROWSER_PROVIDERS_ALL in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek", "deepseek_scraper", "qwen_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt"];
+    const _PER_PROVIDER_SWITCH = ["qwen", "deepseek", "deepseek_scraper", "qwen_scraper", "zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web", "chatgpt", "claude_scraper"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
     function _renderBrowserCard(acc, active, providerId, token) {
@@ -375,6 +378,7 @@ window.safeCopy = async function(text) {
             ${acc.has_kimi ? _badge('kimi') : ''}
             ${acc.has_chatgpt ? _badge('chatgpt') : ''}
             ${acc.has_mistral_web ? _badge('mistral') : ''}
+            ${acc.has_claude_scraper ? _badge('claude') : ''}
             ${acc.has_ds ? _badge('ds') : ''}
             ${acc.exhausted ? _badge('exhausted', true) : ''}
             ${acc.captcha_blocked ? _badge('captcha', true) : ''}
@@ -713,7 +717,7 @@ window.safeCopy = async function(text) {
         const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
-        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "deepseek_scraper", "qwen_scraper", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "chatgpt", "mistral_web", "claude_scraper", "deepseek_scraper", "qwen_scraper", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter
@@ -787,7 +791,7 @@ window.safeCopy = async function(text) {
             const _allEntries = Array.from(accMap.values());
             const _anyTok = (e) => {
               const a = e.acc || {};
-              return !!(a.has_waf || a.has_ds || a.has_zai || a.has_gemini || a.has_mimo || a.has_kimi || a.has_chatgpt || a.has_mistral_web);
+              return !!(a.has_waf || a.has_ds || a.has_zai || a.has_gemini || a.has_mimo || a.has_kimi || a.has_chatgpt || a.has_mistral_web || a.has_claude_scraper);
             };
             const _withTok = _allEntries.filter(_anyTok);
             const _noTok = _allEntries.filter(e => !_anyTok(e));
