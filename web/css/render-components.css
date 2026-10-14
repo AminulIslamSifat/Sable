@@ -554,7 +554,12 @@
 /* ── inline formatting ────────────────────────────────────────────────── */
 .rc-root .rc-underline { text-decoration: underline; text-underline-offset: 2px; }
 .rc-root .rc-strike { text-decoration: line-through; color: var(--muted); }
+/* Pre-typeset fallback: raw TeX reads as serif italic. Once MathJax has
+   replaced the inner text it inserts its own <mjx-container>; the wrapper's
+   serif/italic must NOT cascade into it or the glyphs go double-italic. */
 .rc-root .rc-math { font-family: ui-serif, Georgia, "Times New Roman", serif; font-style: italic; color: var(--text); }
+.rc-root .rc-math mjx-container { font-family: inherit; font-style: normal; color: inherit; }
+.rc-root .rc-math[data-display="1"] { display: block; margin: 6px 0; }
 
 /* ── media ────────────────────────────────────────────────────────────── */
 .rc-root .rc-favicon { width: 16px; height: 16px; border-radius: 3px; vertical-align: -3px; margin-right: 4px; }

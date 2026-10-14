@@ -16,6 +16,7 @@
   const chatCompact = document.getElementById('chatCompact');
   const chatCompactInput = document.getElementById('chatCompactInput');
   const chatCompactSend = document.getElementById('chatCompactSend');
+  const chatCompactQueue = document.getElementById('chatCompactQueue');
 
   // ─── Mode Switching ───
 
@@ -134,11 +135,20 @@
     chatCompactInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        sendCompactMessage();
+        const mainSend = document.getElementById('send');
+        // Model responding → Enter queues instead of aborting the stream.
+        if (mainSend && mainSend.classList.contains('stop-mode')) {
+          queueCompactMessage();
+        } else {
+          sendCompactMessage();
+        }
       }
     });
     if (chatCompactSend) {
       chatCompactSend.addEventListener('click', sendCompactMessage);
+    }
+    if (chatCompactQueue) {
+      chatCompactQueue.addEventListener('click', queueCompactMessage);
     }
 
 
@@ -247,6 +257,22 @@
         }
       });
       document.addEventListener('click', () => compactModelDropdown.classList.remove('open'));
+    }
+  }
+
+  // Queue the compact input's text while the model is still responding.
+  function queueCompactMessage() {
+    const text = chatCompactInput ? chatCompactInput.value.trim() : '';
+    if (!text) return;
+    const mainInput = document.getElementById('input');
+    if (mainInput && typeof window.queueMessage === 'function') {
+      mainInput.value = text;
+      mainInput.dispatchEvent(new Event('input', { bubbles: true }));
+      window.queueMessage();
+    }
+    if (chatCompactInput) {
+      chatCompactInput.value = '';
+      chatCompactInput.style.height = 'auto';
     }
   }
 
@@ -398,6 +424,7 @@
 
   function syncStopMode(isStreaming) {
     if (!chatCompactSend) return;
+    if (chatCompactQueue) chatCompactQueue.hidden = !isStreaming;
     if (isStreaming) {
       chatCompactSend.classList.add('stop-mode');
       chatCompactSend.title = 'Stop';

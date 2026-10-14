@@ -1278,6 +1278,47 @@ textarea:disabled {
   color: var(--accent);
 }
 
+/* Queue-send button — a distinct "send anyway" control that appears BESIDE the
+   stop button while the model is streaming. Dashed accent ring so it reads as
+   secondary/queued, not as another stop. */
+.send-cell #queueSend.queue-send {
+  position: relative;
+  border-radius: 50%;
+  background: none;
+  box-shadow: none;
+  padding: 6.5px;
+  min-width: 22px;
+  min-height: 22px;
+  margin-right: 2px;
+  opacity: 0.85;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+}
+.send-cell #queueSend.queue-send:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  opacity: 1;
+}
+.send-cell #queueSend.queue-send:active { transform: scale(0.9); }
+.send-cell #queueSend.queue-send[hidden] { display: none; }
+.send-cell #queueSend.queue-send .icon-lucide { width: 14px; height: 14px; }
+.send-cell #queueSend.queue-send .queue-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #111;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+  font-weight: 700;
+}
+.send-cell #queueSend.queue-send .queue-badge[hidden] { display: none; }
+
 .empty {
   margin: auto;
   text-align: center;

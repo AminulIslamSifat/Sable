@@ -205,6 +205,7 @@
           <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
         </div>
         <div class="compact-send-cell">
+          <button id="chatCompactQueue" class="chat-compact-queue" title="Queue message" hidden><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></button>
           <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
         </div>
       </div>
@@ -734,6 +735,10 @@
             <button class="live-chat-btn" id="liveChatBtn" title="Live voice chat"><span class="icon-emoji">🔊</span><i data-lucide="audio-lines" class="icon-lucide"></i></button>
           </div>
           <div class="input-cell send-cell">
+            <button id="queueSend" class="queue-send" title="Queue message" hidden>
+              <span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i>
+              <span class="queue-badge">1</span>
+            </button>
             <button id="send">
               <div class="spinner"></div>
               <span class="btn-label"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></span>

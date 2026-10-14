@@ -90,6 +90,46 @@ for tag, body in [("steps", '<flow-item title="A" text="x"/>'), ("callout", 'hel
     e = run('<%s>%s</%s>' % (tag, body, tag))
     check("bare <%s> renders" % tag, any(x.get("type") == "ui_block" for x in e), str(kinds(e)))
 
+# 10. bare <svg markup="…"/> — the drawing lives inside the attribute, so the
+# outer tag is SELF-CLOSING and the inner `markup="<svg …"` nests a second
+# `<svg` in the value. Both used to break: the tag was never intercepted (not
+# in the bare set), and the incomplete-tag hold descended INTO the attribute
+# value and mistook the inner <svg for the real block. Result: the drawing
+# painted mid-stream, then vanished at the final render.
+_INNER = ("<svg viewBox='0 0 300 300' xmlns='http://www.w3.org/2000/svg'>"
+          "<circle cx='150' cy='150' r='132' fill='none'/>"
+          "<text x='150' y='138' fill='#fff'>N</text></svg>")
+_SVG = '<svg markup="' + _INNER + '"/>'
+
+EV8 = run('Here:\n\n' + _SVG + '\n\ndone')
+u8 = [e for e in EV8 if e.get("type") == "ui_block"]
+check("bare svg emits ui_block", any(not e.get("partial") for e in u8), str(kinds(EV8)))
+t8 = "".join(e.get("text", "") for e in EV8 if e.get("type") == "text")
+check("bare svg didn't leak outer tag", "markup=" not in t8, repr(t8))
+check("prose after svg preserved", "done" in t8, repr(t8))
+if u8:
+    _node = u8[-1]["payload"]["components"][0]["data"]["nodes"][0]
+    check("svg node kind", _node.get("kind") == "svg", json.dumps(_node)[:150])
+    check("svg markup preserved", ("<svg" in (_node.get("markup") or "")), json.dumps(_node)[:150])
+
+# 11. bare svg split across CHUNKS must still seal once, not leak the half-tag.
+p = SkillParser()
+_parts = ['Here:\n\n<svg markup="<svg ', "viewBox='0 0 300 300' xmlns='http://www.w3.org/2000/svg'>",
+          "<circle cx='150' cy='150' r='132'/></svg>", '"/>\n\nafter']
+EV9 = []
+for c in _parts:
+    EV9 += list(p.feed(c))
+EV9 += list(p.flush())
+u9 = [e for e in EV9 if e.get("type") == "ui_block"]
+check("chunked bare svg seals", any(not e.get("partial") for e in u9), str(kinds(EV9)))
+t9 = "".join(e.get("text", "") for e in EV9 if e.get("type") == "text")
+check("chunked bare svg no leak", "markup=" not in t9 and "<circle" not in t9, repr(t9))
+check("chunked svg keeps trailing prose", "after" in t9, repr(t9))
+
+# 12. a quoted <svg> inside a fence is not a block.
+EV10 = run('```\n' + _SVG + '\n```')
+check("fenced svg NOT rendered", not any(e.get("type") == "ui_block" for e in EV10), str(kinds(EV10)))
+
 print()
 print("FAILURES:", FAIL if FAIL else "none")
 sys.exit(1 if FAIL else 0)

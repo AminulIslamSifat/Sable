@@ -304,6 +304,30 @@
 .chat-compact-send.stop-mode:hover {
   color: var(--accent);
 }
+/* Compact queue-send — distinct "send anyway" beside the stop button. */
+.chat-compact-queue {
+  border-radius: 50%;
+  background: none;
+  border: 1px dashed var(--accent);
+  padding: 4px;
+  min-width: 22px;
+  min-height: 22px;
+  margin-right: 2px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.85;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.chat-compact-queue:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  opacity: 1;
+}
+.chat-compact-queue[hidden] { display: none; }
+.chat-compact-queue .icon-lucide { width: 14px; height: 14px; }
 .compact-pending {
   padding: 6px 10px;
   opacity: 0.7;

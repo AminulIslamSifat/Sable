@@ -561,6 +561,84 @@
     sendBtn.addEventListener("click", sendMessage);
     window.sendMessage = sendMessage; // expose for LiveVoiceChat
 
+    // ---- Queued send (message typed while the model is still responding) ----
+    // Pending optimistic bubbles keyed by temp_id, so the SSE `queued_injected`
+    // event can finalize them once the backend actually delivers the message.
+    const _pendingQueued = new Map();
+    window._sablePendingQueued = _pendingQueued;
+
+    function _updateQueueBadge() {
+      const qBtn = document.getElementById("queueSend");
+      const badge = qBtn?.querySelector(".queue-badge");
+      if (!badge) return;
+      const n = _pendingQueued.size;
+      badge.textContent = String(n);
+      badge.hidden = n <= 1;  // badge only when 2+ waiting (single is obvious)
+    }
+
+    async function queueMessage() {
+      const message = inputEl.value.trim();
+      if (!message) return;
+      const tempId = "q" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+
+      // Optimistic bubble — rendered immediately, marked "queued" until the
+      // backend confirms delivery mid-turn.
+      const bubble = addMessage("user", message, undefined, activePane);
+      if (bubble) {
+        bubble.classList.add("queued-msg");
+        bubble.dataset.tempId = tempId;
+      }
+      _pendingQueued.set(tempId, { text: message, bubble });
+      _updateQueueBadge();
+      inputEl.value = "";
+      autoResize();
+
+      try {
+        const res = await fetch("/api/chat/queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: activeChatId, message, temp_id: tempId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!data.queued) {
+          // Stream ended between render and request — fall back to a normal send.
+          _pendingQueued.delete(tempId);
+          _updateQueueBadge();
+          if (bubble) bubble.remove();
+          inputEl.value = message;
+          autoResize();
+          sendMessage();
+        }
+      } catch (err) {
+        _pendingQueued.delete(tempId);
+        _updateQueueBadge();
+        if (bubble) {
+          bubble.classList.remove("queued-msg");
+          bubble.classList.add("queue-failed");
+        }
+        showToast("Queue failed: " + err.message, "error");
+      }
+    }
+    window.queueMessage = queueMessage;
+
+    const queueSendBtn = document.getElementById("queueSend");
+    if (queueSendBtn) queueSendBtn.addEventListener("click", queueMessage);
+
+    // Finalize a queued bubble when the backend confirms it was injected.
+    window._sableFinalizeQueued = function (tempIds, dbIds, text) {
+      (tempIds || []).forEach((tid, i) => {
+        const entry = _pendingQueued.get(tid);
+        if (!entry) return;
+        _pendingQueued.delete(tid);
+        if (entry.bubble) {
+          entry.bubble.classList.remove("queued-msg");
+          entry.bubble.classList.add("queued-delivered");
+          if (dbIds && dbIds[i]) entry.bubble.dataset.msgId = String(dbIds[i]);
+        }
+      });
+      _updateQueueBadge();
+    };
+
 
     // Programmatic message send for auto-turn (agent completion notifications).
     // Goes through the exact same /api/chat pipeline as a user-typed message,
@@ -648,7 +726,14 @@
         // If the @mention popup is open, let agents.js handle Enter (selection)
         const mp = document.querySelector(".agent-mention-popup");
         if (mp && mp.style.display !== "none") return;
-        if (isStreaming()) return; // let Enter insert newline while model responds
+        if (isStreaming()) {
+          // Model is responding — Enter queues the message instead of being
+          // swallowed. Shift+Enter still inserts a newline (handled above).
+          if (window.matchMedia("(pointer: coarse)").matches) return;
+          e.preventDefault();
+          queueMessage();
+          return;
+        }
         // On touch devices Enter inserts a newline; the send button sends.
         if (window.matchMedia("(pointer: coarse)").matches) return;
         e.preventDefault();

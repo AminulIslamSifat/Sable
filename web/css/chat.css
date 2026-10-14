@@ -224,6 +224,34 @@
       font-size: calc(var(--font-size-response) - 1px);
     }
     .user.collapsed .user-text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* Queued user bubble — sent while the model was still responding. */
+    .msg.user.queued-msg { opacity: 0.55; }
+    .msg.user.queued-msg::after {
+      content: "queued…";
+      display: inline-block;
+      margin-left: 8px;
+      padding: 1px 7px;
+      border-radius: 8px;
+      border: 1px dashed var(--accent);
+      color: var(--accent);
+      font-size: 10px;
+      letter-spacing: 0.3px;
+      vertical-align: middle;
+    }
+    .msg.user.queued-delivered { opacity: 1; }
+    .msg.user.queue-failed { opacity: 1; }
+    .msg.user.queue-failed::after {
+      content: "not queued";
+      display: inline-block;
+      margin-left: 8px;
+      padding: 1px 7px;
+      border-radius: 8px;
+      border: 1px solid var(--danger, #e05555);
+      color: var(--danger, #e05555);
+      font-size: 10px;
+      vertical-align: middle;
+    }
     .user-expand-btn {
       font-size: var(--font-size-system);
       color: var(--accent);

@@ -379,6 +379,10 @@
       const streaming = activeStreams.has(activeChatId);
       sendBtn.classList.toggle("stop-mode", streaming);
       sendBtn.classList.remove("loading");
+      // Queue-send button lives only while streaming — it is the "send anyway"
+      // control that rides alongside the stop button.
+      const qBtn = document.getElementById("queueSend");
+      if (qBtn) qBtn.hidden = !streaming;
     }
 
     function _toggleStreamIndicator(chatId, streaming) {

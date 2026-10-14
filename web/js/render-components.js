@@ -350,17 +350,36 @@
       return v == null ? m : String(v);
     });
   }
+  // TeX -> MathJax-delimited <span>. Backslash built via fromCharCode on
+  // PURPOSE: a source literal "\(" has its backslash swallowed, so MathJax
+  // never sees a delimiter and silently ignores the span. (See R.math.)
+  var _MATH_BS = String.fromCharCode(92);
+  function makeMathSpan(tex, display) {
+    if (tex == null || tex === "") return null;
+    var wrapped = display
+      ? _MATH_BS + "[" + tex + _MATH_BS + "]"
+      : _MATH_BS + "(" + tex + _MATH_BS + ")";
+    var e = el("span", "rc-math", wrapped);
+    e.setAttribute("data-tex", tex);
+    if (display) e.setAttribute("data-display", "1");
+    return e;
+  }
   function richText(parent, s) {
     var src = String(s == null ? "" : s);
-    // {{term}} -> inline chip · **bold** · *italic* · `code`
-    var re = /\{\{([^}]+)\}\}|\*\*([^*]+)\*\*|(?<!\*)\*([^*]+)\*(?!\*)|`([^`]+)`/g;
+    // Math comes FIRST in the alternation: TeX like `a*b` or `x_i` would
+    // otherwise be eaten by the emphasis branches, and MathJax needs the raw
+    // source intact. $$..$$ = display, $..$ = inline (single line, not $$).
+    // Then: {{term}} chip · **bold** · *italic* · `code`
+    var re = /\$\$([\s\S]+?)\$\$|(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)|\{\{([^}]+)\}\}|\*\*([^*]+)\*\*|(?<!\*)\*([^*]+)\*(?!\*)|`([^`]+)`/g;
     var last = 0, m;
     while ((m = re.exec(src)) !== null) {
       if (m.index > last) parent.appendChild(document.createTextNode(src.slice(last, m.index)));
-      if (m[1] != null) parent.appendChild(el("span", "rc-chip-inline", m[1]));
-      else if (m[2] != null) parent.appendChild(el("strong", "rc-strong", m[2]));
-      else if (m[3] != null) parent.appendChild(el("em", "rc-italic", m[3]));
-      else if (m[4] != null) parent.appendChild(el("code", "rc-inline-code", m[4]));
+      if (m[1] != null) { var _dm = makeMathSpan(m[1], true); if (_dm) parent.appendChild(_dm); }
+      else if (m[2] != null) { var _im = makeMathSpan(m[2], false); if (_im) parent.appendChild(_im); }
+      else if (m[3] != null) parent.appendChild(el("span", "rc-chip-inline", m[3]));
+      else if (m[4] != null) parent.appendChild(el("strong", "rc-strong", m[4]));
+      else if (m[5] != null) parent.appendChild(el("em", "rc-italic", m[5]));
+      else if (m[6] != null) parent.appendChild(el("code", "rc-inline-code", m[6]));
       last = re.lastIndex;
     }
     if (last < src.length) parent.appendChild(document.createTextNode(src.slice(last)));
@@ -887,24 +906,8 @@
   // can upgrade it in place. Never eval the TeX.
   R.math = function (n, d, c) {
     var v = inlineText(n, c);
-    if (!v) return null;
     var display = n.display === true || n.display === "true" || n.block === true;
-    // MathJax only typesets text between configured delimiters. The old handler
-    // dumped raw TeX into the span and relied on someone else calling
-    // typesetPromise -- nothing ever did for component trees, so it rendered as
-    // literal backslashes.
-    //
-    // Backslash built via fromCharCode ON PURPOSE. Writing the delimiter as a
-    // JS string literal is a trap: "\[" in source is the char `[` with the
-    // backslash swallowed, so MathJax never sees a delimiter and silently
-    // ignores the span. (Cost me two attempts to notice.) This form is
-    // unambiguous and survives any editor that rewrites escapes.
-    var _bs = String.fromCharCode(92);
-    var wrapped = display ? _bs + "[" + v + _bs + "]" : _bs + "(" + v + _bs + ")";
-    var e = el("span", "rc-math", wrapped);
-    e.setAttribute("data-tex", v);
-    if (display) e.setAttribute("data-display", "1");
-    return e;
+    return makeMathSpan(v, display);
   };
 
   // ══ media primitives ═══════════════════════════════════════════════════
@@ -929,18 +932,41 @@
   // `stroke: none`). Treat the content as text and never recurse into it.
   var SVG_RAW_TEXT = { style: 1, script: 1 };
 
+  // Distinguish a bare prose TEXT RUN from a real SVG <text> element. Both
+  // arrive with `kind:"text"`, so the tag name alone cannot tell them apart —
+  // a collision baked into the DSL by the SVG spec.
+  //
+  //   {kind:"text", text:"A (start)"}                          -> prose run
+  //   {kind:"text", class:"lbl", x:"100", y:"176", text:"A"}   -> real element
+  //
+  // The discriminator is ATTRIBUTES, and it mirrors the parser's own
+  // `_is_inline` test exactly (`set(nd.keys()) <= {"kind","text"}`): a bare run
+  // carries nothing but kind/text (plus `__expr__` bookkeeping). Anything else
+  // — a presentation attribute, a child — makes it an element.
+  //
+  // Checking `children` alone was wrong: `<text x='1'>label</text>` has its
+  // content hoisted into `.text` with NO children, so every <text> label in
+  // every diagram got demoted to a bare text node and vanished.
+  function isSvgProseRun(h) {
+    if (!h || typeof h !== "object") return false;
+    if (h.kind === "__text__") return true;
+    if (h.kind !== "text" && h.type !== "text") return false;
+    for (var k in h) {
+      if (k === "kind" || k === "type" || k === "text" || k === "props") continue;
+      if (k.indexOf("__") === 0) continue;   // __expr__, __expr__text, ...
+      return false;                          // real attribute or children
+    }
+    return true;
+  }
+
   function buildSvgTree(node, ctx) {
     var h = hydrate(node, ctx);
     var kind = String(h.kind || h.type || "");
-    // A text run is NOT an SVG <text> element. The parser emits bare prose as
-    // `{kind:"text"}` and expression output as `{kind:"__text__"}`, and both
-    // collide with the SVG element literally named `text`. The old code turned
-    // every one of them into a real <text> node — which is exactly how a
-    // stylesheet's rule text ended up nested inside <style> as
-    // `<text>.peg</text>` and died.
-    if (kind === "__text__" || (kind === "text" && !h.children)) {
-      var tn = document.createTextNode(String(h.text || ""));
-      return tn;
+    if (isSvgProseRun(h)) {
+      // A stylesheet's rule text, or any other bare character data. MUST be a
+      // text node — wrapping it in <text> nests elements where only character
+      // data is valid, and the whole sheet stops parsing.
+      return document.createTextNode(String(h.text || ""));
     }
     var tag = kind.toLowerCase();
     if (!tag) return null;
@@ -1078,11 +1104,71 @@
     return root;
   }
 
+  // ── SVG healing ──────────────────────────────────────────────────────
+  // A drawing that fails to parse used to degrade straight to a <pre> (or, at
+  // the caller, get thrown away entirely because the container had already
+  // been cleared). Before giving up, repair the breakages a streamed or
+  // generated SVG actually hits: a wrapping code fence, a half-consumed
+  // `markup="` prefix, double-encoded entities, a missing namespace, and
+  // unbalanced tags left open by an interrupted stream.
+  //
+  // Best-effort: returns the input unchanged when it cannot improve it, so a
+  // genuinely-fine drawing is never mangled by the healer.
+  var _SVG_VOID_TAGS = {
+    path: 1, rect: 1, circle: 1, ellipse: 1, line: 1, polyline: 1, polygon: 1,
+    stop: 1, use: 1, image: 1, animate: 1, animatetransform: 1, animatemotion: 1
+  };
+  function _balanceSvgTags(s) {
+    var stack = [];
+    var out = s.replace(/<(\/?)([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g,
+      function (m, slash, name, attrs, selfclose) {
+        var nm = String(name).toLowerCase();
+        if (slash) {
+          for (var i = stack.length - 1; i >= 0; i--) {
+            if (stack[i] === nm) { stack.length = i; break; }
+          }
+          return m;
+        }
+        if (!selfclose && !_SVG_VOID_TAGS[nm]) stack.push(nm);
+        return m;
+      });
+    if (stack.length) {
+      for (var j = stack.length - 1; j >= 0; j--) out += "</" + stack[j] + ">";
+    }
+    return out;
+  }
+  function healSvgMarkup(raw) {
+    var s = String(raw == null ? "" : raw);
+    // A fence the model wrapped around the markup.
+    s = s.replace(/^\s*```[a-zA-Z]*\s*/, "").replace(/\s*```\s*$/, "");
+    // A truncated attribute split that left `markup="` (or a stray quote) on
+    // the front / end of the payload.
+    s = s.replace(/^\s*markup\s*=\s*["']?/i, "");
+    s = s.replace(/["']\s*\/?>\s*$/, "");
+    // Double-encoded entities — the tag was HTML-escaped somewhere in transit.
+    s = s.replace(/&amp;lt;/g, "&lt;").replace(/&amp;gt;/g, "&gt;");
+    s = s.replace(/&amp;quot;/g, "&quot;").replace(/&amp;amp;/g, "&amp;");
+    // An XML prolog / doctype makes the lenient HTML fallback choke.
+    s = s.replace(/^\s*<\?xml[^>]*\?>\s*/i, "");
+    s = s.replace(/^\s*<!doctype[^>]*>\s*/i, "");
+    s = s.trim();
+    // A bare <svg> with no namespace renders in quirks (and some sanitizers
+    // treat it as an unknown HTML element).
+    if (/^<svg\b/i.test(s) && !/\sxmlns\s*=/.test(s)) {
+      s = s.replace(/^<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    // Close anything an interrupted stream left open.
+    if (/^<svg\b/i.test(s)) s = _balanceSvgTags(s);
+    return s;
+  }
+
   R.svg = function (n, depth, ctx) {
     var raw = str(n.svg || n.content || n.text || n.markup);
     var d = el("div", "rc-svg");
-    if (raw && /^\s*<svg[\s>]/i.test(raw)) {
+    // Accept a fence / prolog / doctype in front of the real <svg> root.
+    if (raw && /^\s*(?:```[a-zA-Z]*\s*)?(?:<\?xml[^>]*\?>\s*)?(?:<!doctype[^>]*>\s*)?<svg[\s>]/i.test(raw)) {
       var clean = sanitizeSvgString(raw);
+      if (!clean) clean = sanitizeSvgString(healSvgMarkup(raw));
       if (clean) { d.appendChild(clean); return d; }
     }
     // No frozen markup but a child tree -> dynamic geometry. Build real SVG
@@ -1091,8 +1177,16 @@
       var live = buildSvgTree(n, ctx || noopCtx());
       if (live) { d.appendChild(live); return d; }
     }
-    if (raw) d.appendChild(el("pre", "rc-code", raw.slice(0, 4000)));
-    else return null;
+    // Healing fallback: if there is ANY raw text, try one repaired pass before
+    // degrading. A drawing that renders is always better than a <pre>.
+    if (raw) {
+      var healed = healSvgMarkup(raw);
+      if (healed && healed !== raw) {
+        var c2 = sanitizeSvgString(healed);
+        if (c2) { d.appendChild(c2); return d; }
+      }
+      d.appendChild(el("pre", "rc-code", raw.slice(0, 4000)));
+    } else return null;
     return d;
   };
   R.asyncimage = function (n, d, c) {
@@ -2332,6 +2426,10 @@
       if (root.parentNode) root.parentNode.replaceChild(fresh, root);
       root = fresh;
       if (window.lucide) window.lucide.createIcons();
+      // Re-typeset after EVERY interactive rebuild -- a slider drag or tab
+      // switch that introduces new math would otherwise leave raw TeX on
+      // screen, since typesetMath only ran once at initial mount.
+      typesetMath(root);
     });
     renderNodesInto(root, data.nodes, ctx);
     container.appendChild(root);
@@ -2343,18 +2441,26 @@
   // <math> sat unrendered forever. Pull MathJax in on demand and typeset the
   // subtree -- but ONLY when a .rc-math element is actually present, so a card
   // with no math still costs nothing.
-  var _mathPending = null;
+  // Multiple component trees can be on screen at once and each calls this on
+  // every re-render. A single debounce timer would clobber itself -- the last
+  // caller wins and every earlier scope silently never typesets. Collect scopes
+  // in a set instead, flush them all in one pass.
+  var _mathScopes = [];
+  var _mathTimer = null;
   function typesetMath(scope) {
     if (!scope || !scope.querySelector) return;
     if (!scope.querySelector(".rc-math")) return;
     if (typeof window._lazyLoadMathJax !== "function") return;
-    if (_mathPending) { clearTimeout(_mathPending); }
-    // Debounce: a re-render (slider drag, tab switch) fires this repeatedly.
-    _mathPending = setTimeout(function () {
-      _mathPending = null;
+    if (_mathScopes.indexOf(scope) === -1) _mathScopes.push(scope);
+    if (_mathTimer) clearTimeout(_mathTimer);
+    _mathTimer = setTimeout(function () {
+      _mathTimer = null;
+      var scopes = _mathScopes.filter(function (s) { return s && s.isConnected; });
+      _mathScopes = [];
+      if (!scopes.length) return;
       Promise.resolve(window._lazyLoadMathJax()).then(function () {
         if (window.MathJax && window.MathJax.typesetPromise) {
-          window.MathJax.typesetPromise([scope]).catch(function () {});
+          window.MathJax.typesetPromise(scopes).catch(function () {});
         }
       }).catch(function () {});
     }, 30);
@@ -2396,5 +2502,51 @@
     return root;
   }
 
-  window.SableComponents = { render: render };
+  // ── Atomic render with last-good preservation ────────────────────────
+  // The old contract appended straight into the live container, so every
+  // caller had to clear it first (`innerHTML = ""`) — and if render() threw or
+  // produced nothing, that left the container BLANK, destroying a drawing that
+  // had already rendered correctly. This stages the new tree OFF-DOM and swaps
+  // it in only when it is usable. Two levels of preservation:
+  //
+  //   1. Whole-block: nothing rendered -> the previous DOM is left untouched.
+  //   2. Per-drawing: a .rc-svg node in the NEW tree failed to parse (it holds
+  //      a <pre>/error box, no <svg>) while the OLD tree had a live <svg> at
+  //      the same position -> the old drawing is carried over.
+  //
+  // Returns true when the container was updated, false when the last good
+  // render was kept.
+  function carryOverSvg(stage, live) {
+    var fresh = stage.querySelectorAll(".rc-svg");
+    if (!fresh.length) return;
+    var old = live.querySelectorAll(".rc-svg");
+    for (var i = 0; i < fresh.length; i++) {
+      if (fresh[i].querySelector("svg")) continue;   // new one drew fine
+      var prev = old[i];
+      if (!prev) continue;
+      var prevSvg = prev.querySelector("svg");
+      if (!prevSvg) continue;
+      // Carry the last working drawing into the new tree.
+      fresh[i].innerHTML = "";
+      fresh[i].appendChild(prevSvg.cloneNode(true));
+    }
+  }
+  function renderInto(container, payload) {
+    if (!container) return false;
+    var stage = document.createElement("div");
+    var ok = false;
+    try {
+      var root = render(payload, stage);
+      ok = !!(root && stage.childNodes.length);
+    } catch (e) {
+      ok = false;
+    }
+    if (!ok) return false;                 // keep the last good render
+    try { carryOverSvg(stage, container); } catch (e) {}
+    container.innerHTML = "";
+    while (stage.firstChild) container.appendChild(stage.firstChild);
+    return true;
+  }
+
+  window.SableComponents = { render: render, renderInto: renderInto };
 })();

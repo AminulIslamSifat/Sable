@@ -94,6 +94,13 @@ _BARE_UI_TAGS = (
     "flow", "steps", "timeline", "checklist", "kv", "keyvalue",
     "stats", "card", "box", "panel", "callout", "toggle", "accordion",
     "quiz", "choices", "chart", "barchart",
+    # Inline vector art is a BLOCK-level render element, not prose: a bare
+    # <svg markup="…"/> must become a ui_block the same way <card> does.
+    # Without it the tag leaked into the markdown stream, where marked +
+    # DOMPurify parsed the outer self-closing <svg> as an EMPTY element (the
+    # real drawing only lived inside the `markup` attribute string) — so it
+    # painted during streaming, then vanished on the final render.
+    "svg",
 )
 _ALL_BARE_TAGS = frozenset(_BARE_TAG_NAMES + _BARE_UI_TAGS)
 
@@ -290,6 +297,47 @@ def _find_bare_open(buf: str):
                     end = _scan_tag_end(buf, k)
                     if end != -1:
                         return (name, j, end)
+                    # This bare tag is still OPEN — its '>' has not arrived.
+                    # Everything after it is inside the tag, so a later '<' is
+                    # an attribute value (`markup="<svg …"`), NOT a new tag.
+                    # Returning the nested inner tag here is what leaked the
+                    # outer `<svg markup="` as prose and drew the wrong shape.
+                    return None
+        i = j + 1
+
+
+def _find_bare_start(buf: str):
+    """Earliest INCOMPLETE bare-tag start. Returns (name, start) or None.
+
+    `_find_bare_open` only reports a tag whose closing '>' has already
+    arrived. While a bare block tag is still being written, that leaves the
+    half-tag with no home — and the prose flush used to dump it into the
+    transcript as literal text. Once text is flushed the buffer is emptied, so
+    the tag could never be recovered when its '>' finally landed. That is what
+    made a bare <svg> (whose whole drawing lives inside the `markup` attribute)
+    paint during streaming and then VANISH at the final render: the opening
+    half had already leaked as prose.
+
+    Anchoring the hold on the EARLIEST incomplete bare start (not the last
+    '<' in the buffer) is what keeps `markup="<svg …"` — an inner tag nested
+    inside an attribute — intact instead of yielding the outer tag as text.
+    """
+    low = buf.lower()
+    i, n = 0, len(buf)
+    while True:
+        j = low.find("<", i)
+        if j < 0:
+            return None
+        m = re.match(r"<([a-z][a-z0-9_-]*)", low[j:])
+        if m:
+            name = m.group(1)
+            k = j + 1 + len(name)
+            if name in _ALL_BARE_TAGS:
+                if _scan_tag_end(buf, k) == -1:
+                    return (name, j)
+            elif any(t.startswith(name) for t in _ALL_BARE_TAGS):
+                # Prefix of a known bare tag ("<sv", "<ren") — hold it.
+                return (name, j)
         i = j + 1
 
 
@@ -821,9 +869,15 @@ class SkillParser:
                         _bare = None
                 if _bare is not None:
                     _bname, _bs, _be = _bare
-                    _bclose = _find_bare_close(self.buf, _bname, _be)
-                    if _bclose is not None:
-                        _bcs, _bce = _bclose
+                    # A SELF-CLOSING bare tag (<svg markup="…"/>) never gets a
+                    # close tag, so the tag itself IS the whole block. Without
+                    # this the block could only seal at end-of-stream, and
+                    # flush() appended the prose that FOLLOWED it into the body.
+                    _bselfclose = self.buf[max(0, _be - 2):_be] == "/>"
+                    _bclose = (None if _bselfclose
+                               else _find_bare_close(self.buf, _bname, _be))
+                    if _bselfclose or _bclose is not None:
+                        _bcs, _bce = (_be, _be) if _bselfclose else _bclose
                         _bbefore = self.buf[:_bs]
                         _bbody = self.buf[_be:_bcs]
                         _open_head = self.buf[_bs:_be]
@@ -861,7 +915,11 @@ class SkillParser:
                             # transcript.
                             _bid = self._ui_cur_id or self._next_ui_id()
                             self._reset_ui_partial()
-                            _markup = _open_head + _bbody + "</" + _bname + ">"
+                            # Self-closing: the open tag alone is the block.
+                            # Appending a synthetic close would nest the tag
+                            # inside itself and parse the wrong tree.
+                            _markup = (_open_head if _bselfclose
+                                       else _open_head + _bbody + "</" + _bname + ">")
                             try:
                                 from engine.ui_format import parse_ui_block
                                 _ui = parse_ui_block(_markup, {})
@@ -1130,6 +1188,20 @@ class SkillParser:
 
                 m = self._ACTION_OPEN.search(self.buf)
                 if m is None:
+                    # A bare block tag still being written (its '>' has not
+                    # arrived) must be HELD, not flushed as prose — otherwise
+                    # the opening half leaks into the transcript and the block
+                    # can never be rebuilt when the rest lands. Checked before
+                    # the generic trailing-'<' hold so a nested `markup="<svg"`
+                    # anchors on the outer tag, not the inner one.
+                    _bstart = _find_bare_start(self.buf)
+                    if _bstart is not None:
+                        _bs2 = _bstart[1]
+                        if _bs2 > 0:
+                            yield {"type": "text",
+                                   "text": self._strip_orphan_tags(self.buf[:_bs2])}
+                        self.buf = self.buf[_bs2:]
+                        break
                     # No action open — flush as prose (hold trailing partial)
                     idx = self.buf.rfind("<")
                     if idx >= 0 and ">" not in self.buf[idx:]:
@@ -1152,7 +1224,7 @@ class SkillParser:
                         # Bare presentation tags (render_component) must also be
                         # held when split across chunks — else the opening half
                         # flushes as prose and the block never parses.
-                        _bare_prefixes = _BARE_TAG_NAMES
+                        _bare_prefixes = _BARE_TAG_NAMES + _BARE_UI_TAGS
                         _open_match = (
                             tail == ""
                             or _is_dsml_delimiters_only
@@ -1692,11 +1764,15 @@ class SkillParser:
                     _before = self.buf[:_bs]
                     if _before.strip():
                         yield {"type": "text", "text": self._strip_orphan_tags(_before)}
+                _selfclose = self.buf[max(0, _be - 2):_be] == "/>"
                 _body = self.buf[_be:]
                 # A bare block tag never had its close tag — feed the open tag
                 # back so the rebuild matches the sealed feed() path.
                 if _bname in _BARE_UI_TAGS:
-                    _src = self.buf[:_be] + _trim_incomplete_markup(_body)
+                    # Self-closing tag: the source is the tag, and whatever text
+                    # trails it is prose, NOT part of the block.
+                    _src = (self.buf[:_be] if _selfclose
+                            else self.buf[:_be] + _trim_incomplete_markup(_body))
                 else:
                     _src = _trim_incomplete_markup(_body)
                 try:
@@ -1708,6 +1784,10 @@ class SkillParser:
                     yield {"type": "ui_block", "payload": _ui, "id": _bid, "partial": False}
                 elif _had_partial:
                     yield {"type": "ui_block", "id": _bid, "remove": True}
+                # A self-closing block consumed only the tag — the text after
+                # it is still prose and must not be dropped.
+                if _selfclose and _body.strip():
+                    yield {"type": "text", "text": self._strip_orphan_tags(_body)}
                 self.buf = ""
 
         if self.buf:

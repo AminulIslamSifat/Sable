@@ -260,8 +260,14 @@
               // the seal (partial:false) that repeats a partial verbatim.
               if (_sig === null || _uiId === null || _uiSigs[_uiId] !== _sig) {
                 try {
-                  uiSeg.innerHTML = "";
-                  window.SableComponents.render(evt.payload, uiSeg);
+                  // Atomic: stage off-DOM and swap only on success, so a bad
+                  // payload can never blank a block that already rendered.
+                  if (window.SableComponents.renderInto) {
+                    window.SableComponents.renderInto(uiSeg, evt.payload);
+                  } else {
+                    uiSeg.innerHTML = "";
+                    window.SableComponents.render(evt.payload, uiSeg);
+                  }
                   if (_uiId !== null && _sig !== null) _uiSigs[_uiId] = _sig;
                 } catch (e) {}
                 _actIcons(uiSeg);
@@ -1871,8 +1877,14 @@
             try { _sig = JSON.stringify(payload); } catch (e) { _sig = null; }
             if (_sig === null || _id === null || this._uiSigs[_id] !== _sig) {
               try {
-                uiSeg.innerHTML = "";
-                window.SableComponents.render(payload, uiSeg);
+                // Atomic swap — a throw or an empty tree keeps the previous
+                // render instead of leaving the segment blank.
+                if (window.SableComponents.renderInto) {
+                  window.SableComponents.renderInto(uiSeg, payload);
+                } else {
+                  uiSeg.innerHTML = "";
+                  window.SableComponents.render(payload, uiSeg);
+                }
                 if (_id !== null && _sig !== null) this._uiSigs[_id] = _sig;
               } catch (e) {
                 if (!_existing) uiSeg.remove();
@@ -2816,6 +2828,12 @@
           } else if (evt.type === "token_rotation") {
             const _trTurn = streamPane?.querySelector('.turn:last-child') || streamPane;
             if (_trTurn) handleTokenRotationEvent(evt, _trTurn);
+          } else if (evt.type === "queued_injected") {
+            // Backend delivered a message that was queued while the model was
+            // working. Finalize the optimistic bubble(s) it corresponds to.
+            if (typeof window._sableFinalizeQueued === "function") {
+              window._sableFinalizeQueued(evt.temp_ids || [], evt.ids || [], evt.text || "");
+            }
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
