@@ -1040,6 +1040,455 @@ def get_backend() -> CompositeBackend:
         return CompositeBackend(X11Backend(), X11ScreenParser())
 
 
+# ─── Web Page Screenshot (Playwright) ────────────────────────────────────────
+
+# Prefer system Chrome/Chromium over Playwright's bundled build so we never
+# depend on `playwright install` having been run.
+_CHROMIUM_CHANNELS = ("chrome", "chromium", "msedge")
+_CHROMIUM_BINS = (
+    "google-chrome-stable", "google-chrome", "chromium", "chromium-browser",
+    "brave-browser", "msedge",
+)
+
+DEFAULT_CDP_PORT = 9222
+
+
+def _launch_chromium(p, headless: bool):
+    last_err: Exception | None = None
+    for channel in _CHROMIUM_CHANNELS:
+        try:
+            return p.chromium.launch(headless=headless, channel=channel)
+        except Exception as e:  # noqa: BLE001 - probe each channel
+            last_err = e
+    try:
+        return p.chromium.launch(headless=headless)
+    except Exception as e:  # noqa: BLE001
+        last_err = e
+    raise RuntimeError(
+        f"no usable Chromium (tried {', '.join(_CHROMIUM_CHANNELS)} + bundled): {last_err}"
+    )
+
+
+def _num(params: dict, key: str, default: float) -> float:
+    """Read a numeric param without letting 0 fall through to the default."""
+    val = params.get(key)
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+# ─── Persistent Browser (CDP) ────────────────────────────────────────────────
+
+def _browser_dir() -> Path:
+    d = Path.home() / "sable_output" / "browser"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _state_path() -> Path:
+    return _browser_dir() / "state.json"
+
+
+def _read_state() -> dict:
+    try:
+        return json.loads(_state_path().read_text())
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_state(state: dict) -> None:
+    try:
+        _state_path().write_text(json.dumps(state, indent=2))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _port_open(port: int, host: str = "127.0.0.1") -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.4)
+        return s.connect_ex((host, port)) == 0
+
+
+def _pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _find_chrome_bin() -> str | None:
+    for b in _CHROMIUM_BINS:
+        path = shutil.which(b)
+        if path:
+            return path
+    # Windows fallbacks
+    if os.name == "nt":
+        for c in (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ):
+            if Path(c).exists():
+                return c
+    return None
+
+
+def _spawn_browser(port: int, headless: bool, user_data_dir: str | None = None) -> dict:
+    """Start ONE detached Chrome with a remote-debugging port. Reuses if port busy."""
+    if _port_open(port):
+        st = _read_state()
+        if st.get("port") == port:
+            return {"reused": True, "pid": st.get("pid"), "port": port, "user_data_dir": st.get("user_data_dir")}
+        return {"reused": True, "pid": None, "port": port, "user_data_dir": None,
+                "note": "port already served by a browser Sable did not start"}
+
+    binary = _find_chrome_bin()
+    if not binary:
+        raise RuntimeError("no Chrome/Chromium binary found on PATH")
+
+    udd = str(Path(user_data_dir).expanduser()) if user_data_dir else str(_browser_dir() / "profile")
+    Path(udd).mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        binary,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={udd}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--hide-scrollbars",
+    ]
+    if headless:
+        cmd.append("--headless=new")
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        cmd.append("--no-sandbox")
+    cmd.append("about:blank")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=(os.name != "nt"),
+    )
+
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if _port_open(port):
+            break
+        if proc.poll() is not None:
+            raise RuntimeError(f"browser exited immediately (code {proc.returncode})")
+        time.sleep(0.2)
+    else:
+        raise RuntimeError(f"browser did not open CDP port {port} within 15s")
+
+    state = {"pid": proc.pid, "port": port, "user_data_dir": udd, "headless": headless,
+             "started_at": int(time.time())}
+    _write_state(state)
+    return {"reused": False, **state}
+
+
+def _stop_browser(port: int | None = None) -> dict:
+    """Kill the tracked browser (SIGTERM then SIGKILL). One instance only."""
+    st = _read_state()
+    pid = st.get("pid")
+    port = port or st.get("port") or DEFAULT_CDP_PORT
+    killed = False
+    if pid and _pid_alive(pid):
+        try:
+            os.killpg(os.getpgid(pid), 15) if os.name != "nt" else os.kill(pid, 15)
+        except Exception:  # noqa: BLE001
+            try:
+                os.kill(pid, 15)
+            except Exception:  # noqa: BLE001
+                pass
+        for _ in range(25):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.2)
+        if _pid_alive(pid):
+            try:
+                os.killpg(os.getpgid(pid), 9) if os.name != "nt" else os.kill(pid, 9)
+            except Exception:  # noqa: BLE001
+                pass
+        killed = True
+    _write_state({})
+    return {"status": "closed" if killed else "nothing-to-close", "port": port, "pid": pid}
+
+
+# ─── web_screenshot / web_browser ────────────────────────────────────────────
+
+def web_screenshot(params: dict) -> dict:
+    """Render a URL in Chromium and save a PNG.
+
+    Params:
+      url                 required; https:// is added if scheme is missing
+      delay               seconds to sleep AFTER load before shooting (default 1.5)
+      wait_until          load | domcontentloaded | networkidle | commit (default load)
+      wait_for_selector   CSS selector to wait for before shooting
+      width / height      viewport size (default 1440x900)
+      full_page           capture the whole scrollable page (default true)
+      headless            default true
+      timeout_ms          navigation timeout in ms (default 30000)
+      device_scale_factor default 1
+      user_agent          override UA string
+      dark_mode           emulate prefers-color-scheme: dark
+      keep_alive          reuse/keep ONE browser running for later runs (default false)
+      cdp_port            remote-debugging port for keep_alive (default 9222)
+      user_data_dir       profile dir for the persistent browser
+      fresh_page          open a brand-new page instead of reusing the last one
+      save_path           output PNG path
+    """
+    url = str(params.get("url") or "").strip()
+    if not url:
+        return {"error": "web_screenshot requires 'url'"}
+    if "://" not in url:
+        url = "https://" + url
+
+    save_path = params.get("save_path") or str(
+        default_output_dir() / f"web_{int(time.time())}.png"
+    )
+    Path(save_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    save_path = str(Path(save_path).expanduser())
+
+    width = int(_num(params, "width", 1440))
+    height = int(_num(params, "height", 900))
+    delay = _num(params, "delay", 1.5)
+    timeout_ms = int(_num(params, "timeout_ms", 30000))
+    scale = _num(params, "device_scale_factor", 1)
+
+    wait_until = str(params.get("wait_until") or "load").lower()
+    if wait_until not in ("load", "domcontentloaded", "networkidle", "commit"):
+        wait_until = "load"
+
+    full_page = bool(params.get("full_page", True))
+    headless = bool(params.get("headless", True))
+    dark = bool(params.get("dark_mode", False))
+    keep_alive = bool(params.get("keep_alive", False))
+    fresh_page = bool(params.get("fresh_page", False))
+    port = int(_num(params, "cdp_port", DEFAULT_CDP_PORT))
+    selector = params.get("wait_for_selector") or None
+    user_agent = params.get("user_agent") or None
+    udd = params.get("user_data_dir") or None
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"error": "playwright not installed in this Python env"}
+
+    warnings: list[str] = []
+    started = time.time()
+
+    with sync_playwright() as p:
+        # ── persistent (CDP) mode ──
+        if keep_alive:
+            try:
+                info = _spawn_browser(port, headless, udd)
+            except RuntimeError as e:
+                return {"error": str(e)}
+            try:
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=15000)
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"CDP connect failed on port {port}: {e}"}
+
+            try:
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context(
+                    viewport={"width": width, "height": height},
+                    device_scale_factor=max(scale, 0.5),
+                    color_scheme="dark" if dark else "light",
+                    user_agent=user_agent,
+                )
+                pages = ctx.pages
+                if fresh_page or not pages:
+                    page = ctx.new_page()
+                else:
+                    page = pages[-1]
+                page.set_default_timeout(timeout_ms)
+
+                # A reused Chrome context keeps the OS window size and ignores
+                # the context viewport, so pin the page explicitly.
+                try:
+                    page.set_viewport_size({"width": width, "height": height})
+                except Exception as e:  # noqa: BLE001
+                    warnings.append(f"viewport: {str(e).splitlines()[0][:160]}")
+
+                resp = None
+                try:
+                    resp = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                except Exception as e:  # noqa: BLE001
+                    warnings.append(f"navigation: {str(e).splitlines()[0][:200]}")
+                if selector:
+                    try:
+                        page.wait_for_selector(selector, timeout=timeout_ms)
+                    except Exception as e:  # noqa: BLE001
+                        warnings.append(f"selector {selector!r}: {str(e).splitlines()[0][:160]}")
+                if delay > 0:
+                    page.wait_for_timeout(int(delay * 1000))
+
+                page.screenshot(path=save_path, full_page=full_page)
+                try:
+                    title = page.title()
+                except Exception:  # noqa: BLE001
+                    title = ""
+
+                result: dict[str, Any] = {
+                    "path": save_path,
+                    "status": "ok",
+                    "url": page.url,
+                    "title": title,
+                    "http_status": resp.status if resp is not None else None,
+                    "viewport": f"{width}x{height}",
+                    "full_page": full_page,
+                    "delay": delay,
+                    "elapsed": round(time.time() - started, 2),
+                    "browser": {
+                        "mode": "persistent",
+                        "kept_alive": True,
+                        "reused": info.get("reused", False),
+                        "pid": info.get("pid"),
+                        "port": port,
+                        "user_data_dir": info.get("user_data_dir"),
+                        "pages_open": len(ctx.pages),
+                    },
+                }
+                if warnings:
+                    result["warnings"] = warnings
+                # Deliberately NO browser.close() — the whole point is to keep it.
+                return result
+            finally:
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001 - disconnect only, chrome survives
+                    pass
+
+        # ── ephemeral mode (one-shot, browser dies with the run) ──
+        try:
+            browser = _launch_chromium(p, headless)
+        except RuntimeError as e:
+            return {"error": str(e)}
+        try:
+            context = browser.new_context(
+                viewport={"width": width, "height": height},
+                device_scale_factor=max(scale, 0.5),
+                color_scheme="dark" if dark else "light",
+                user_agent=user_agent,
+            )
+            page = context.new_page()
+            page.set_default_timeout(timeout_ms)
+
+            resp = None
+            try:
+                resp = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            except Exception as e:  # noqa: BLE001 - shoot whatever rendered anyway
+                warnings.append(f"navigation: {str(e).splitlines()[0][:200]}")
+
+            if selector:
+                try:
+                    page.wait_for_selector(selector, timeout=timeout_ms)
+                except Exception as e:  # noqa: BLE001
+                    warnings.append(f"selector {selector!r}: {str(e).splitlines()[0][:160]}")
+
+            if delay > 0:
+                page.wait_for_timeout(int(delay * 1000))
+
+            page.screenshot(path=save_path, full_page=full_page)
+
+            try:
+                title = page.title()
+            except Exception:  # noqa: BLE001
+                title = ""
+            final_url = page.url
+
+            result = {
+                "path": save_path,
+                "status": "ok",
+                "url": final_url,
+                "title": title,
+                "http_status": resp.status if resp is not None else None,
+                "viewport": f"{width}x{height}",
+                "full_page": full_page,
+                "delay": delay,
+                "elapsed": round(time.time() - started, 2),
+                "browser": {"mode": "ephemeral", "kept_alive": False},
+            }
+            if warnings:
+                result["warnings"] = warnings
+            context.close()
+            return result
+        finally:
+            browser.close()
+
+
+def web_browser(params: dict) -> dict:
+    """Lifecycle for the ONE persistent browser.
+
+    Params:
+      op          status | start | close   (default status)
+      cdp_port    default 9222
+      headless    default true
+      user_data_dir
+      pages       for status: list open page URLs (default true)
+    """
+    op = str(params.get("op") or "status").lower()
+    port = int(_num(params, "cdp_port", DEFAULT_CDP_PORT))
+    st = _read_state()
+
+    if op == "close":
+        return _stop_browser(port)
+
+    if op == "start":
+        try:
+            info = _spawn_browser(
+                port,
+                bool(params.get("headless", True)),
+                params.get("user_data_dir") or None,
+            )
+        except RuntimeError as e:
+            return {"error": str(e)}
+        return {"status": "running", **info}
+
+    if op != "status":
+        return {"error": f"unknown op {op!r} (use status|start|close)"}
+
+    running = _port_open(port)
+    out: dict[str, Any] = {
+        "status": "running" if running else "stopped",
+        "port": port,
+        "pid": st.get("pid"),
+        "pid_alive": _pid_alive(st.get("pid") or 0),
+        "user_data_dir": st.get("user_data_dir"),
+    }
+    if running and params.get("pages", True):
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                b = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=8000)
+                urls: list[str] = []
+                for ctx in b.contexts:
+                    urls.extend(pg.url for pg in ctx.pages)
+                out["pages"] = urls
+                try:
+                    b.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as e:  # noqa: BLE001
+            out["pages_error"] = str(e).splitlines()[0][:160]
+    return out
+
+
+# ─── Entrypoint ──────────────────────────────────────────────────────────────
+
+# Actions that do not belong to a platform-specific desktop backend.
+_BROWSER_ACTIONS = {"web_screenshot": web_screenshot, "web_browser": web_browser}
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "No JSON input provided"}))
@@ -1056,16 +1505,20 @@ def main():
         print(json.dumps({"error": "Missing 'action' parameter"}))
         sys.exit(1)
 
-    backend = get_backend()
-    handler = getattr(backend, action, None)
+    handler = _BROWSER_ACTIONS.get(action)
     if handler is None:
-        print(json.dumps({"error": f"Unknown action: {action}", "platform": PLATFORM}))
-        sys.exit(1)
+        backend = get_backend()
+        handler = getattr(backend, action, None)
+        if handler is None:
+            print(json.dumps({"error": f"Unknown action: {action}", "platform": PLATFORM}))
+            sys.exit(1)
 
     try:
         result = handler(params)
         result["platform"] = PLATFORM
         print(json.dumps(result, indent=2))
+        if result.get("error"):
+            sys.exit(2)
     except Exception as e:
         print(json.dumps({"error": str(e), "action": action, "platform": PLATFORM}))
         sys.exit(1)

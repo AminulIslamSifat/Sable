@@ -22,9 +22,97 @@
             "clipboard_get",
             "clipboard_set",
             "screen_info",
-            "screen_parse"
+            "screen_parse",
+            "web_screenshot",
+            "web_browser"
           ],
-          "description": "The action to perform."
+          "description": "The action to perform. Use web_screenshot to capture a web page (headless Chromium/Playwright, not the desktop), and web_browser to manage the one persistent browser instance."
+        },
+        "url": {
+          "type": "string",
+          "description": "For web_screenshot: page URL. https:// is added automatically if the scheme is missing."
+        },
+        "delay": {
+          "type": "number",
+          "description": "For web_screenshot: seconds to wait AFTER the page loads before capturing (lets JS/animations/fonts settle). Default 1.5. Use 0 to shoot immediately.",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "wait_until": {
+          "type": "string",
+          "enum": ["load", "domcontentloaded", "networkidle", "commit"],
+          "description": "For web_screenshot: navigation event to wait for. 'networkidle' = no network for 500ms (best for SPAs). Default 'load'."
+        },
+        "wait_for_selector": {
+          "type": "string",
+          "description": "For web_screenshot: CSS selector to wait for before capturing (e.g. '.chart-loaded')."
+        },
+        "width": {
+          "type": "integer",
+          "description": "For web_screenshot: viewport width in px. Default 1440.",
+          "minimum": 200,
+          "maximum": 5000
+        },
+        "height": {
+          "type": "integer",
+          "description": "For web_screenshot: viewport height in px. Default 900.",
+          "minimum": 200,
+          "maximum": 5000
+        },
+        "full_page": {
+          "type": "boolean",
+          "description": "For web_screenshot: capture the entire scrollable page (true, default) or just the viewport (false)."
+        },
+        "headless": {
+          "type": "boolean",
+          "description": "For web_screenshot/web_browser: run Chromium without a visible window. Default true."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "For web_screenshot: navigation/selector timeout in milliseconds. Default 30000.",
+          "minimum": 1000,
+          "maximum": 180000
+        },
+        "device_scale_factor": {
+          "type": "number",
+          "description": "For web_screenshot: pixel density. 2 = retina-sharp PNG. Default 1.",
+          "minimum": 0.5,
+          "maximum": 4
+        },
+        "user_agent": {
+          "type": "string",
+          "description": "For web_screenshot: override the User-Agent string."
+        },
+        "dark_mode": {
+          "type": "boolean",
+          "description": "For web_screenshot: emulate prefers-color-scheme: dark. Default false."
+        },
+        "keep_alive": {
+          "type": "boolean",
+          "description": "For web_screenshot: keep ONE Chromium instance running between calls so the next run reuses it (cookies, login, tabs persist). Default false. Use web_browser op=close to shut it down."
+        },
+        "fresh_page": {
+          "type": "boolean",
+          "description": "For web_screenshot with keep_alive: open a new tab instead of reusing the last one. Default false."
+        },
+        "cdp_port": {
+          "type": "integer",
+          "description": "For web_screenshot/web_browser: remote-debugging port of the persistent browser. Default 9222.",
+          "minimum": 1024,
+          "maximum": 65535
+        },
+        "user_data_dir": {
+          "type": "string",
+          "description": "For web_screenshot/web_browser: Chrome profile directory for the persistent browser. Default ~/sable_output/browser/profile."
+        },
+        "op": {
+          "type": "string",
+          "enum": ["status", "start", "close"],
+          "description": "For web_browser: status = is the persistent browser up + list its pages; start = launch it without taking a screenshot; close = kill it."
+        },
+        "pages": {
+          "type": "boolean",
+          "description": "For web_browser op=status: include the open page URLs. Default true."
         },
         "x": {
           "type": "integer",
@@ -135,6 +223,14 @@
         },
         {
           "properties": {"action": {"const": "screenshot"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "web_screenshot"}},
+          "required": ["action", "url"]
+        },
+        {
+          "properties": {"action": {"const": "web_browser"}},
           "required": ["action"]
         },
         {
