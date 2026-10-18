@@ -666,23 +666,37 @@ class BaseBrowserEngine:
         except Exception:
             return False
 
-    async def _wait_for_send_enabled(self, timeout: float = 10.0) -> bool:
+    async def _wait_for_send_enabled(self, timeout: float = 3.0) -> bool:
+        """Wait until the send button is genuinely actionable.
+
+        Claude's composer is Tailwind-based: the class attribute permanently
+        carries variant tokens like `disabled:opacity-40
+        disabled:pointer-events-none`. A substring test on `class` therefore
+        NEVER passes, and the old loop burned its entire 10s timeout on every
+        send before falling through to the Enter-key path. Ask the DOM for the
+        real enabled state instead — the `disabled` property, `aria-disabled`,
+        and computed pointer-events are what actually gate the click.
+        """
         sel = self.spec.sel("send_btn")
         if not sel:
             return True
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                btn = self.page.locator(sel).first
-                if await btn.count() > 0:
-                    classes = (await btn.get_attribute("class") or "").lower()
-                    disabled = await btn.get_attribute("aria-disabled")
-                    if "disabled" not in classes and disabled != "true":
-                        return True
-            except Exception:
-                pass
-            await asyncio.sleep(0.4)
-        return False
+        try:
+            await self.page.locator(sel).first.wait_for(
+                state="visible", timeout=timeout * 1000
+            )
+            await self.page.wait_for_function(
+                """(sel) => {
+                    const b = document.querySelector(sel);
+                    return !!b && !b.disabled
+                        && b.getAttribute('aria-disabled') !== 'true'
+                        && getComputedStyle(b).pointerEvents !== 'none';
+                }""",
+                arg=sel,
+                timeout=timeout * 1000,
+            )
+            return True
+        except Exception:
+            return False
 
     # -- chat lifecycle --------------------------------------------------
 
@@ -838,7 +852,7 @@ class BaseBrowserEngine:
                 if not filled:
                     await field.fill(message)
 
-                await self._wait_for_send_enabled()
+                send_ready = await self._wait_for_send_enabled()
                 await self._ensure_fetch_patched()
                 self._reset_sse_capture()
 
@@ -863,16 +877,15 @@ class BaseBrowserEngine:
 
                 send_sel = self.spec.sel("send_btn")
                 sent = False
-                if send_sel:
+                if send_sel and send_ready:
                     try:
-                        btn = self.page.locator(send_sel).first
-                        classes = (await btn.get_attribute("class") or "").lower()
-                        if "disabled" not in classes:
-                            await btn.click()
-                            sent = True
-                    except Exception:
-                        pass
+                        await self.page.locator(send_sel).first.click(timeout=2000)
+                        sent = True
+                    except Exception as exc:
+                        self._log("send_click_failed", error=str(exc))
                 if not sent:
+                    # Button never became actionable (or the click was
+                    # swallowed) — Enter is the composer's own submit path.
                     await self.page.keyboard.press(self.spec.keys.get("send", "Enter"))
 
                 stop_sel = self.spec.sel("stop")
