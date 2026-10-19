@@ -650,7 +650,46 @@ def chat_messages(
             (chat_id,),
         ).fetchone()
         context_chars = msg_chars + (tool_row["tool_total"] if tool_row else 0)
+    # The system instruction occupies real context too — include it so the
+    # status-bar ring matches the breakdown popup.
+    context_chars += _system_instruction_chars(chat_id)
     return {"chat_id": chat_id, "messages": messages, "context_chars": context_chars}
+
+
+# System instruction is built by reading many files — cache it briefly so
+# opening the popup repeatedly doesn't re-read the whole instruction tree.
+_SYS_CHARS_CACHE: dict[str, tuple[float, int]] = {}
+_SYS_CHARS_TTL = 60.0
+
+
+def _system_instruction_chars(chat_id: str) -> int:
+    """Character length of the system instruction sent with this chat.
+
+    Mirrors chat.py: agent sub-chats carry their own prompt, otherwise the
+    full instruction bundle (persona + tool schemas) is built per project.
+    """
+    import time as _t
+
+    try:
+        from server.database import get_chat_project_id
+        project_id = get_chat_project_id(chat_id)
+    except Exception:
+        project_id = None
+
+    cache_key = project_id or ""
+    cached = _SYS_CHARS_CACHE.get(cache_key)
+    if cached and (_t.time() - cached[0]) < _SYS_CHARS_TTL:
+        return cached[1]
+
+    chars = 0
+    try:
+        from connectors.common.instruction_builder import build_instructions
+        chars = len(build_instructions(project_id=project_id) or "")
+    except Exception as exc:
+        logger.warning("system instruction sizing failed: %s", exc)
+
+    _SYS_CHARS_CACHE[cache_key] = (_t.time(), chars)
+    return chars
 
 
 @router.get("/api/chats/{chat_id}/context-breakdown")
@@ -673,6 +712,13 @@ def context_breakdown(chat_id: str) -> dict[str, Any]:
             "WHERE m.chat_id = ?",
             (chat_id,),
         ).fetchall()
+        # Cumulative tokens actually consumed by this chat (all turns)
+        tok_row = conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(prompt_tokens, 0)), 0) AS pt, "
+            "COALESCE(SUM(COALESCE(completion_tokens, 0)), 0) AS ct "
+            "FROM messages WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
 
     user_chars = 0
     assistant_chars = 0
@@ -687,13 +733,25 @@ def context_breakdown(chat_id: str) -> dict[str, Any]:
     # Sum tool chars directly from event_data
     tool_chars = sum(len(tr["event_data"] or "") for tr in tool_rows)
 
-    total = user_chars + assistant_chars + thinking_chars + tool_chars
+    system_chars = _system_instruction_chars(chat_id)
+
+    total = system_chars + user_chars + assistant_chars + thinking_chars + tool_chars
+
+    # Cumulative usage across the whole conversation (not the context window)
+    prompt_tokens = tok_row["pt"] if tok_row else 0
+    completion_tokens = tok_row["ct"] if tok_row else 0
+
     return {
         "total": total,
+        "system": system_chars,
         "user": user_chars,
         "assistant": assistant_chars,
         "thinking": thinking_chars,
         "tool": tool_chars,
+        # Cumulative token usage for the entire chat
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "usage_tokens": prompt_tokens + completion_tokens,
     }
 
 

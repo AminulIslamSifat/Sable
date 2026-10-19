@@ -1645,10 +1645,13 @@
     await loadMonaco();
 
     const [origRes, modRes] = await Promise.all([
-      fetch("/api/filesystem/read?path=" + encodeURIComponent(backupPath)),
+      backupPath
+        ? fetch("/api/filesystem/read?path=" + encodeURIComponent(backupPath))
+        : Promise.resolve(null),
       fetch("/api/filesystem/read?path=" + encodeURIComponent(path)),
     ]);
-    const origData = await origRes.json();
+    // No backup (created file) → diff against an empty buffer
+    const origData = origRes ? await origRes.json() : { content: "" };
     const modData = await modRes.json();
 
     if (origData.binary || modData.binary) {

@@ -214,42 +214,75 @@ def _extract_actions_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
 
 # All DSML regexes use _P / _PO defined above (one-or-more / zero-or-more pipes).
 
-_DSML_OPEN_RE = re.compile(rf'<{_PO}DSML{_P}tool_calls>')
-_DSML_CLOSE_RE = re.compile(rf'</{_PO}DSML{_P}tool_calls>')
+# \s* after the marker: models emit `<｜｜DSML｜｜ calls>` and
+# `<｜｜DSML｜｜ tool_calls>` with a space, and `calls` without `tool_`.
+_DSML_WRAP = rf'<{_PO}DSML{_P}\s*(?:tool_)?calls\s*>'
+_DSML_OPEN_RE = re.compile(_DSML_WRAP, re.IGNORECASE)
+_DSML_CLOSE_RE = re.compile(rf'</{_PO}DSML{_P}\s*(?:tool_)?calls\s*>', re.IGNORECASE)
 
 # For streaming buffer detection — regex-based to handle any pipe count.
 _DSML_OPEN_SEARCH_RE = _DSML_OPEN_RE   # same pattern
 _DSML_CLOSE_SEARCH_RE = _DSML_CLOSE_RE  # same pattern
 
+# Attribute order and the DSML marker on CLOSE tags are both unreliable:
+# models emit `string=` before `name=`, bare `name=x`, and close with a plain
+# `</invoke>` / `</parameter>` that dropped the marker entirely. Capture the
+# whole attribute group and parse it order-independently.
+# Close tags may DROP the DSML marker entirely (</invoke>, </parameter>) and
+# may carry a space after the pipes (</｜｜DSML｜｜ invoke>).
+_DO = rf'(?:{_PO}DSML{_P}\s*)?'
+
 _DSML_INVOKE_RE = re.compile(
-    rf'<{_PO}DSML{_P}invoke\s+name="([^"]+)">(.*?)</{_PO}DSML{_P}invoke>',
-    re.DOTALL,
+    rf'<{_PO}DSML{_P}\s*invoke\b([^>]*)>(.*?)</{_DO}invoke\s*>',
+    re.DOTALL | re.IGNORECASE,
 )
 
 _DSML_PARAM_RE = re.compile(
-    rf'<{_PO}DSML{_P}parameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</{_PO}DSML{_P}parameter>',
-    re.DOTALL,
+    rf'<{_PO}DSML{_P}\s*parameter\b([^>]*)>(.*?)</{_DO}parameter\s*>',
+    re.DOTALL | re.IGNORECASE,
 )
+
+# Open-only param tag — lets a still-streaming block surface its args.
+_DSML_PARAM_OPEN_RE = re.compile(rf'<{_PO}DSML{_P}parameter\b([^>]*)>', re.IGNORECASE)
+
+_XML_ATTR_RE = re.compile(r"([A-Za-z_:][\w:.\-]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>/]+))")
+
+
+def _parse_xml_attrs(raw: str) -> dict[str, str | None]:
+    """Extract attributes from a raw XML attribute string (order-independent)."""
+    found: dict[str, str] = {}
+    for m in _XML_ATTR_RE.finditer(raw or ""):
+        key = m.group(1).lower()
+        if key not in found:
+            found[key] = next((g for g in m.groups()[1:] if g is not None), "")
+    return {"name": found.get("name") or None, "string": found.get("string")}
+
+
+def _coerce_xml_param(raw_val: str, type_hint: str | None) -> Any:
+    """Coerce an XML param using its optional ``string`` hint (see parser.py)."""
+    if type_hint is not None and type_hint.lower() == "true":
+        return raw_val
+    try:
+        return json.loads(raw_val)
+    except (json.JSONDecodeError, ValueError):
+        return raw_val
 
 
 def _parse_dsml_block(block_text: str) -> list[dict[str, Any]]:
     """Parse a complete DSML tool_calls block into canonical function_call dicts."""
     calls: list[dict[str, Any]] = []
     for inv_match in _DSML_INVOKE_RE.finditer(block_text):
-        fn_name = inv_match.group(1)
+        fn_name = (_parse_xml_attrs(inv_match.group(1))["name"] or "").strip()
+        if not fn_name:
+            continue
         params_text = inv_match.group(2)
         args: dict[str, Any] = {}
         for p_match in _DSML_PARAM_RE.finditer(params_text):
-            pname = p_match.group(1)
-            is_string = p_match.group(2) == "true"
-            raw_val = p_match.group(3).strip()
-            if is_string:
-                args[pname] = raw_val
-            else:
-                try:
-                    args[pname] = json.loads(raw_val)
-                except (json.JSONDecodeError, TypeError):
-                    args[pname] = raw_val
+            info = _parse_xml_attrs(p_match.group(1))
+            pname = info["name"]
+            if not pname:
+                continue
+            args[pname] = _coerce_xml_param(p_match.group(2).strip(), info["string"])
         calls.append({"type": "function_call", "name": fn_name, "args": args})
     return calls
 
@@ -269,9 +302,26 @@ def _extract_dsml_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
             return ""
         return inner  # malformed — leave as-is
 
-    # Match all ASCII/fullwidth pipe variants
-    pattern = rf'<{_PO}DSML{_P}tool_calls>.*?</{_PO}DSML{_P}tool_calls>'
-    cleaned = re.sub(pattern, _replace, text, flags=re.DOTALL)
+    # Match all ASCII/fullwidth pipe variants (space + bare `calls` tolerated)
+    _open = rf'<{_PO}DSML{_P}\s*(?:tool_)?calls\s*>'
+    _close = rf'</{_PO}DSML{_P}\s*(?:tool_)?calls\s*>'
+    pattern = rf'{_open}.*?{_close}'
+    cleaned = re.sub(pattern, _replace, text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Drift fallback: the wrapper closed with the generic </action> /
+    # </tool_call> instead of a DSML close tag. Without this the block is left
+    # in the prose and only its orphaned tags get scrubbed — the call is LOST.
+    if not calls:
+        drift_open = re.search(_open, cleaned, re.IGNORECASE)
+        if drift_open:
+            drift_close = re.search(r'</\s*(?:action|tool_calls?)\s*>', cleaned[drift_open.end():], re.IGNORECASE)
+            if drift_close:
+                _end = drift_open.end() + drift_close.end()
+                _block = cleaned[drift_open.start():_end]
+                _parsed = _parse_dsml_block(_block)
+                if _parsed:
+                    calls.extend(_parsed)
+                    cleaned = cleaned[:drift_open.start()] + cleaned[_end:]
     return cleaned, calls
 
 

@@ -154,20 +154,44 @@
           const maxChars = entry?.max_session_chars || window._statusContextMax || 100000;
           const fmt = v => (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
           const rows = [
+            ['System', d.system || 0, '#64748b'],
             ['User', d.user || 0, 'var(--accent)'],
             ['Assistant', d.assistant || 0, '#8b5cf6'],
             ['Thinking', d.thinking || 0, '#f59e0b'],
             ['Tool', d.tool || 0, '#10b981'],
           ];
           const totalPct = maxChars > 0 ? Math.min(100, (total / maxChars) * 100).toFixed(1) : '0.0';
+          // char/4 heuristic — same constant as engine/token_counter.py
+          const toks = v => Math.round((v || 0) / 4);
           let html = '<div style="padding:6px 10px 4px;font-weight:600;color:var(--text);font-size:10px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:2px;">Context — ' + fmt(total) + '/' + fmt(maxChars) + ' (' + totalPct + '%)</div>';
           for (const [label, val, color] of rows) {
             const pct = total > 0 ? Math.round(val / total * 100) : 0;
             html += '<div style="display:flex;align-items:center;gap:6px;padding:3px 10px;">'
               + '<span style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0;"></span>'
               + '<span style="flex:1;font-size:10px;">' + label + '</span>'
-              + '<span style="color:var(--text-dim);font-size:10px;font-variant-numeric:tabular-nums;">' + fmt(val) + ' (' + pct + '%)</span></div>'
+              + '<span style="color:var(--text-dim);font-size:10px;font-variant-numeric:tabular-nums;">' + fmt(val) + ' (' + pct + '%)</span>'
+              + '<span style="color:var(--muted);font-size:9px;font-variant-numeric:tabular-nums;min-width:34px;text-align:right;">' + toks(val) + 't</span></div>'
               + '<div style="height:3px;background:var(--panel-2);border-radius:2px;margin:0 10px 2px 24px;"><div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:2px;"></div></div>';
+          }
+          // Cumulative usage for the whole conversation — distinct from the
+          // context window above (that's what's *currently loaded*).
+          const usageTotal = d.usage_tokens || 0;
+          if (usageTotal > 0) {
+            const fmtTok = v => {
+              if (v >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
+              if (v >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+              return String(v);
+            };
+            html += '<div style="padding:5px 10px 2px;margin-top:3px;border-top:1px solid rgba(255,255,255,0.06);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Total usage</div>'
+              + '<div style="display:flex;align-items:center;gap:6px;padding:2px 10px;">'
+              + '<span style="flex:1;font-size:10px;">Prompt</span>'
+              + '<span style="color:var(--text-dim);font-size:10px;font-variant-numeric:tabular-nums;">' + fmtTok(d.prompt_tokens || 0) + '</span></div>'
+              + '<div style="display:flex;align-items:center;gap:6px;padding:2px 10px;">'
+              + '<span style="flex:1;font-size:10px;">Completion</span>'
+              + '<span style="color:var(--text-dim);font-size:10px;font-variant-numeric:tabular-nums;">' + fmtTok(d.completion_tokens || 0) + '</span></div>'
+              + '<div style="display:flex;align-items:center;gap:6px;padding:3px 10px 5px;">'
+              + '<span style="flex:1;font-size:10px;font-weight:600;color:var(--text);">Total</span>'
+              + '<span style="color:var(--accent-text);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;">' + fmtTok(usageTotal) + '</span></div>';
           }
           popup.innerHTML = html;
           requestAnimationFrame(() => { popup.style.opacity = '1'; popup.style.transform = 'translateY(0) scale(1)'; popup.style.pointerEvents = 'auto'; });

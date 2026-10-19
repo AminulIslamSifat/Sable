@@ -458,8 +458,12 @@
       name.textContent = evt.name || evt.path || "file";
       name.title = evt.path || "";
       name.addEventListener("click", () => {
-        if (evt.backup_path && typeof window.openDiffEditor === "function") {
+        if (typeof window.openDiffEditor !== "function") return;
+        if (evt.backup_path) {
           window.openDiffEditor(evt.path, evt.backup_path, evt.name || evt.path);
+        } else if (evt.op === "create") {
+          // Created file: no backup exists, diff against an empty buffer
+          window.openDiffEditor(evt.path, null, evt.name || evt.path);
         }
       });
 

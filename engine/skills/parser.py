@@ -368,6 +368,42 @@ def parse_attrs(raw) -> dict[str, str]:
 
 
 
+# XML attribute pair — quoted (single/double) OR bare. Models emit both:
+#   name="command"   string="true"   name=command   string=true
+_XML_ATTR_RE = re.compile(r"([A-Za-z_:][\w:.\-]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>/]+))")
+
+
+def _parse_xml_attrs(raw: str) -> dict[str, str | None]:
+    """Extract attributes from a raw XML attribute string.
+
+    Returns ``{"name": ..., "string": ...}`` with ``None`` for absent attrs.
+    Order-independent on purpose: models write ``string`` before ``name`` as
+    often as after, and the old positional regexes silently dropped those.
+    """
+    found: dict[str, str] = {}
+    for m in _XML_ATTR_RE.finditer(raw or ""):
+        key = m.group(1).lower()
+        if key not in found:
+            found[key] = next((g for g in m.groups()[1:] if g is not None), "")
+    return {"name": found.get("name") or None, "string": found.get("string")}
+
+
+def _coerce_xml_param(raw_val: str, type_hint: str | None) -> Any:
+    """Coerce an XML parameter value using its optional ``string`` hint.
+
+    string="true"  -> keep verbatim (protects `false`, `007`, and JSON-looking
+                       payloads from being mangled into bools/ints)
+    string="false" -> JSON-decode; falls back to raw string
+    no hint        -> auto-detect: JSON-decode, fall back to raw string
+    """
+    if type_hint is not None and type_hint.lower() == "true":
+        return raw_val
+    try:
+        return json.loads(raw_val)
+    except (json.JSONDecodeError, ValueError):
+        return raw_val
+
+
 def _stringify_params(params: dict[str, Any]) -> dict[str, str]:
     """Convert JSON params to string dict for handler compatibility."""
     result: dict[str, str] = {}
@@ -692,22 +728,29 @@ class SkillParser:
     _DSML_OPEN = re.compile(rf"<{_D}?DSML{_D}\s*(?:tool_)?calls\s*>", re.I)
     # /? on close tags: handles both proper </DSML...> and bare <DSML...> as close
     _DSML_CLOSE = re.compile(rf"</?{_D}?DSML{_D}\s*(?:tool_)?calls\s*>", re.I)
+    # Optional DSML marker — models drop it on CLOSE tags constantly
+    # (``</invoke>``, ``</parameter>`` instead of ``</｜DSML｜invoke>``).
+    _DO = rf"(?:{_D}?DSML{_D}\s*)?"
+    # Attribute group: any attrs in any order, quoted or bare. Parsed by
+    # _parse_xml_attrs so attr ORDER (name= before/after string=) never matters.
     _DSML_INVOKE_RE = re.compile(
-        rf'<{_D}?DSML{_D}\s*invoke\s+name="([^"]+)"\s*>(.*?)</?{_D}?DSML{_D}\s*invoke\s*>',
-        re.DOTALL,
+        rf'<{_D}?DSML{_D}\s*invoke\b([^>]*)>(.*?)</?{_DO}invoke\s*>',
+        re.DOTALL | re.I,
     )
     _DSML_PARAM_RE = re.compile(
-        rf'<{_D}?DSML{_D}\s*parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</?{_D}?DSML{_D}\s*parameter\s*>',
-        re.DOTALL,
+        rf'<{_D}?DSML{_D}\s*parameter\b([^>]*)>(.*?)</?{_DO}parameter\s*>',
+        re.DOTALL | re.I,
     )
+    # Any param open tag (possibly still streaming) — used for card previews.
+    _PARAM_OPEN_RE = re.compile(rf'<{_D}?DSML{_D}\s*parameter\b([^>]*)>', re.I)
     # Legacy XML invoke/parameter (Qwen3 XML fallback, older DeepSeek drift)
     _LEGACY_INVOKE_RE = re.compile(
-        r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke\s*>',
-        re.DOTALL,
+        r'<invoke\b([^>]*)>(.*?)</invoke\s*>',
+        re.DOTALL | re.I,
     )
     _LEGACY_PARAM_RE = re.compile(
-        r'<parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>(.*?)</parameter\s*>',
-        re.DOTALL,
+        r'<parameter\b([^>]*)>(.*?)</parameter\s*>',
+        re.DOTALL | re.I,
     )
     _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls\s*>", re.I)
     _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls\s*>", re.I)
@@ -1022,7 +1065,16 @@ class SkillParser:
                 # Skip if an opening tag is also present — the close tag belongs
                 # to it and will be handled by the normal close-boundary logic.
                 _orphan_close = self._ACTION_CLOSE.search(self.buf)
-                if _orphan_close is not None and not self._ACTION_OPEN.search(self.buf):
+                # A DSML / legacy-XML block may legitimately end with a generic
+                # </action> or </tool_call>, so an "orphan" close is NOT orphaned
+                # when one of those wrappers is open. Without this the DSML
+                # block is flushed as prose before its own parser ever sees it.
+                _has_open_wrapper = (
+                    self._ACTION_OPEN.search(self.buf)
+                    or self._DSML_OPEN.search(self.buf)
+                    or self._LEGACY_BLOCK_OPEN.search(self.buf)
+                )
+                if _orphan_close is not None and not _has_open_wrapper:
                     # Silently strip orphan close tags — they're leftover fragments, not prose
                     _before_close = self.buf[:_orphan_close.start()]
                     _after_close = self.buf[_orphan_close.end():]
@@ -1064,6 +1116,15 @@ class SkillParser:
                     if _close_m is None:
                         _alt_close = self._LEGACY_BLOCK_CLOSE if _is_dsml else self._DSML_CLOSE
                         _close_m = _alt_close.search(self.buf, _xml_open_m.end())
+                    # Drift fallback: the model opens a DSML block then closes it
+                    # with the generic </action> / </tool_call> wrapper instead of
+                    # a DSML close tag. Accept that boundary — otherwise the block
+                    # never completes and the raw XML leaks into the prose.
+                    _action_close_m = self._ACTION_CLOSE.search(self.buf, _xml_open_m.end())
+                    if _action_close_m is not None and (
+                        _close_m is None or _action_close_m.start() < _close_m.start()
+                    ):
+                        _close_m = _action_close_m
                     if _close_m is not None:
                         # Complete block found — extract and parse
                         _before_xml = self.buf[:_xml_open_m.start()]
@@ -1390,20 +1451,17 @@ class SkillParser:
         """Parse DSML parameter tags into a dict. Handles string="true|false" typing."""
         attrs: dict[str, Any] = {}
         for m in cls._DSML_PARAM_RE.finditer(inner):
-            pname, is_str, pval = m.group(1), m.group(2), m.group(3).strip()
-            if is_str == "true":
-                attrs[pname] = pval
-            else:
-                try:
-                    attrs[pname] = json.loads(pval)
-                except (json.JSONDecodeError, ValueError):
-                    attrs[pname] = pval
+            info = _parse_xml_attrs(m.group(1))
+            pname = info["name"]
+            if not pname:
+                continue
+            attrs[pname] = _coerce_xml_param(m.group(2).strip(), info["string"])
         return attrs
 
     # Extended legacy param regex that captures optional string="true|false"
     _LEGACY_PARAM_TYPED_RE = re.compile(
-        r'<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</parameter\s*>',
-        re.DOTALL,
+        r'<parameter\b([^>]*)>(.*?)</parameter\s*>',
+        re.DOTALL | re.I,
     )
 
     @classmethod
@@ -1411,20 +1469,11 @@ class SkillParser:
         """Parse legacy XML <parameter> tags. Respects string="true|false" when present."""
         attrs: dict[str, Any] = {}
         for m in cls._LEGACY_PARAM_TYPED_RE.finditer(inner):
-            pname, is_str, pval = m.group(1), m.group(2), m.group(3).strip()
-            if is_str == "true":
-                attrs[pname] = pval
-            elif is_str == "false":
-                try:
-                    attrs[pname] = json.loads(pval)
-                except (json.JSONDecodeError, ValueError):
-                    attrs[pname] = pval
-            else:
-                # No type annotation — auto-detect
-                try:
-                    attrs[pname] = json.loads(pval)
-                except (json.JSONDecodeError, ValueError):
-                    attrs[pname] = pval
+            info = _parse_xml_attrs(m.group(1))
+            pname = info["name"]
+            if not pname:
+                continue
+            attrs[pname] = _coerce_xml_param(m.group(2).strip(), info["string"])
         return attrs
 
     @classmethod
@@ -1457,17 +1506,18 @@ class SkillParser:
         # name (e.g. `cre` on the way to `create_file`) must not be emitted:
         # it would fire a second tool_pending when the real name lands.
         name = ""
-        _m = (
-            self._DSML_INVOKE_RE.search(block)
-            or self._LEGACY_INVOKE_RE.search(block)
-            or self._MIMO_FUNCTION_RE.search(block)
-        )
+        _m = self._DSML_INVOKE_RE.search(block) or self._LEGACY_INVOKE_RE.search(block)
         if _m:
-            name = _m.group(1).strip().lower()
-        else:
-            # Terminated name attribute / function tag — quote or '>' closed.
+            name = (_parse_xml_attrs(_m.group(1))["name"] or "").strip().lower()
+        if not name:
+            _mm = self._MIMO_FUNCTION_RE.search(block)
+            if _mm:
+                name = _mm.group(1).strip().lower()
+        if not name:
+            # Terminated name attribute still streaming toward '>' — only take
+            # it once the closing quote landed, never a half-streamed name.
             _pm = (
-                re.search(r'<invoke\s+name="([^"\s>]+)"', block)
+                re.search(r'<invoke\b[^>]*\bname="([^"\s>]+)"', block, re.I)
                 or re.search(r'<function\s*=\s*([^>\s]+)\s*>', block)
             )
             if _pm:
@@ -1519,34 +1569,40 @@ class SkillParser:
 
         preview_lines: list[str] = []
 
+        def _param_value(*names: str) -> str | None:
+            """Value of the first matching <parameter> by name, still-open tolerant.
+
+            Parses the attribute group instead of assuming a bare
+            ``name="x"`` — extra attrs (string=, order swaps, bare values)
+            would otherwise hide the parameter from the preview.
+            """
+            for _om in SkillParser._PARAM_OPEN_RE.finditer(block):
+                _info = _parse_xml_attrs(_om.group(1))
+                if (_info["name"] or "").strip().lower() not in names:
+                    continue
+                _rest = block[_om.end():]
+                _cut = _rest.find("</parameter")
+                if _cut >= 0:
+                    return _rest[:_cut]
+                return _trim_partial_close(_rest)
+            return None
+
         # path / filename → first line of the card
-        _pm = re.search(r'<parameter\s+name="(?:path|filename)"\s*>([^<]*)', block)
-        if _pm and _pm.group(1).strip():
-            preview_lines.append(_pm.group(1).strip()[:200])
+        _path = _param_value("path", "filename")
+        if _path and _path.strip():
+            preview_lines.append(_path.strip()[:200])
 
         # command → show it verbatim (short; first non-empty line)
-        _cm = re.search(r'<parameter\s+name="command"\s*>(.*)$', block, re.DOTALL)
-        if _cm:
-            _cmd = _cm.group(1)
-            _cut = _cmd.find("</parameter")
-            if _cut >= 0:
-                _cmd = _cmd[:_cut]
-            else:
-                _cmd = _trim_partial_close(_cmd)
+        _cmd = _param_value("command")
+        if _cmd is not None:
             for _ln in _cmd.splitlines():
                 if _ln.strip():
                     preview_lines.append(_ln.strip()[:150])
                     break
 
         # content / body / lines → trailing lines (what is being written now)
-        _bm = re.search(r'<parameter\s+name="(?:content|body|lines)"\s*>(.*)$', block, re.DOTALL)
-        if _bm:
-            _body = _bm.group(1)
-            _cut = _body.find("</parameter")
-            if _cut >= 0:
-                _body = _body[:_cut]
-            else:
-                _body = _trim_partial_close(_body)
+        _body = _param_value("content", "body", "lines")
+        if _body is not None:
             _lines = [ln for ln in _body.splitlines() if ln.strip()]
             for _ln in _lines[-3:]:
                 preview_lines.append(_ln[:150])
@@ -1565,7 +1621,9 @@ class SkillParser:
         found = False
         # Try DSML invoke pattern first
         for m in self._DSML_INVOKE_RE.finditer(block):
-            name = m.group(1).strip()
+            name = (_parse_xml_attrs(m.group(1))["name"] or "").strip()
+            if not name:
+                continue
             params = self._parse_dsml_params(m.group(2))
             content = ""
             for ck in _CONTENT_PARAM_KEYS:
@@ -1583,7 +1641,9 @@ class SkillParser:
             found = True
         # ALSO try legacy invoke/parameter format (handles hybrid blocks)
         for m in self._LEGACY_INVOKE_RE.finditer(block):
-            name = m.group(1).strip()
+            name = (_parse_xml_attrs(m.group(1))["name"] or "").strip()
+            if not name:
+                continue
             params = self._parse_legacy_params(m.group(2))
             content = ""
             for ck in _CONTENT_PARAM_KEYS:
