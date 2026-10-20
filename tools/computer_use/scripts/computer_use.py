@@ -1052,16 +1052,36 @@ _CHROMIUM_BINS = (
 
 DEFAULT_CDP_PORT = 9222
 
+# Headless Chrome defaults WebGL to SwiftShader (CPU rasterizer) — any animated
+# canvas then pegs a core. Force ANGLE onto the real GL driver so headless uses
+# the same GPU path as a normal window. Keep in sync with
+# skills/browser_control/scripts/browser_control.py.
+# NOTE: --use-angle=swiftshader is the OPPOSITE of this — it causes the CPU burn.
+_GPU_ARGS = [
+    "--use-angle=gl",
+    "--enable-webgl",
+    "--ignore-gpu-blocklist",
+    "--enable-gpu-rasterization",
+    "--enable-zero-copy",
+    "--disable-software-rasterizer",
+]
+
+
+def _gpu_args(headless: bool) -> list[str]:
+    """GPU-forcing flags for headless launches; headed already has a real GPU."""
+    return list(_GPU_ARGS) if headless else []
+
 
 def _launch_chromium(p, headless: bool):
+    args = _gpu_args(headless)
     last_err: Exception | None = None
     for channel in _CHROMIUM_CHANNELS:
         try:
-            return p.chromium.launch(headless=headless, channel=channel)
+            return p.chromium.launch(headless=headless, channel=channel, args=args)
         except Exception as e:  # noqa: BLE001 - probe each channel
             last_err = e
     try:
-        return p.chromium.launch(headless=headless)
+        return p.chromium.launch(headless=headless, args=args)
     except Exception as e:  # noqa: BLE001
         last_err = e
     raise RuntimeError(
@@ -1168,6 +1188,7 @@ def _spawn_browser(port: int, headless: bool, user_data_dir: str | None = None) 
     ]
     if headless:
         cmd.append("--headless=new")
+        cmd += _gpu_args(headless)
     if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
         cmd.append("--no-sandbox")
     cmd.append("about:blank")
