@@ -1087,6 +1087,7 @@ def save_qwen_tokens_for_account(
     bx_ua: str,
     bx_umidtoken: str,
     account: str | None = None,
+    bearer: str | None = None,
 ) -> None:
     """Save Qwen WAF tokens for an account. Replaces any existing entry (1 per account)."""
     if not cookies:
@@ -1096,7 +1097,10 @@ def save_qwen_tokens_for_account(
     cookies = sanitize_qwen_cookies(cookies)
     acct = account or _resolve_active_account()
     store = load_qwen_token_store()
-    store[acct] = [{"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}]
+    entry = {"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}
+    if bearer:
+        entry["bearer"] = bearer
+    store[acct] = [entry]
     save_qwen_token_store(store)
 
 

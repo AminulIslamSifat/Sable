@@ -1489,9 +1489,12 @@ async def chat(request: ChatRequest):
         # model receives no attachment reference at all.
         # Uploads return `id` (and `file.id`), not `file_id` — accept either so
         # freshly attached files are forwarded to the model's attachment refs.
-        _uploaded_file_ids = [
+        # claude_scraper keeps bare path strings in resolved_files (the browser
+        # uploads from disk itself), so there are no ids to derive for it.
+        _uploaded_file_ids = [] if _backend == "claude_scraper" else [
             str(rf.get("file_id") or rf.get("id")) for rf in resolved_files
-            if (rf.get("file_id") or rf.get("id")) and str(rf.get("file_id") or rf.get("id")).strip()
+            if isinstance(rf, dict)
+            and (rf.get("file_id") or rf.get("id")) and str(rf.get("file_id") or rf.get("id")).strip()
         ]
         if _uploaded_file_ids:
             _merged = list(request.ref_file_ids or [])
@@ -1813,6 +1816,7 @@ async def chat(request: ChatRequest):
             _ACTIVE_CHAT_STREAMS.add(active_chat_id)
             _agent_run = None
             _agent_killed = False  # Set True on CancelledError to prevent finally from marking completed
+            _done_emitted = False  # Exactly one "done" per stream (see finally block)
             if "-agent-" in active_chat_id:
                 try:
                     from engine.agents import get_runtime
@@ -2765,6 +2769,12 @@ async def chat(request: ChatRequest):
                                 save_chat_url(active_chat_id, _done_url)
                             except Exception as _url_exc:
                                 logger.debug("save_chat_url failed: %s", _url_exc)
+                        # Upstream round finished. Do NOT forward this done and do
+                        # NOT reset the guard: the finally block emits the single
+                        # user-facing "done" with the FINAL parent. Falling through
+                        # to the unconditional `yield sse(event)` below is what
+                        # produced duplicate done events for one round.
+                        continue
                     elif event_type == "chat_not_found":
                         # Upstream Qwen session expired — create new one, inject full history, retry
                         from engine.session import create_new_chat as _create_qwen_chat
@@ -3952,12 +3962,18 @@ async def chat(request: ChatRequest):
             # pointer gets advanced. Only emit "done" when the client is still
             # attached (no GeneratorExit / cancel in flight).
             if not error_message and not _agent_killed:
-                try:
-                    yield sse({"type": "done", "parent_id": final_parent})
-                except (RuntimeError, GeneratorExit):
-                    pass
-                except Exception:
-                    pass
+                # Exactly one "done" per stream. A round that produced its own
+                # done (or a passthrough event) must not be followed by a second
+                # one here — the frontend treats each as an end-of-stream and
+                # double-finalises, and duplicate parent_ids confuse resume.
+                if not _done_emitted:
+                    _done_emitted = True
+                    try:
+                        yield sse({"type": "done", "parent_id": final_parent})
+                    except (RuntimeError, GeneratorExit):
+                        pass
+                    except Exception:
+                        pass
             answer = "".join(answer_parts)
             thinking = "".join(thinking_parts)
             if not answer and skill_events:

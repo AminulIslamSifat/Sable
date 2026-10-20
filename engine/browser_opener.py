@@ -100,7 +100,11 @@ def main() -> None:
 
     try:
         from playwright.sync_api import sync_playwright
-        from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        from engine.platform_paths import (
+            resolve_browser_for_profile,
+            shared_browser_args,
+            BROWSER_IGNORE_DEFAULT_ARGS,
+        )
         profile_name = user_data_dir.name
         exe_path = resolve_browser_for_profile(profile_name)
         # Fixed CDP port so Sable can ATTACH to the browser the user is
@@ -110,14 +114,17 @@ def main() -> None:
         launch_kwargs: dict = dict(
             user_data_dir=str(user_data_dir),
             headless=False,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
+            args=shared_browser_args(exe_path) + [
                 "--disk-cache-size=2097152",
                 "--disable-gpu-shader-cache",
                 "--disable-component-update",
                 f"--remote-debugging-port={cdp_port}",
-            ] + extra_browser_args(exe_path),
+            ],
+            # Same keyring backend as session.py / inpage.py, so a login done
+            # here is decryptable by the ghost + header paths. Mismatched
+            # password-store backends are why cookies written here were
+            # unreadable everywhere else.
+            ignore_default_args=list(BROWSER_IGNORE_DEFAULT_ARGS),
         )
         if exe_path:
             launch_kwargs["executable_path"] = exe_path

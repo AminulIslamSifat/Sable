@@ -51,6 +51,17 @@ MODEL_ROUTES = {
     "mimo-v2.6-flash": "/open-apis",
     "mimo-v2.6-pro-ultraspeed-studio": "/fastchat/open-apis",
 }
+
+# Chat endpoint differs per model — the base path alone is not enough.
+# Verified against a live browser capture (2026-10-20): the UltraSpeed model is
+# served by the /fastchat backend's `bot/chat` route, NOT `react/chat`. The old
+# hardcoded `/react/chat` 404'd for every /fastchat model, which is why
+# UltraSpeed never worked while pro/flash did.
+CHAT_ROUTES = {
+    "mimo-v2.6-pro": "/react/chat",
+    "mimo-v2.6-flash": "/react/chat",
+    "mimo-v2.6-pro-ultraspeed-studio": "/bot/chat",
+}
 DEFAULT_MODEL = "mimo-v2.6-pro"
 
 _ALIASES = {
@@ -67,6 +78,11 @@ def _route_for(model: str | None) -> tuple[str, str]:
     if m not in MODEL_ROUTES:
         m = DEFAULT_MODEL
     return MODEL_ROUTES[m], m
+
+
+def _chat_path_for(model_id: str) -> str:
+    """Chat endpoint for a resolved model id (see CHAT_ROUTES)."""
+    return CHAT_ROUTES.get(model_id, "/react/chat")
 
 
 _instruction_cache: str | None = None
@@ -183,6 +199,18 @@ class MiMoClient:
             raise RuntimeError("no userId cookie")
         if not ph:
             raise RuntimeError("no xiaomichatbot_ph cookie")
+        # Replacement chars mean cookie_reader could not DECRYPT the value and
+        # shipped ciphertext. That is not an expired session — re-logging in
+        # cannot fix it — so say so instead of sending the user round in
+        # circles (the old message claimed "expired" for exactly this case).
+        bad = sum(v.count("\ufffd") for v in (tok, uid, ph))
+        if bad:
+            raise RuntimeError(
+                "MiMo cookies are undecryptable (%d replacement chars) — the "
+                "profile uses an encryption scheme this reader cannot open. "
+                "Re-login will NOT help; fix engine/cookie_reader.py or point "
+                "the mimo provider at a profile with readable cookies." % bad
+            )
         http = await self._http_session()
         url = f"{BASE_URL}/fastchat/open-apis/chat/conversation/save?xiaomichatbot_ph={ph}"
         body = {"conversationId": uuid.uuid4().hex, "title": "auth probe", "type": "chat"}
@@ -316,14 +344,36 @@ class MiMoClient:
         thinking: bool, web_search: bool,
         inject_instructions: bool, project_id: str | None, layout_mode: str | None,
         files: list[dict[str, Any]] | None = None,
+        system_instruction: str | None = None,
+        db_history: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async with self._stream_lock:
             text = message
             chain = self._chains.get(chat_id) if chat_id else None
-            if inject_instructions and not chain:
-                instr = _load_instructions(project_id, layout_mode)
-                if instr:
-                    text = instr + "\n\n" + text
+            if not chain:
+                if inject_instructions:
+                    # Caller-supplied system_instruction (study mode / agent
+                    # sub-chats) WINS over the built default — same precedence
+                    # as Kimi and DeepSeek. Without this, study and subagent
+                    # chats silently fell back to the full chat persona.
+                    instr = system_instruction or _load_instructions(project_id, layout_mode)
+                    if instr:
+                        text = instr + "\n\n" + text
+                # Cross-provider switch: MiMo has no wire-level history field,
+                # so seed prior turns into the query text on a fresh chain —
+                # otherwise the model starts from scratch mid-conversation.
+                if db_history:
+                    from connectors.common.history_budget import trim_history_messages
+                    _seeded = trim_history_messages([
+                        {"role": m["role"], "content": m["content"]}
+                        for m in db_history
+                        if m.get("role") in ("user", "assistant") and m.get("content")
+                    ])
+                    if _seeded:
+                        _hist_block = "\n".join(
+                            f"[{m['role']}]: {m['content']}" for m in _seeded
+                        )
+                        text = f"[CONVERSATION HISTORY]\n{_hist_block}\n\n[USER MESSAGE]\n{text}"
 
             base, model_id = _route_for(model)
             try:
@@ -358,7 +408,7 @@ class MiMoClient:
                 "multiMedias": medias,
             }
 
-            url = f"{BASE_URL}{base}/bot/chat?xiaomichatbot_ph={ph}"
+            url = f"{BASE_URL}{base}{_chat_path_for(model_id)}?xiaomichatbot_ph={ph}"
             headers = self._headers()
             headers["Accept"] = "text/event-stream"
 
@@ -381,6 +431,10 @@ class MiMoClient:
 
             buf = ""
             in_think = False
+            # MiMo re-sends an OVERLAPPING TAIL of the answer rather than a pure
+            # delta (e.g. content "INSTR_Q" then "STR_Q"). Appending blindly
+            # duplicates the tail, so merge on the longest suffix/prefix overlap.
+            _acc_content = ""
             from engine.think_parser import ThinkTagSplitter
             _think_split = ThinkTagSplitter()
             try:
@@ -397,21 +451,43 @@ class MiMoClient:
                             except Exception:
                                 pass
                             continue
+                        if event == "finish":
+                            # {"content":"[DONE]"} — end of stream marker.
+                            continue
                         if event != "message" or not data:
                             continue
                         try:
                             msg = json.loads(data)
                         except Exception:
                             continue
-                        if msg.get("type") != "text":
-                            continue
-                        content = msg.get("content", "")
+                        # Current protocol (/react/chat) tags each frame with
+                        # `messageType` and puts chain-of-thought in
+                        # `reasoningContent` (the old /bot/chat used
+                        # `type: "text"`, which no longer exists — matching on
+                        # it silently dropped every frame).
+                        content = msg.get("content", "") or ""
+                        reasoning = msg.get("reasoningContent", "") or ""
+                        if reasoning:
+                            thinking_buf.append(reasoning)
+                            yield {"type": "thinking", "text": reasoning}
                         if not content:
                             continue
                         # strip stray NUL markers MiMo sends as separators
                         content = content.replace("\x00", "")
                         if not content:
                             continue
+                        # Collapse the overlap: if this frame re-sends text we
+                        # already have, only emit the genuinely new tail.
+                        if _acc_content:
+                            if _acc_content.endswith(content):
+                                continue  # fully redundant resend
+                            for _n in range(min(len(_acc_content), len(content)), 0, -1):
+                                if _acc_content.endswith(content[:_n]):
+                                    content = content[_n:]
+                                    break
+                            if not content:
+                                continue
+                        _acc_content += content
                         # Route through the shared splitter so <think> blocks
                         # (even split across chunks) become thinking events.
                         for _kind, _seg in _think_split.feed(content):
@@ -453,6 +529,10 @@ class MiMoClient:
         else:
             thinking = thinking_mode.lower() not in ("fast", "off", "", "disabled")
         web_search = bool(kwargs.get("web_search", False))
+        # Same contract as Kimi/DeepSeek: caller-supplied system prompt wins on a
+        # fresh chain, and DB history seeds the conversation after a provider switch.
+        system_instruction = kwargs.pop("system_instruction", None)
+        db_history = kwargs.pop("db_history", None)
 
         files_payload: list[dict[str, Any]] | None = ref_files or None
         if files_payload is None and ref_file_ids:
@@ -474,6 +554,8 @@ class MiMoClient:
             inject_instructions=inject_instructions,
             project_id=kwargs.get("project_id"), layout_mode=kwargs.get("layout_mode"),
             files=files_payload,
+            system_instruction=system_instruction,
+            db_history=db_history,
         ):
             yield ev
 

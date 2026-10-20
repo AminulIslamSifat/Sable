@@ -111,6 +111,21 @@ class BrowserDaemon:
         if not self.headless and os.environ.get("WAYLAND_DISPLAY"):
             launch_args.append("--ozone-platform=wayland")
 
+        # Headless Chrome falls back to SwiftShader (CPU rasterizer) for WebGL.
+        # Any animated canvas then pegs a core. Force ANGLE onto the real GL
+        # driver so headless uses the same GPU path as a normal window.
+        # NOTE: --use-angle=swiftshader is the opposite of this — it's what
+        # causes the CPU burn in the first place.
+        if self.headless:
+            launch_args += [
+                "--use-angle=gl",
+                "--enable-webgl",
+                "--ignore-gpu-blocklist",
+                "--enable-gpu-rasterization",
+                "--enable-zero-copy",
+                "--disable-software-rasterizer",
+            ]
+
         launch_opts = {
             "headless": self.headless,
             "args": launch_args,

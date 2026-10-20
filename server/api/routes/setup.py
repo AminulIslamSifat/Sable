@@ -172,7 +172,10 @@ async def browser_login(payload: dict[str, Any] | None = None) -> dict[str, Any]
         raise HTTPException(status_code=500, detail="No browser found. Set one in settings.")
 
     # Fire-and-forget: raw subprocess, no Playwright
-    cmd: list[str] = [resolved_browser, "--password-store=basic", "--use-mock-keychain", f"--user-data-dir={profile_path}"]
+    # No --password-store=basic / --use-mock-keychain: a first-run profile
+    # logged in here must use the SAME real OS keyring as every other launch
+    # path, or its cookies are peanuts-encrypted and unreadable everywhere else.
+    cmd: list[str] = [resolved_browser, f"--user-data-dir={profile_path}"]
     cmd.extend(_PROVIDER_URLS[p] for p in providers)
     try:
         import subprocess

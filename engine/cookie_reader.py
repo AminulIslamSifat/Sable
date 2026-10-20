@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import logging
 import os
 import shutil
 import sqlite3
@@ -31,6 +32,8 @@ from pathlib import Path
 from typing import Iterable
 
 from Crypto.Cipher import AES
+
+logger = logging.getLogger("sable.cookie_reader")
 
 # Chromium's fixed PBKDF2 salt and IV for the Linux "v10" scheme.
 _SALT = b"saltysalt"
@@ -65,13 +68,18 @@ def _derive_key(password: bytes) -> bytes:
 
 
 def _decrypt_v10(enc: bytes, key: bytes) -> str | None:
-    """Decrypt a v10-prefixed Chromium cookie value. Returns None on failure.
+    """Decrypt a v10/v11-prefixed Chromium cookie value. Returns None on failure.
+
+    ``v10`` and ``v11`` share the exact same layout — b"v1x" + IV(16) +
+    AES-CBC(ciphertext) — and differ only in which password the key comes
+    from (hardcoded fallback vs OS keyring). The caller picks the key; this
+    function just needs to accept either prefix.
 
     Modern Chromium prefixes the plaintext with the LAST 16 BYTES of
     SHA256(host_key) (a domain-binding tag). We strip that, plus any stray
     wrapping quote, so callers get the raw cookie value.
     """
-    if not enc or enc[:3] != b"v10" or len(enc) < 3 + 16:
+    if not enc or enc[:3] not in (b"v10", b"v11") or len(enc) < 3 + 16:
         return None
     iv = enc[3:19]
     ct = enc[19:]
@@ -122,6 +130,18 @@ def _candidate_keys() -> list[bytes]:
     return keys
 
 
+def _keyring_keys() -> list[bytes]:
+    """Keys derived from the OS keyring password only (the ``v11`` scheme).
+
+    ``v11`` uses the SAME ``v11`` + IV(16) + AES-CBC layout as ``v10`` but the
+    AES key comes from the real keyring secret rather than the hardcoded
+    ``peanuts`` fallback. A profile that has opted into keyring encryption
+    stores every cookie this way, so ``peanuts`` can never open it.
+    """
+    kp = _keyring_password()
+    return [_derive_key(kp)] if kp else []
+
+
 def _cookie_db_paths(user_data_dir: str) -> list[str]:
     base = Path(user_data_dir)
     hits: list[str] = []
@@ -152,7 +172,8 @@ def read_cookies(
         {cookie_name: decrypted_value}. Empty dict if nothing readable.
     """
     result: dict[str, str] = {}
-    keys = _candidate_keys()
+    v10_keys: list[bytes] | None = None
+    v11_keys: list[bytes] | None = None
     want = set(names) if names else None
 
     for db_path in _cookie_db_paths(user_data_dir):
@@ -193,17 +214,36 @@ def read_cookies(
                 result[name] = value
                 continue
             if enc:
-                if enc[:3] == b"v10":
+                prefix = enc[:3]
+                if prefix in (b"v10", b"v11"):
+                    # v10 -> key from the hardcoded fallback password.
+                    # v11 -> key from the OS keyring secret. Same cipher layout.
+                    if prefix == b"v10":
+                        if v10_keys is None:
+                            v10_keys = _candidate_keys()
+                        keys = v10_keys
+                    else:
+                        if v11_keys is None:
+                            v11_keys = _keyring_keys()
+                        keys = v11_keys
                     for key in keys:
                         dec = _decrypt_v10(enc, key)
-                        if dec:
+                        # _decrypt_v10 returns the candidate with the FEWEST
+                        # replacement chars, which for a wrong key is garbage
+                        # rather than None. Reject lossy output outright: a
+                        # mojibake value is worse than a missing one, because
+                        # callers send it and get an opaque 401.
+                        if dec and "\ufffd" not in dec:
                             result[name] = dec
                             break
                 else:
-                    try:
-                        result[name] = enc.decode("utf-8", "replace")
-                    except Exception:
-                        pass
+                    # Plain (unencrypted) rows are rare but legal — Chromium
+                    # writes `value` instead, which is handled above. An
+                    # unknown prefix means a scheme we cannot read; skip it
+                    # rather than shipping ciphertext as a cookie value.
+                    logger.debug(
+                        "cookie %r has unknown encryption prefix %r — skipped",
+                        name, prefix)
     return result
 
 

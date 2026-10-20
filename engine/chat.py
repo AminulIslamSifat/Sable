@@ -68,6 +68,7 @@ async def stream_chat(
     files: list[dict] | None = None,
     model: str | None = None,
     is_retry: bool = False,
+    thinking_mode: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Send a message and stream the response token by token, returning updated (chat_id, parent_id)."""
     # --- Ghost tab primary path --------------------------------------------
@@ -124,6 +125,17 @@ async def stream_chat(
         async with AsyncSession(impersonate="chrome", timeout=120) as client:
             async with client.stream("POST", URL, headers=clean_headers, json=body, params=params) as res:
                 print(f"[DEBUG] HTTP {res.status_code}")
+
+                # Replay the browser's send burst (cheap authed GETs + the
+                # post-reply chat fetch) so the request shape matches a real
+                # client. Fire-and-forget: never blocks or breaks the stream.
+                # No-op unless SABLE_QWEN_MIMIC=1.
+                if res.status_code == 200:
+                    try:
+                        from engine.mimic import schedule_post_send_burst
+                        schedule_post_send_burst(new_chat_id, clean_headers)
+                    except Exception:
+                        pass
 
                 if res.status_code in (401, 403) and not is_retry:
                     print(f"[DEBUG] Received HTTP {res.status_code}. Refreshing tokens on-demand via Playwright...")

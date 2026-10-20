@@ -164,6 +164,7 @@ def build_headers(
     bx_umidtoken: str | None = None,
     referer: str | None = None,
     account: str | None = None,
+    authorization: str | None = None,
 ) -> dict[str, str]:
     """Construct HTTP headers with given or fallback cookies and security tokens.
 
@@ -180,7 +181,7 @@ def build_headers(
 
     user_agent, sec_ch_ua = _account_ua(account) if account else _current_account_ua()
 
-    return {
+    headers = {
         "User-Agent": user_agent,
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
@@ -189,7 +190,7 @@ def build_headers(
         "Timezone": _tz,
         "X-Accel-Buffering": "no",
         "X-Request-Id": str(uuid.uuid4()),
-        "Version": "0.2.91",
+        "Version": "0.3.20",
         "source": "web",
         "sec-ch-ua": sec_ch_ua,
         "sec-ch-ua-mobile": "?0",
@@ -214,6 +215,31 @@ def build_headers(
         "bx-umidtoken": bx_umidtoken or BX_UMIDTOKEN,
         "bx-v": "2.5.37",
     }
+    # Qwen authenticates API calls with a Bearer JWT, NOT with cookies. The web
+    # client sends `Authorization: Bearer <localStorage.token>` on every
+    # /api/v2 call and — confirmed by CDP capture — sends NO Cookie header at
+    # all. Without this, /chat/completions returns HTTP 200 with
+    # {"success":false,"code":"CHAT_NOT_FOUND"} and the WAF eventually tarpits
+    # the session with an x5sec punish page.
+    #
+    # Fall back to the bearer cached on disk: most callers (service.py's
+    # cached-token paths, agents, research) build headers from cached WAF
+    # tokens without passing authorization. Look it up here so every caller
+    # gets the header, not just the two that pass it explicitly.
+    bearer = authorization
+    if bearer is None:
+        try:
+            from engine.config import get_qwen_tokens_for_account
+            cached = get_qwen_tokens_for_account(account)
+            if cached:
+                tok = cached.get("bearer")
+                if tok:
+                    bearer = f"Bearer {tok}"
+        except Exception:
+            bearer = None
+    if bearer:
+        headers["Authorization"] = bearer
+    return headers
 
 
 # Headers that curl_cffi's impersonate="chrome" auto-injects for page navigations
@@ -584,7 +610,11 @@ class BrowserManager:
         _caller = _tb.extract_stack()[-2]
         logger.debug(f"start() #{launch_num} from {_caller.filename}:{_caller.lineno} in {_caller.name}")
         from playwright.async_api import async_playwright
-        from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        from engine.platform_paths import (
+            resolve_browser_for_profile,
+            shared_browser_args,
+            BROWSER_IGNORE_DEFAULT_ARGS,
+        )
         # EPHEMERAL priority: this browser mints headers/tokens and then dies.
         # At the cap it waits for a chat browser rather than evicting one; if
         # every slot is chat-held it raises NoSlotAvailable, which the caller
@@ -601,12 +631,13 @@ class BrowserManager:
             launch_kwargs: dict[str, Any] = dict(
                 user_data_dir=self.user_data_dir,
                 headless=self.headless,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-gpu",
-                ] + extra_browser_args(exe_path),
+                args=shared_browser_args(exe_path),
+                # Use the REAL OS keyring, not Playwright's forced mock
+                # keychain. A profile logged in via a raw `chrome` launch has
+                # v10 cookies encrypted with the keyring key; with the default
+                # `--use-mock-keychain` they are undecryptable and every API
+                # call 401s.
+                ignore_default_args=list(BROWSER_IGNORE_DEFAULT_ARGS),
             )
             if not self.headless:
                 # Headed launch needs a display; provide one (Xvfb) if the
@@ -850,11 +881,13 @@ class BrowserManager:
         # Job done — re-arm the auto-close timer. Another header op in this
         # same turn re-arms it again; the browser dies once the turn ends.
         self._schedule_auto_close()
+        bearer = await self.extract_qwen_token()
         return build_headers(
             cookies=cookie_str,
             bx_ua=captured.get("bx-ua"),
             bx_umidtoken=captured.get("bx-umidtoken"),
             referer=referer,
+            authorization=f"Bearer {bearer}" if bearer else None,
         )
 
     async def get_live_headers(self) -> dict[str, str]:
@@ -953,12 +986,46 @@ class BrowserManager:
             pass
 
         self._schedule_auto_close()
+        bearer = await self.extract_qwen_token()
         return build_headers(
             cookies=cookie_str,
             bx_ua=bx_ua,
             bx_umidtoken=bx_umidtoken,
             referer=referer,
+            authorization=f"Bearer {bearer}" if bearer else None,
         )
+
+    async def extract_qwen_token(self) -> str | None:
+        """Read the Qwen Bearer JWT from chat.qwen.ai localStorage.
+
+        Qwen's web client authenticates every /api/v2 call with
+        ``Authorization: Bearer <localStorage.token>`` and sends no Cookie.
+        The stored value is the bare JWT string (confirmed: 281 chars, starts
+        ``eyJhbGciOiJIUzI1NiIsImtpZCI6ImxlZ2FjeSJ9``).
+
+        Returns None when the profile has no token or the page is elsewhere.
+        """
+        if not self.page:
+            return None
+        try:
+            raw = await self.page.evaluate("() => localStorage.getItem('token')")
+        except Exception:
+            return None
+        if not raw:
+            return None
+        raw = str(raw).strip()
+        if not raw:
+            return None
+        # Tolerate both the bare JWT and a JSON envelope {"value": "<jwt>"}.
+        if raw.startswith("{"):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    raw = str(parsed.get("value") or parsed.get("access_token") or "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        raw = raw.strip().strip('"')
+        return raw or None
 
     async def extract_deepseek_token(self) -> str:
         """Read DeepSeek bearer token from the shared persistent browser profile."""
@@ -1257,7 +1324,7 @@ class BrowserManager:
             h = dict(base_headers)  # copy — never mutate the cached dict
             h.update({
                 "Content-Type": "application/json",
-                "Version": "0.2.91",
+                "Version": "0.3.20",
                 "source": "web",
                 "Referer": "https://chat.qwen.ai/settings/personalization",
                 "X-Request-Id": str(uuid.uuid4()),
@@ -1311,6 +1378,7 @@ class BrowserManager:
                     bx_ua=fresh.get("bx-ua", ""),
                     bx_umidtoken=fresh.get("bx-umidtoken", ""),
                     account=_resolve_active_account(),
+                    bearer=(fresh.get("Authorization", "") or "").replace("Bearer ", ""),
                 )
                 ok2, _ = await _attempt(fresh)
                 if ok2:
@@ -1362,18 +1430,48 @@ class BrowserManager:
             self._adopted = False
             return
         self._cancel_auto_close()
-        if self.context:
-            await self.context.close()
+        # Harden teardown: every step is guarded, and if the browser survives a
+        # graceful close we SIGKILL it from the governor slot. Before this, a
+        # single raise/hang in context.close() skipped slot.release() entirely
+        # and leaked a live headless browser (and its slot) forever — the
+        # "ephemeral header browser never dies" leak.
+        browser_pid = None
+        if self._slot is not None:
+            browser_pid = getattr(self._slot, "browser_pid", None)
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception as exc:
+            logger.warning("context.close() failed for %s: %s",
+                           self.user_data_dir, exc)
+        finally:
             self.context = None
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception as exc:
+            logger.warning("playwright.stop() failed for %s: %s",
+                           self.user_data_dir, exc)
+        finally:
             self.playwright = None
         self.page = None
         # Free the governor slot the moment the browser is gone, so the next
-        # chat message can claim the capacity immediately.
+        # chat message can claim the capacity immediately. If the process is
+        # still breathing after the graceful close, kill it hard first.
         if self._slot is not None:
             try:
-                self._slot.release()
+                pid = browser_pid or getattr(self._slot, "browser_pid", None)
+                if pid and pid_exists(int(pid)):
+                    logger.warning(
+                        "browser pid %s survived graceful close — killing",
+                        pid)
+                    from engine import process_utils
+                    process_utils.kill_process_tree(int(pid),
+                                                    sig=process_utils.SIGKILL)
+            except Exception:
+                pass
+            try:
+                self._slot.release(kill=True)
             except Exception:
                 pass
             self._slot = None
@@ -1402,7 +1500,7 @@ async def create_new_chat(headers: dict[str, str], model: str | None = None) -> 
     try:
         from curl_cffi.requests import AsyncSession
         async with AsyncSession(impersonate="chrome", timeout=15) as client:
-            res = await client.post(NEW_CHAT_URL, headers=headers, json=body)
+            res = await client.post(NEW_CHAT_URL, headers=sanitize_fetch_headers(headers), json=body)
         if res.status_code == 200:
             import json as _json
             raw = res.content.decode(errors="replace")

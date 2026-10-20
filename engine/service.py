@@ -280,6 +280,7 @@ class ChatService:
                             bx_ua=self._headers.get("bx-ua", ""),
                             bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                             account=account,
+                            bearer=(self._headers.get("Authorization", "") or "").replace("Bearer ", ""),
                         )
                     except Exception as exc:
                         logger.warning("Browser launch failed for %s: %s: %s", account, type(exc).__name__, exc)
@@ -335,6 +336,7 @@ class ChatService:
                     bx_ua=headers.get("bx-ua", ""),
                     bx_umidtoken=headers.get("bx-umidtoken", ""),
                     account=account,
+                    bearer=(headers.get("Authorization", "") or "").replace("Bearer ", ""),
                 )
                 return headers
             except Exception as exc:
@@ -376,6 +378,7 @@ class ChatService:
                     bx_ua=headers.get("bx-ua", ""),
                     bx_umidtoken=headers.get("bx-umidtoken", ""),
                     account=account,
+                    bearer=(headers.get("Authorization", "") or "").replace("Bearer ", ""),
                 )
                 return headers
             except Exception as exc:
@@ -447,6 +450,7 @@ class ChatService:
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
+                        bearer=(self._headers.get("Authorization", "") or "").replace("Bearer ", ""),
                     )
                 else:
                     logger.info("Warmup: browser started for live header refresh (using cached headers)")
@@ -492,6 +496,7 @@ class ChatService:
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
+                        bearer=(self._headers.get("Authorization", "") or "").replace("Bearer ", ""),
                     )
                     logger.info("Force-refreshed WAF tokens for %s via browser", account)
             except Exception as exc:
@@ -812,6 +817,11 @@ class ChatService:
         _MIMO_COOKIES = ("xiaomichatbot_serviceToken", "xiaomichatbot_ph", "userId")
 
         def _has_auth(jar: dict[str, str]) -> bool:
+            # Reject mojibake. cookie_reader used to ship undecryptable ciphertext
+            # as a "value", so a corrupt jar passed this check, got cached to
+            # .mimo_auth.json, and then 401'd forever with "expired token".
+            if any("\ufffd" in (v or "") for v in jar.values()):
+                return False
             return bool(jar.get("xiaomichatbot_serviceToken"))
 
         def _snap_path(d: str) -> _Path:
@@ -1066,7 +1076,9 @@ class ChatService:
                         return
                 return
             except GhostError as _ge:
-                logger.debug(f"ghost failed ({_ge}) — falling back to raw API path")
+                # WARNING, not debug: a silent ghost failure means every
+                # message quietly pays the slower, more WAF-exposed curl path.
+                logger.warning(f"ghost failed ({_ge}) — falling back to raw API path")
             except Exception as _gerr:
                 logger.warning(
                     "ghost unexpected failure (%s: %s) — raw API path",

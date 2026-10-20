@@ -400,3 +400,43 @@ def pid_exists(pid: int) -> bool:
         return False
     else:
         return Path(f"/proc/{pid}").exists()
+
+
+# ─── Shared browser launch args ─────────────────────────────────────────────
+# EVERY launcher (browser_opener, session.py, inpage.py, profile_hub) must use
+# these. A profile is only readable by the launcher that wrote it when the
+# cookie-encryption backend matches: Playwright's default is
+# `--password-store=basic --use-mock-keychain` (the `peanuts` key), while a raw
+# `chrome --user-data-dir=...` launch uses the REAL OS keyring. Cookies written
+# by one are undecryptable by the other, so the SPA never authenticates, no
+# `localStorage.token` appears, and every API call 401s. That is the bug.
+#
+# We standardise on the REAL OS keyring (ignore Playwright's forced defaults),
+# because manual/raw launches and `browser_opener.py` are how logins actually
+# happen on this machine.
+
+# Throttling flags: a ghost tab is never focused, so Chromium throttles its
+# timers to 1s (1min when hidden). That stretched the SPA's proof-of-work +
+# fetch dispatch to 60-120s BEFORE the request left the page.
+BROWSER_THROTTLE_ARGS: list[str] = [
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
+]
+
+# Playwright injects these by default; drop them so the real OS keyring is used.
+BROWSER_IGNORE_DEFAULT_ARGS: list[str] = [
+    "--password-store=basic",
+    "--use-mock-keychain",
+]
+
+
+def shared_browser_args(browser_path: str | None = None) -> list[str]:
+    """Base flags every Sable browser launch must use."""
+    return [
+        "--no-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--disable-gpu",
+    ] + BROWSER_THROTTLE_ARGS + extra_browser_args(browser_path)

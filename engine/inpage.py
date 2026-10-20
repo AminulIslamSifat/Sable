@@ -80,6 +80,15 @@ class GhostError(Exception):
     """Ghost path failed — caller must fall back to the raw curl_cffi API."""
 
 
+def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
+    """True if something is accepting TCP connections on host:port."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _server_running() -> bool:
     """True if Sable's own server process (which owns its browser) is up."""
     pid_file = Path(__file__).resolve().parent.parent / ".sable_server.pid"
@@ -88,6 +97,58 @@ def _server_running() -> bool:
         return pid_exists(pid)
     except Exception:
         return False
+
+
+def _ppid_chain(pid: int, max_depth: int = 16) -> list[int]:
+    """ppid ancestry of *pid* up to init. Empty when /proc is unavailable."""
+    chain: list[int] = []
+    seen: set[int] = set()
+    cur = pid
+    for _ in range(max_depth):
+        if cur <= 0 or cur in seen:
+            break
+        seen.add(cur)
+        chain.append(cur)
+        try:
+            stat = Path(f"/proc/{cur}/stat").read_text()
+            cur = int(stat[stat.rfind(")") + 2:].split()[1])
+        except Exception:
+            break
+    return chain
+
+
+def _looks_like_sable_server(pid: int) -> bool:
+    """Cheap identity check: is *pid* a `server.py` from a Sable tree?"""
+    try:
+        cmd = (Path(f"/proc/{pid}/cmdline").read_bytes()
+               .replace(b"\0", b" ").decode(errors="replace"))
+    except Exception:
+        return False
+    return "server.py" in cmd and "sable" in cmd.lower()
+
+
+def _lock_holder_is_foreign_live(pid: int) -> bool:
+    """True only when the profile lock belongs to a DIFFERENT, live Sable.
+
+    The old check asked ``_server_running()``, which is *always* true when the
+    ghost itself runs inside the server — so the ghost refused to reclaim a
+    profile its own process held and every ghost launch bailed with
+    "profile locked by the running Sable server's browser".
+
+    What actually matters is who owns the lock process:
+      * a descendant of THIS process  -> our own leaked header browser, ours
+        to kill and reclaim.
+      * a descendant of a DEAD server -> orphan, also ours to reclaim.
+      * a descendant of another LIVE Sable server -> genuinely foreign; bail.
+    """
+    me = os.getpid()
+    chain = _ppid_chain(pid)
+    if not chain:
+        # No /proc (Windows): fall back to the conservative old behaviour.
+        return _server_running()
+    if me in chain:
+        return False  # ours
+    return any(_looks_like_sable_server(p) for p in chain if p != me)
 
 
 def _lock_pid(user_data_dir: str) -> int | None:
@@ -112,6 +173,10 @@ def _pid_alive(pid: int) -> bool:
 # (fresh x-request-id / timezone per call; proven recipe from test v5-v9).
 # ---------------------------------------------------------------------------
 
+# Qwen authenticates /api/v2 with `Authorization: Bearer <localStorage.token>`.
+# cookies alone return {"success":false,"code":"Unauthorized"}. In-page fetch
+# with credentials:'include' sends cookies but NOT the Bearer, so every ghost
+# call must attach it explicitly. Handles both a bare JWT and a JSON envelope.
 JS_CREATE_CHAT = r"""
 async ({url, model}) => {
   const t0 = performance.now();
@@ -119,10 +184,16 @@ async ({url, model}) => {
     const h = {
       'accept': 'application/json, text/plain, */*',
       'content-type': 'application/json',
-      'source': 'web', 'version': '0.2.91', 'bx-v': '2.5.37',
+      'source': 'web', 'version': '0.3.20', 'bx-v': '2.5.37',
       'x-request-id': crypto.randomUUID(),
       'timezone': new Date().toString(),
     };
+    const _b = (() => { try { const r = localStorage.getItem('token');
+      if (!r) return ''; const s = String(r).trim();
+      if (s.startsWith('{')) { const j = JSON.parse(s);
+        const v = j.value || j.access_token || ''; return typeof v === 'string' ? v : ''; }
+      return s.replace(/^"|"$/g, ''); } catch (e) { return ''; } })();
+    if (_b) h['authorization'] = 'Bearer ' + _b;
     const body = {chatId: '', models: [model], project_id: '',
                   timestamp: Date.now(), chat_type: 't2t', chat_mode: 'normal'};
     const res = await fetch(url, {method: 'POST', credentials: 'include',
@@ -141,11 +212,17 @@ async ({url, body, rid, idleMs}) => {
     const h = {
       'accept': 'application/json',
       'content-type': 'application/json',
-      'source': 'web', 'version': '0.2.91', 'bx-v': '2.5.37',
+      'source': 'web', 'version': '0.3.20', 'bx-v': '2.5.37',
       'x-accel-buffering': 'no',
       'x-request-id': crypto.randomUUID(),
       'timezone': new Date().toString(),
     };
+    const _b = (() => { try { const r = localStorage.getItem('token');
+      if (!r) return ''; const s = String(r).trim();
+      if (s.startsWith('{')) { const j = JSON.parse(s);
+        const v = j.value || j.access_token || ''; return typeof v === 'string' ? v : ''; }
+      return s.replace(/^"|"$/g, ''); } catch (e) { return ''; } })();
+    if (_b) h['authorization'] = 'Bearer ' + _b;
     const ctrl = new AbortController();
     let idleTimer = setTimeout(() => ctrl.abort(), idleMs);
     const res = await fetch(url, {method: 'POST', credentials: 'include',
@@ -181,10 +258,16 @@ async ({url, payload}) => {
     const h = {
       'accept': 'application/json, text/plain, */*',
       'content-type': 'application/json',
-      'source': 'web', 'version': '0.2.91', 'bx-v': '2.5.37',
+      'source': 'web', 'version': '0.3.20', 'bx-v': '2.5.37',
       'x-request-id': crypto.randomUUID(),
       'timezone': new Date().toString(),
     };
+    const _b = (() => { try { const r = localStorage.getItem('token');
+      if (!r) return ''; const s = String(r).trim();
+      if (s.startsWith('{')) { const j = JSON.parse(s);
+        const v = j.value || j.access_token || ''; return typeof v === 'string' ? v : ''; }
+      return s.replace(/^"|"$/g, ''); } catch (e) { return ''; } })();
+    if (_b) h['authorization'] = 'Bearer ' + _b;
     const res = await fetch(url, {method: 'POST', credentials: 'include',
                                   headers: h, body: JSON.stringify(payload)});
     return {status: res.status, text: await res.text()};
@@ -277,7 +360,11 @@ class GhostEngine:
 
     async def _launch(self) -> None:
         from playwright.async_api import async_playwright
-        from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        from engine.platform_paths import (
+            resolve_browser_for_profile,
+            shared_browser_args,
+            BROWSER_IGNORE_DEFAULT_ARGS,
+        )
 
         self._pw = await async_playwright().start()
         profile = Path(self.user_data_dir).name
@@ -289,14 +376,16 @@ class GhostEngine:
         port = s.getsockname()[1]
         s.close()
 
-        args = [
-            "--no-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--disable-gpu",
-            f"--remote-debugging-port={port}",
-        ] + extra_browser_args(exe)
-        kwargs = dict(user_data_dir=self.user_data_dir, headless=self.headless, args=args)
+        args = shared_browser_args(exe) + [f"--remote-debugging-port={port}"]
+        kwargs = dict(
+            user_data_dir=self.user_data_dir,
+            headless=self.headless,
+            args=args,
+            # Real OS keyring — see engine/platform_paths.BROWSER_IGNORE_DEFAULT_ARGS.
+            # Without this the ghost browser cannot decrypt cookies written by
+            # a raw/manual chrome login, so the SPA never authenticates.
+            ignore_default_args=list(BROWSER_IGNORE_DEFAULT_ARGS),
+        )
         if exe:
             kwargs["executable_path"] = exe
 
@@ -320,6 +409,17 @@ class GhostEngine:
 
         pid = _lock_pid(self.user_data_dir)
         if pid is None or not _pid_alive(pid):
+            marker.unlink(missing_ok=True)
+            return False
+
+        # The marker's port can be dead while a DIFFERENT live browser holds
+        # the profile (marker written by an older launch, lock taken by a newer
+        # one). Attempting connect_over_cdp on that dead port used to time out
+        # and fall into _hard_cleanup(), which SIGKILLs the healthy browser
+        # that holds the lock. Probe the port first; a dead port means this
+        # marker is stale, so drop it WITHOUT touching the live browser.
+        if not _port_open(port):
+            logger.debug(f"ghost marker port {port} is dead — discarding stale marker")
             marker.unlink(missing_ok=True)
             return False
 
@@ -350,11 +450,13 @@ class GhostEngine:
             except OSError:
                 pass
             return
-        if _server_running():
+        if _lock_holder_is_foreign_live(pid):
             raise GhostError(
-                "profile locked by the running Sable server's browser — "
+                "profile locked by another running Sable server's browser — "
                 "ghost can't take it over; use the raw API path")
-        logger.debug(f"profile locked by orphan chromium (pid {pid}) — killing")
+        logger.debug(
+            "profile locked by our own / orphan chromium (pid %s) — killing",
+            pid)
 
     async def _hard_cleanup(self) -> None:
         pid = _lock_pid(self.user_data_dir)

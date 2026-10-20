@@ -365,7 +365,7 @@ class ProfileHub:
                       headless: bool = True,
                       force_headed: bool = False,
                       kill_existing: bool = False,
-                      os_keyring: bool = False,
+                      os_keyring: bool = True,
                       max_retries: int = 3) -> "ProfileHub":
         """Return the live hub for ``profile_dir``, launching it if needed.
 
@@ -468,7 +468,7 @@ class ProfileHub:
 
     def __init__(self, profile_dir: Path, helium_bin: str, headless: bool,
                  force_headed: bool = False, kill_existing: bool = False,
-                 os_keyring: bool = False):
+                 os_keyring: bool = True):
         self.profile_dir = profile_dir
         self.helium_bin = helium_bin
         # force_headed wins over the caller's headless flag: it means "I need
@@ -482,7 +482,9 @@ class ProfileHub:
         # os_keyring: use the REAL OS keyring for cookie encryption instead of
         # Playwright's forced mock keychain (`peanuts`). Required for a profile
         # whose cookies were written by a raw-subprocess launch (the Settings
-        # opener). Default False so connectors that already work are unchanged.
+        # opener). Default True: every connector MUST match the Settings opener,
+        # otherwise the first ghost launch rewrites Cookies with `peanuts` and
+        # logs the user out everywhere.
         self.os_keyring = os_keyring
         self.headless = False if force_headed else headless
         self._pw = None

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Eiffel Tower</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', sans-serif; }
+    canvas { display: block; }
+    #controls {
+      position: absolute; top: 20px; left: 20px;
+      background: rgba(0,0,0,0.7); color: #fff; padding: 20px;
+      border-radius: 12px; backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.1);
+      min-width: 220px;
+    }
+    #controls h2 { font-size: 16px; margin-bottom: 12px; color: #f0c040; }
+    .ctrl-group { margin-bottom: 10px; }
+    .ctrl-group label { font-size: 12px; display: block; margin-bottom: 4px; color: #aaa; }
+    .ctrl-group input[type=range] { width: 100%; accent-color: #f0c040; }
+    .ctrl-group button {
+      background: #f0c040; color: #000; border: none; padding: 6px 12px;
+      border-radius: 6px; cursor: pointer; font-weight: bold; margin-right: 6px;
+      font-size: 12px; transition: 0.2s;
+    }
+    .ctrl-group button:hover { background: #ffd966; }
+    .ctrl-group button.active { background: #ff6b6b; color: #fff; }
+    #info {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,0.4); font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <h2>🗼 Eiffel Tower Controls</h2>
+    <div class="ctrl-group">
+      <label>Rotation Speed</label>
+      <input type="range" id="rotSpeed" min="0" max="100" value="20">
+    </div>
+    <div class="ctrl-group">
+      <label>Tower Color</label>
+      <input type="range" id="towerColor" min="0" max="360" value="40">
+    </div>
+    <div class="ctrl-group">
+      <label>Wireframe</label>
+      <button id="btnWire" onclick="toggleWireframe()">Toggle</button>
+      <button id="btnAuto" class="active" onclick="toggleAutoRotate()">Auto Rotate</button>
+    </div>
+    <div class="ctrl-group">
+      <label>Night Mode</label>
+      <button id="btnNight" onclick="toggleNight()">Toggle Lights</button>
+    </div>
+  </div>
+  <div id="info">Drag to orbit · Scroll to zoom</div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    let scene, camera, renderer, controls, tower, towerMat;
+    let autoRotate = true, nightMode = false, lights = [];
+
+    init();
+    animate();
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x1a1a2e, 0.008);
+
+      camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
+      camera.position.set(30, 25, 40);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(devicePixelRatio);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2 + 0.1;
+
+      // Lighting
+      const ambient = new THREE.AmbientLight(0xffffff, 0.3);
+      scene.add(ambient);
+
+      const dirLight = new THREE.DirectionalLight(0xffeedd, 1.0);
+      dirLight.position.set(50, 80, 30);
+      dirLight.castShadow = true;
+      scene.add(dirLight);
+
+      const hemi = new THREE.HemisphereLight(0x87ceeb, 0x362d1b, 0.4);
+      scene.add(hemi);
+
+      // Ground
+      const groundGeo = new THREE.PlaneGeometry(200, 200);
+      const groundMat = new THREE.MeshStandardMaterial({ color: 0x2d5a27, roughness: 0.9 });
+      const ground = new THREE.Mesh(groundGeo, groundMat);
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      buildTower();
+      addStars();
+
+      window.addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+
+      document.getElementById('rotSpeed').addEventListener('input', e => {
+        controls.autoRotateSpeed = e.target.value / 10;
+      });
+      document.getElementById('towerColor').addEventListener('input', e => {
+        const hue = e.target.value / 360;
+        towerMat.color.setHSL(hue, 0.6, 0.4);
+      });
+    }
+
+    function buildTower() {
+      tower = new THREE.Group();
+      towerMat = new THREE.MeshStandardMaterial({
+        color: 0x8B7355, metalness: 0.7, roughness: 0.3
+      });
+
+      const beamMat = towerMat.clone();
+
+      // Four legs
+      const legPositions = [
+        { x: -6, z: -6 }, { x: 6, z: -6 },
+        { x: -6, z: 6 }, { x: 6, z: 6 }
+      ];
+
+      legPositions.forEach(pos => {
+        // Lower leg (angled inward)
+        const legGeo = new THREE.CylinderGeometry(0.4, 0.8, 15, 8);
+        const leg = new THREE.Mesh(legGeo, towerMat);
+        leg.position.set(pos.x * 0.7, 7.5, pos.z * 0.7);
+        leg.castShadow = true;
+        tower.add(leg);
+
+        // Foot base
+        const footGeo = new THREE.BoxGeometry(2.5, 0.5, 2.5);
+        const foot = new THREE.Mesh(footGeo, towerMat);
+        foot.position.set(pos.x, 0.25, pos.z);
+        foot.castShadow = true;
+        tower.add(foot);
+      });
+
+      // First platform
+      const plat1Geo = new THREE.BoxGeometry(10, 0.6, 10);
+      const plat1 = new THREE.Mesh(plat1Geo, towerMat);
+      plat1.position.y = 15;
+      plat1.castShadow = true;
+      tower.add(plat1);
+
+      // Arch under first platform
+      for (let i = 0; i < 4; i++) {
+        const archGeo = new THREE.TorusGeometry(3, 0.2, 8, 16, Math.PI);
+        const arch = new THREE.Mesh(archGeo, towerMat);
+        arch.position.y = 12;
+        arch.rotation.y = (i * Math.PI) / 2;
+        if (i % 2 === 0) arch.position.x = 0;
+        else arch.position.z = 0;
+        tower.add(arch);
+      }
+
+      // Middle section legs
+      const midLegPos = [
+        { x: -3.5, z: -3.5 }, { x: 3.5, z: -3.5 },
+        { x: -3.5, z: 3.5 }, { x: 3.5, z: 3.5 }
+      ];
+      midLegPos.forEach(pos => {
+        const mGeo = new THREE.CylinderGeometry(0.3, 0.5, 12, 8);
+        const mLeg = new THREE.Mesh(mGeo, towerMat);
+        mLeg.position.set(pos.x * 0.65, 21, pos.z * 0.65);
+        mLeg.castShadow = true;
+        tower.add(mLeg);
+      });
+
+      // Second platform
+      const plat2Geo = new THREE.BoxGeometry(6, 0.5, 6);
+      const plat2 = new THREE.Mesh(plat2Geo, towerMat);
+      plat2.position.y = 27;
+      plat2.castShadow = true;
+      tower.add(plat2);
+
+      // Upper section
+      const upperLegPos = [
+        { x: -1.5, z: -1.5 }, { x: 1.5, z: -1.5 },
+        { x: -1.5, z: 1.5 }, { x: 1.5, z: 1.5 }
+      ];
+      upperLegPos.forEach(pos => {
+        const uGeo = new THREE.CylinderGeometry(0.15, 0.3, 15, 8);
+        const uLeg = new THREE.Mesh(uGeo, towerMat);
+        uLeg.position.set(pos.x * 0.4, 34.5, pos.z * 0.4);
+        uLeg.castShadow = true;
+        tower.add(uLeg);
+      });
+
+      // Top spire
+      const spireGeo = new THREE.ConeGeometry(0.3, 6, 8);
+      const spire = new THREE.Mesh(spireGeo, towerMat);
+      spire.position.y = 45;
+      spire.castShadow = true;
+      tower.add(spire);
+
+      // Antenna
+      const antGeo = new THREE.CylinderGeometry(0.05, 0.05, 4, 6);
+      const ant = new THREE.Mesh(antGeo, towerMat);
+      ant.position.y = 50;
+      tower.add(ant);
+
+      // Cross beams (lattice effect)
+      for (let y = 3; y < 42; y += 3) {
+        const scale = 1 - (y / 55);
+        const size = 7 * scale;
+        const ringGeo = new THREE.TorusGeometry(size, 0.08, 4, 4);
+        const ring = new THREE.Mesh(ringGeo, beamMat);
+        ring.position.y = y;
+        ring.rotation.x = Math.PI / 2;
+        ring.rotation.z = Math.PI / 4;
+        tower.add(ring);
+      }
+
+      // Night lights on tower
+      const lightColors = [0xffd700, 0xff6b35, 0xffaa00];
+      for (let i = 0; i < 20; i++) {
+        const pl = new THREE.PointLight(
+          lightColors[i % 3], 0, 8
+        );
+        const angle = (i / 20) * Math.PI * 2;
+        const h = 5 + (i / 20) * 40;
+        const r = 4 * (1 - h / 55);
+        pl.position.set(Math.cos(angle) * r, h, Math.sin(angle) * r);
+        tower.add(pl);
+        lights.push(pl);
+      }
+
+      scene.add(tower);
+    }
+
+    function addStars() {
+      const starGeo = new THREE.BufferGeometry();
+      const verts = [];
+      for (let i = 0; i < 2000; i++) {
+        verts.push((Math.random() - 0.5) * 400, Math.random() * 150 + 20, (Math.random() - 0.5) * 400);
+      }
+      starGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.3 });
+      scene.add(new THREE.Points(starGeo, starMat));
+    }
+
+    function toggleWireframe() {
+      towerMat.wireframe = !towerMat.wireframe;
+      document.getElementById('btnWire').classList.toggle('active');
+    }
+
+    function toggleAutoRotate() {
+      autoRotate = !autoRotate;
+      document.getElementById('btnAuto').classList.toggle('active');
+    }
+
+    function toggleNight() {
+      nightMode = !nightMode;
+      document.getElementById('btnNight').classList.toggle('active');
+      lights.forEach(l => l.intensity = nightMode ? 2 : 0);
+      scene.fog = nightMode
+        ? new THREE.FogExp2(0x0a0a1a, 0.012)
+        : new THREE.FogExp2(0x1a1a2e, 0.008);
+      renderer.setClearColor(nightMode ? 0x0a0a1a : 0x1a1a2e);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (autoRotate && tower) {
+        tower.rotation.y += 0.002 * (document.getElementById('rotSpeed').value / 20);
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
