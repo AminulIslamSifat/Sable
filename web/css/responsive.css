@@ -82,15 +82,10 @@
 
       /* ── Status bar mobile: single row, no overflow ── */
       .status-bar {
-        grid-template-columns: auto auto 1fr auto;
         padding: 3px 8px 2px;
         overflow: hidden;
       }
-      .sb-left      { justify-self: start; }
-      .sb-mid-left  { justify-self: start; }
       .sb-center    { display: none; }   /* hide CWD */
-      .sb-mid-right { justify-self: end; }
-      .sb-right     { justify-self: end; }
       /* Truncate labels to prevent overflow */
       .status-dropdown-label {
         max-width: 70px;

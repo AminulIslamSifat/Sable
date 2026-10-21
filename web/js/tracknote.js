@@ -2,6 +2,14 @@
     const diffCardsEl = document.getElementById("diffCards");
     const MAX_DIFF_CARDS = 12;
 
+    // Rehydrate the shared edit list so the badge is correct on first paint.
+    try {
+      var _saved = sessionStorage.getItem("sable_edits");
+      if (_saved) window.SableEdits = JSON.parse(_saved) || [];
+    } catch (e) {}
+    window.SableEdits = window.SableEdits || [];
+
+
     // ---------- Notes, Todo & Tasks: register as left-sidebar hostable panels ----------
     const trackNoteBtn = document.getElementById("trackNoteBtn");
 
@@ -508,6 +516,28 @@
       while (diffCardsEl.children.length > MAX_DIFF_CARDS) {
         diffCardsEl.lastElementChild.remove();
       }
+
+      // Publish to the shared registry so the preview pane shows the same
+      // list this sidebar shows — no filesystem guessing, no duplicates.
+      window.SableEdits = window.SableEdits || [];
+      var _i = window.SableEdits.findIndex(function (x) { return x.path === evt.path; });
+      if (_i >= 0) window.SableEdits.splice(_i, 1);
+      window.SableEdits.unshift({
+        name: evt.name || evt.path.split("/").pop(),
+        path: evt.path,
+        backup_path: evt.backup_path || "",
+        added: evt.added || 0,
+        removed: evt.removed || 0,
+      });
+      while (window.SableEdits.length > MAX_DIFF_CARDS) window.SableEdits.pop();
+
+      // Survive a reload — the panel's badge reads this list, not the DOM.
+      try {
+        sessionStorage.setItem("sable_edits", JSON.stringify(window.SableEdits));
+      } catch (e) {}
+
+
+      window.dispatchEvent(new CustomEvent("sable:edits-changed"));
       if (autoOpen) {
         // Open files panel in left sidebar with Diff tab active
         if (window.sidebarHost) {

@@ -696,7 +696,11 @@
   max-width: 900px;
   margin: 0 auto;
   border-radius: 22px;
-  background: color-mix(in srgb, var(--panel) 95%, transparent);
+  /* Fully opaque: at 95% the chat scrolling underneath showed through the
+     pill, which reads as "messy" on narrow screens where the bar is taller. */
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   box-shadow:
     inset 0 0 0 1px var(--shadow-inner-glow),
     inset 1.5px 2.5px 0px -1.5px var(--shadow-inner-highlight),
@@ -726,8 +730,11 @@
 }
 
 .status-bar {
-  display: grid;
-  grid-template-columns: auto 1fr auto 1fr auto;
+  display: flex;
+  flex-wrap: nowrap;
+  /* space-between distributes the free space evenly BETWEEN cells, so every
+     adjacent pair sits at the same distance — no clustering, no stray gap. */
+  justify-content: space-between;
   align-items: center;
   min-height: 22px;
   padding: 3px 12px 2px;
@@ -735,18 +742,50 @@
   margin-top: 2px;
   font-size: 11px;
   user-select: none;
+  /* Never let a long label push a sibling out of the bar. */
+  overflow: hidden;
+  container-type: inline-size;
+  container-name: statusbar;
 }
 .status-item {
   display: flex;
   align-items: center;
   min-width: 0;
+  /* Shrink before overflowing; nothing gets a fixed width. */
+  flex: 0 1 auto;
+  overflow: hidden;
 }
-/* Grid columns: [thinking] [model—flex] [cwd] [persona—flex] [context] */
-.sb-left      { justify-self: start; }
-.sb-mid-left  { justify-self: center; }
-.sb-center    { justify-self: center; }
-.sb-mid-right { justify-self: center; }
-.sb-right     { justify-self: end; }
+/* CWD is the one cell allowed to take slack, but never more than half. */
+.sb-center { flex: 0 1 auto; max-width: 46%; }
+
+/* Every label inside the bar shrinks with an ellipsis rather than overlapping. */
+.status-bar .status-dropdown-label,
+.status-bar .status-cwd,
+.status-bar .status-context {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-bar .status-dropdown,
+.status-bar .status-dropdown-trigger {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* As the chat column narrows, shed the least important cells first. */
+/* NOTE: a container query can style its DESCENDANTS but never the container
+   itself. Keeping these rules to `display: none` on children is deliberate —
+   space-between then re-spreads whatever is left, evenly, for free. */
+@container statusbar (max-width: 620px) {
+  .sb-center { display: none; }          /* drop CWD */
+}
+@container statusbar (max-width: 460px) {
+  .sb-mid-right { display: none; }       /* drop persona */
+}
+@container statusbar (max-width: 340px) {
+  .status-bar .status-dropdown-label { max-width: 84px; }
+}
 
 /* STT Mic Button */
 .stt-mic-btn {
@@ -851,7 +890,12 @@
 .status-dropdown-menu {
   position: fixed;
   left: auto;
-  min-width: 100%;
+  /* Bounded, not 100%: 100% resolves against .status-bar (its containing
+     block, via container-type: inline-size), and min-width outranks
+     max-width — so an unbounded min-width kept these menus ~873px wide and
+     gave the document a horizontal scrollbar. */
+  min-width: min(100%, 200px);
+  max-width: min(320px, calc(100vw - 24px));
   max-height: 200px;
   overflow-y: auto;
   padding: 4px;
@@ -5014,3 +5058,12 @@ body.ocr-open #inputArea { display: none !important; }
 
 
 
+
+/* ---------- Closed status menus must not occupy layout ---------- */
+/* These menus are position:fixed. While merely transparent they still sat in
+   the layout box at ~873x200, which gave the document BOTH a horizontal and a
+   vertical scrollbar (scrollWidth 1822 vs 1400, scrollHeight 981 vs 800).
+   Removing them from flow while closed fixes both axes; the .open rule below
+   restores the menu exactly as before, and only affects the closed state. */
+.status-dropdown-menu { display: none; }
+.status-dropdown.open .status-dropdown-menu { display: block; }

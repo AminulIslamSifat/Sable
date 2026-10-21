@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Sable Desktop - attach to a running server on :61771, or boot one and load the UI.
+#
+#   ./desktop/sable-desktop              # default port 61771
+#   ./desktop/sable-desktop --port=9000
+#   SABLE_PORT=9000 ./desktop/sable-desktop
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# A .desktop launch gives us a bare PATH. Rebuild it so uv/node/electron resolve.
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+for bin in electron44 electron; do
+  if command -v "$bin" >/dev/null 2>&1; then
+    exec "$bin" "$HERE" "$@"
+  fi
+done
+
+echo "[Sable Desktop] no electron binary found (tried electron44, electron)" >&2
+echo "[Sable Desktop] install electron44, or: cd $HERE && npm i -D electron" >&2
+exit 1

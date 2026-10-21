@@ -1403,6 +1403,13 @@
   }
 
   /* ---------- IDE CWD + open file getters (for auto-inject into chat) ---------- */
+  // Reused by preview-pane.js so diffs share the IDE's language + theme.
+  window.__sableMonacoLang = function (ext) { return monacoLang(ext); };
+  window.__sableDefineMonacoTheme = function () {
+    try { defineSableMonacoTheme(); } catch (e) {}
+  };
+  window.__sableLoadMonaco = function () { return loadMonaco(); };
+
   window.getIdeCwd = function () {
     return sidebarRoot || localStorage.getItem("fs_ide_last_folder") || "";
   };
@@ -1436,8 +1443,13 @@
             } else {
               html = baseTag + html;
             }
-            const blob = new Blob([html], { type: "text/html" });
-            window.open(URL.createObjectURL(blob), "_blank");
+            // Prefer the docked preview pane; fall back to a tab if it isn't loaded.
+            if (window.SablePreview) {
+              window.SablePreview.open({ title: name, html: html, source: data.content, path: fp });
+            } else {
+              const blob = new Blob([html], { type: "text/html" });
+              window.open(URL.createObjectURL(blob), "_blank");
+            }
           })
           .catch(() => alert("Failed to read HTML file"));
         return;
@@ -1630,6 +1642,9 @@
     diffClearBtn.addEventListener("click", () => {
       const dc = document.getElementById("diffCards");
       if (dc) dc.innerHTML = "";
+      // Keep the preview pane's copy in step with this one.
+      window.SableEdits = [];
+      window.dispatchEvent(new CustomEvent("sable:edits-changed"));
     });
   }
 

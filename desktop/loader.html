@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src file: data:; script-src 'unsafe-inline'" />
+<title>Sable</title>
+<style>
+  :root {
+    --bg: #08090b;
+    --panel: #12110e;
+    --line: #24211b;
+    --text: #eeeae2;
+    --dim: #8d877c;
+    --faint: #575146;
+    --gold: #c9a961;
+    --ok: #7dd3a0;
+    --warn: #e8c07d;
+    --error: #e8837d;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-user-select: none;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  .scene { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+  .glow { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; }
+  .g1 {
+    width: 780px; height: 780px; top: -38%; left: 50%; margin-left: -390px;
+    background: radial-gradient(circle, rgba(201,169,97,.20) 0%, rgba(201,169,97,0) 68%);
+    animation: drift1 22s ease-in-out infinite alternate;
+  }
+  .g2 {
+    width: 620px; height: 620px; bottom: -30%; right: -12%;
+    background: radial-gradient(circle, rgba(125,211,160,.10) 0%, rgba(125,211,160,0) 70%);
+    animation: drift2 28s ease-in-out infinite alternate;
+  }
+  @keyframes drift1 { to { transform: translate(-60px, 40px) scale(1.12); } }
+  @keyframes drift2 { to { transform: translate(-50px, -60px) scale(1.08); } }
+
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+    background-size: 46px 46px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 42%, #000 20%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 42%, #000 20%, transparent 100%);
+  }
+
+  .card { position: relative; width: min(520px, 89vw); text-align: center; z-index: 1; }
+  .card > * { animation: rise .62s cubic-bezier(.22,.75,.28,1) both; }
+  .card > *:nth-child(1) { animation-delay: 0s; }
+  .card > *:nth-child(2) { animation-delay: .07s; }
+  .card > *:nth-child(3) { animation-delay: .12s; }
+  .card > *:nth-child(4) { animation-delay: .17s; }
+  .card > *:nth-child(5) { animation-delay: .22s; }
+  .card > *:nth-child(6) { animation-delay: .27s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+
+  .mark {
+    position: relative;
+    width: 82px; height: 82px;
+    margin: 0 auto 24px;
+    border-radius: 23px;
+    display: grid; place-items: center;
+    background: linear-gradient(158deg, #1c1913 0%, #0d0c09 100%);
+    border: 1px solid #2b2519;
+    box-shadow:
+      0 18px 54px -18px rgba(0,0,0,.95),
+      inset 0 1px 0 rgba(255,255,255,.05),
+      0 0 60px -22px rgba(201,169,97,.55);
+  }
+  .mark svg { width: 40px; height: 40px; position: relative; z-index: 2; }
+  .mark::before {
+    content: "";
+    position: absolute; inset: -26px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(201,169,97,.16) 0%, transparent 68%);
+    animation: breathe 4.6s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+  .mark::after {
+    content: "";
+    position: absolute; inset: -1px;
+    border-radius: 23px;
+    padding: 1px;
+    background: conic-gradient(from 0deg, transparent 0 52%, var(--gold) 76%, transparent 88%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: .9;
+    animation: spin 3.6s linear infinite;
+  }
+  body[data-stage="idle"] .mark::after,
+  body[data-stage="error"] .mark::after { animation-play-state: paused; opacity: .3; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  h1 { font-size: 22px; font-weight: 600; letter-spacing: .34px; margin: 0 0 5px; }
+  .sub { color: var(--dim); font-size: 12.5px; margin: 0 0 28px; letter-spacing: .9px; }
+
+  .steps { list-style: none; margin: 0 0 4px; padding: 0 2px; text-align: left; display: grid; gap: 2px; }
+  .step {
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    color: var(--faint);
+    font-size: 12.5px;
+    transition: color .35s ease;
+  }
+  .step .pip {
+    position: relative;
+    width: 15px; height: 15px;
+    justify-self: center;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    opacity: .55;
+    transition: opacity .3s, border-color .3s, background .3s;
+  }
+  .step .lbl { letter-spacing: .15px; }
+  .step .meta { font: 11px/1 ui-monospace, "JetBrains Mono", monospace; color: var(--faint); letter-spacing: .3px; }
+
+  .step[data-state="active"] { color: var(--gold); }
+  .step[data-state="active"] .pip {
+    opacity: 1; background: var(--gold); border-color: var(--gold);
+    animation: pipPulse 2s ease-out infinite;
+  }
+  .step[data-state="active"] .pip::after {
+    content: ""; position: absolute; inset: 3.5px; border-radius: 50%; background: #0b0a07;
+  }
+  @keyframes pipPulse {
+    0% { box-shadow: 0 0 0 0 rgba(201,169,97,.5); }
+    70% { box-shadow: 0 0 0 7px rgba(201,169,97,0); }
+    100% { box-shadow: 0 0 0 0 rgba(201,169,97,0); }
+  }
+
+  .step[data-state="done"] { color: var(--dim); }
+  .step[data-state="done"] .pip { opacity: 1; border-color: var(--gold); background: transparent; }
+  .step[data-state="done"] .pip::after {
+    content: "";
+    position: absolute; left: 3.2px; top: 4.6px;
+    width: 6px; height: 3.2px;
+    border-left: 1.6px solid var(--gold);
+    border-bottom: 1.6px solid var(--gold);
+    transform: rotate(-45deg);
+  }
+
+  .step[data-state="fail"] { color: var(--error); }
+  .step[data-state="fail"] .pip { opacity: 1; border-color: var(--error); }
+  .step[data-state="fail"] .pip::after {
+    content: ""; position: absolute; inset: 3.2px;
+    background:
+      linear-gradient(45deg, transparent 42%, var(--error) 42% 58%, transparent 58%),
+      linear-gradient(-45deg, transparent 42%, var(--error) 42% 58%, transparent 58%);
+  }
+
+  .status {
+    margin-top: 18px;
+    background: linear-gradient(180deg, #14120e 0%, #100f0c 100%);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 13px 15px;
+    font-size: 12.8px;
+    color: var(--dim);
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+    transition: border-color .3s, color .3s;
+  }
+  .status[data-tone="warn"] { color: var(--warn); border-color: #3a3120; }
+  .status[data-tone="error"] {
+    color: var(--error); border-color: #3d2523;
+    background: linear-gradient(180deg, #1a1210 0%, #120e0d 100%);
+  }
+
+  .dot {
+    flex: 0 0 auto;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--gold);
+    animation: pulse 2.1s ease-out infinite;
+  }
+  .status[data-tone="warn"] .dot { background: var(--warn); }
+  .status[data-tone="error"] .dot { background: var(--error); animation: none; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(201,169,97,.45); }
+    70% { box-shadow: 0 0 0 8px rgba(201,169,97,0); }
+    100% { box-shadow: 0 0 0 0 rgba(201,169,97,0); }
+  }
+
+  .logwrap {
+    margin-top: 12px;
+    background: #0a0a08;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    text-align: left;
+  }
+  .loghead {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 13px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .loghead .ltitle { display: flex; align-items: center; gap: 7px; }
+  .loghead .ltitle i { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); transition: background .3s; }
+  body[data-stage="checking"] .loghead .ltitle i,
+  body[data-stage="booting"] .loghead .ltitle i,
+  body[data-stage="loading"] .loghead .ltitle i {
+    background: var(--gold); animation: pulse 1.8s ease-out infinite;
+  }
+  .loghead button {
+    padding: 3px 10px; font-size: 10px; letter-spacing: .5px;
+    border-radius: 6px; text-transform: uppercase;
+    background: transparent; border: 1px solid var(--line); color: var(--faint);
+    cursor: pointer; transition: color .2s, border-color .2s;
+  }
+  .loghead button:hover { color: var(--dim); border-color: #37322a; }
+  .log {
+    margin: 0;
+    /* right gutter keeps text clear of the scrollbar */
+    padding: 11px 26px 11px 13px;
+    max-height: 208px;
+    overflow-y: auto;
+    font: 11.5px/1.65 ui-monospace, "JetBrains Mono", monospace;
+    color: #948c7e;
+    white-space: pre-wrap;
+    word-break: break-word;
+    -webkit-user-select: text;
+    user-select: text;
+    overscroll-behavior: contain;
+  }
+  .log::-webkit-scrollbar { width: 9px; }
+  .log::-webkit-scrollbar-thumb { background: #241f18; border-radius: 4px; }
+  .log::-webkit-scrollbar-thumb:hover { background: #332c22; }
+  .log:empty::before { content: "waiting for output…"; color: #3d3830; }
+  .log .err { color: var(--error); }
+  .log .ok { color: var(--ok); }
+  .log .dim { color: #5f5749; }
+
+  .actions { margin-top: 16px; display: none; gap: 9px; justify-content: center; }
+  .actions.show { display: flex; }
+  button.act {
+    font: inherit; font-size: 12.5px;
+    color: var(--text);
+    background: #17140f;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 9px 18px;
+    cursor: pointer;
+    transition: background .18s, border-color .18s, transform .07s;
+  }
+  button.act:hover { background: #1f1b14; border-color: #3a3327; }
+  button.act:active { transform: translateY(1px); }
+  button.act.primary {
+    border-color: #4a3d22;
+    background: linear-gradient(180deg, #2a2314 0%, #1d1810 100%);
+    color: #e9d9a8;
+  }
+  button.act.primary:hover { background: linear-gradient(180deg, #352c19 0%, #241d12 100%); }
+
+  .foot {
+    margin-top: 22px;
+    font-size: 10.5px;
+    color: #4a453c;
+    letter-spacing: .7px;
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    justify-content: center;
+  }
+  .foot .sep { opacity: .4; }
+  .foot code { color: #857c6c; font-family: ui-monospace, "JetBrains Mono", monospace; letter-spacing: .2px; }
+</style>
+</head>
+<body data-stage="idle">
+
+  <div class="scene" aria-hidden="true">
+    <div class="glow g1"></div>
+    <div class="glow g2"></div>
+    <div class="grid"></div>
+  </div>
+
+  <main class="card">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#c9a961" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2.5 4.5 7v10L12 21.5 19.5 17V7L12 2.5Z"/>
+        <path d="M12 8.2 8.6 10.1v3.8L12 15.8l3.4-1.9v-3.8L12 8.2Z"/>
+      </svg>
+    </div>
+
+    <h1>Sable</h1>
+    <p class="sub">agentic chat platform</p>
+
+    <ol class="steps" id="steps">
+      <li class="step" data-step="1" data-state="pending">
+        <span class="pip"></span>
+        <span class="lbl">Checking for a running server</span>
+        <span class="meta" data-meta="1"></span>
+      </li>
+      <li class="step" data-step="2" data-state="pending">
+        <span class="pip"></span>
+        <span class="lbl">Starting the server</span>
+        <span class="meta" data-meta="2"></span>
+      </li>
+      <li class="step" data-step="3" data-state="pending">
+        <span class="pip"></span>
+        <span class="lbl">Loading the interface</span>
+        <span class="meta" data-meta="3"></span>
+      </li>
+    </ol>
+
+    <div class="status" id="status" data-tone="info">
+      <span class="dot"></span>
+      <span id="msg">Starting…</span>
+    </div>
+
+    <div class="logwrap">
+      <div class="loghead">
+        <span class="ltitle"><i></i> server log</span>
+        <button id="toggle" title="show/hide">hide</button>
+      </div>
+      <pre class="log" id="log"></pre>
+    </div>
+
+    <div class="actions" id="actions">
+      <button class="act primary" id="retry">Retry</button>
+      <button class="act" id="log">Open log</button>
+    </div>
+
+    <div class="foot">
+      <span>port <code id="port">—</code></span>
+      <span class="sep">·</span>
+      <span id="phase">initialising</span>
+    </div>
+  </main>
+
+<script>
+  const api = window.sableDesktop
+  const body = document.body
+  const statusEl = document.getElementById('status')
+  const msgEl = document.getElementById('msg')
+  const actions = document.getElementById('actions')
+  const portEl = document.getElementById('port')
+  const phaseEl = document.getElementById('phase')
+  const logEl = document.getElementById('log')
+  const toggle = document.getElementById('toggle')
+
+  const stepEls = {
+    1: document.querySelector('.step[data-step="1"]'),
+    2: document.querySelector('.step[data-step="2"]'),
+    3: document.querySelector('.step[data-step="3"]'),
+  }
+  const metaEls = {
+    1: document.querySelector('[data-meta="1"]'),
+    2: document.querySelector('[data-meta="2"]'),
+    3: document.querySelector('[data-meta="3"]'),
+  }
+
+  let failedStep = 0
+
+  function setStep(n, state) {
+    const el = stepEls[n]
+    if (el) el.dataset.state = state
+  }
+
+  function resetSteps() {
+    failedStep = 0
+    for (const n of [1, 2, 3]) {
+      setStep(n, 'pending')
+      if (metaEls[n]) metaEls[n].textContent = ''
+    }
+    body.dataset.stage = 'idle'
+    phaseEl.textContent = 'initialising'
+  }
+
+  function syncSteps(text, tone) {
+    const t = String(text || '').toLowerCase()
+
+    if (tone === 'error') {
+      let target = failedStep || 1
+      for (const n of [1, 2, 3]) {
+        if (stepEls[n] && stepEls[n].dataset.state === 'active') target = n
+      }
+      setStep(target, 'fail')
+      failedStep = target
+      body.dataset.stage = 'error'
+      phaseEl.textContent = 'failed'
+      return
+    }
+
+    if (/looking for/.test(t)) {
+      setStep(1, 'active')
+      body.dataset.stage = 'checking'
+      phaseEl.textContent = 'probing'
+      return
+    }
+
+    if (/connected to a running/.test(t)) {
+      setStep(1, 'done')
+      setStep(2, 'pending')
+      setStep(3, 'active')
+      body.dataset.stage = 'loading'
+      phaseEl.textContent = 'attached'
+      return
+    }
+
+    if (/no server on that port|starting one/.test(t)) {
+      setStep(1, 'done')
+      setStep(2, 'active')
+      body.dataset.stage = 'booting'
+      phaseEl.textContent = 'starting'
+      return
+    }
+
+    if (/falling back|starter failed/.test(t)) {
+      setStep(1, 'done')
+      setStep(2, 'active')
+      body.dataset.stage = 'booting'
+      phaseEl.textContent = 'fallback'
+      return
+    }
+
+    if (/booting|server starting/.test(t)) {
+      setStep(1, 'done')
+      setStep(2, 'active')
+      body.dataset.stage = 'booting'
+      phaseEl.textContent = 'starting'
+      return
+    }
+
+    if (/server ready|loading sable/.test(t)) {
+      setStep(1, 'done')
+      setStep(2, 'done')
+      setStep(3, 'active')
+      body.dataset.stage = 'loading'
+      phaseEl.textContent = 'loading'
+      return
+    }
+  }
+
+  toggle.onclick = () => {
+    const hidden = logEl.style.display === 'none'
+    logEl.style.display = hidden ? 'block' : 'none'
+    toggle.textContent = hidden ? 'hide' : 'show'
+  }
+
+  function renderLog(text) {
+    if (!text) { logEl.textContent = ''; return }
+    const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24
+    logEl.innerHTML = ''
+    for (const line of text.split('\n')) {
+      const span = document.createElement('span')
+      span.textContent = line + '\n'
+      if (/FATAL|ERROR|Traceback|refused|No such file/i.test(line)) span.className = 'err'
+      else if (/\[ok\]|ready|valid|online/i.test(line)) span.className = 'ok'
+      else if (/^\s*$|^=====/.test(line)) span.className = 'dim'
+      logEl.appendChild(span)
+    }
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight
+  }
+
+  function setStatus({ text, tone }) {
+    msgEl.textContent = text
+    statusEl.dataset.tone = tone || 'info'
+    actions.classList.toggle('show', tone === 'error')
+    syncSteps(text, tone)
+
+    const m = /(\d+)s\b/.exec(String(text || ''))
+    if (m && body.dataset.stage === 'booting') metaEls[2].textContent = m[1] + 's'
+    if (tone === 'error') metaEls[3].textContent = ''
+  }
+
+  if (api) {
+    api.onStatus(setStatus)
+    api.onLog((p) => renderLog(p && p.text))
+    api.info().then((i) => { portEl.textContent = i.port }).catch(() => {})
+  }
+
+  document.getElementById('retry').onclick = () => {
+    resetSteps()
+    setStatus({ text: 'Retrying…', tone: 'info' })
+    actions.classList.remove('show')
+    api && api.retry()
+  }
+
+  document.getElementById('log').onclick = () => {
+    if (!api) return
+    api.info().then((i) => {
+      if (i.log) api.openExternal('file://' + i.log)
+    }).catch(() => {})
+  }
+</script>
+</body>
+</html>

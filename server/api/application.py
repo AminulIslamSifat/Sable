@@ -61,6 +61,7 @@ from .routes.checkpoints import router as checkpoints_router
 from .routes.personas import router as personas_router
 from .routes.update import router as update_router
 from .routes.dashboard import router as dashboard_router
+from .routes.processes import router as processes_router
 from .routes.telegram_bot import router as telegram_bot_router
 from .routes.ocr import router as ocr_router
 from .routes.ocr_local import router as ocr_local_router
@@ -449,6 +450,7 @@ app.include_router(checkpoints_router)
 app.include_router(personas_router)
 app.include_router(update_router)
 app.include_router(dashboard_router)
+app.include_router(processes_router)
 app.include_router(telegram_bot_router)
 app.include_router(ocr_router)
 app.include_router(ocr_local_router)

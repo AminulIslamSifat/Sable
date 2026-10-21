@@ -653,8 +653,28 @@
               } else {
                 html = data.content;
               }
-              const blob = new Blob([html], { type: 'text/html' });
-              window.open(URL.createObjectURL(blob), '_blank');
+
+              // Inline assets resolve through serve-dir, same as the IDE run button.
+              if (/\.html?$/i.test(_pvPath)) {
+                const _dir = _pvPath.slice(0, _pvPath.lastIndexOf("/"));
+                const _base = '<base href="/api/filesystem/serve-dir/?base=' + encodeURIComponent(_dir) + '&">';
+                html = /<head[^>]*>/i.test(html)
+                  ? html.replace(/<head([^>]*)>/i, '<head$1>' + _base)
+                  : _base + html;
+              }
+
+              // Dock it beside the chat — never a new browser tab.
+              if (window.SablePreview) {
+                window.SablePreview.open({
+                  title: _pvPath.split("/").pop() || "Preview",
+                  html: html,
+                  source: data.content,
+                  path: _pvPath,
+                });
+              } else {
+                const blob = new Blob([html], { type: 'text/html' });
+                window.open(URL.createObjectURL(blob), '_blank');
+              }
             })
             .catch(() => showToast('Failed to read file for preview', 'error'));
         };

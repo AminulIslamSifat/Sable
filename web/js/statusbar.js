@@ -535,8 +535,10 @@
 
 
     function _isScraperMode() {
-      const btn = document.getElementById('modeScraper');
-      return btn && btn.classList.contains('active');
+      // The API/Scraper toggle was removed from the sidebar; the mode is now
+      // owned by server settings and mirrored onto window._sableScraperEnabled
+      // by appearance.js. Without that hint, assume API mode.
+      return window._sableScraperEnabled === true;
     }
 
     async function loadModels() {

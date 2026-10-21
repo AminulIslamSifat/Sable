@@ -457,6 +457,7 @@
           if (typeof window._sableLoadChats === "function") window._sableLoadChats();
         } else if (evt.type === "file_edit") {
           handleFileEdit(evt, false);
+          window.dispatchEvent(new CustomEvent("sable:file-edit", { detail: evt }));
         } else if (evt.type === "memory_used") {
           if (Array.isArray(evt.memories) && evt.memories.length) {
             const chip = createMemoryChip(evt.memories);
@@ -3346,6 +3347,7 @@
             }
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
+            window.dispatchEvent(new CustomEvent("sable:file-edit", { detail: evt }));
             ui.trackFileEdit(evt);
             // Live-refresh the Monaco editor if the edited file is currently open
             if (typeof window.refreshIdeFile === "function" && evt.path) {

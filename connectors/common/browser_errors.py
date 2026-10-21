@@ -26,13 +26,14 @@ INPUT_MISSING = "input_missing"        # composer textarea not found
 CAPTURE_TIMEOUT = "capture_timeout"    # no response started within the deadline
 CAPTURE_EMPTY = "capture_empty"        # stream finished but yielded no text
 ENGINE_DEAD = "engine_dead"            # engine object unusable
+RATE_LIMITED = "rate_limited"          # upstream refused: too many messages
 UNKNOWN = "unknown"
 
 ALL_CODES = (
     SLOT_FULL, BROWSER_DEAD, CDP_TIMEOUT, CDP_FAILED, PROFILE_LOCKED,
     NO_BROWSER_BINARY, CONTEXT_CLOSED, PAGE_CLOSED, SESSION_NOT_FOUND,
     NOT_LOGGED_IN, SEND_FAILED, INPUT_MISSING, CAPTURE_TIMEOUT,
-    CAPTURE_EMPTY, ENGINE_DEAD, UNKNOWN,
+    CAPTURE_EMPTY, ENGINE_DEAD, RATE_LIMITED, UNKNOWN,
 )
 
 # A browser restart (kill + relaunch + re-navigate) can plausibly fix these.
@@ -44,7 +45,17 @@ RECOVERABLE = {
 
 # Retrying these without human action just burns time — the browser is fine,
 # the account is not.
+#
+# RATE_LIMITED belongs here even though a *different account* could succeed:
+# relaunching the SAME browser and re-sending the SAME message to a limiter that
+# just said "Messages too frequent. Try again later." cannot possibly work, and
+# each retry re-hits the locked endpoint. Account switching is the chat route's
+# job — it needs this code surfaced as a `rate_limited` event, not swallowed by
+# a browser-recovery retry loop.
 NEEDS_USER = {NO_BROWSER_BINARY, NOT_LOGGED_IN}
+
+# Codes that must NEVER be retried by the connector's recovery loop.
+NO_RETRY = {RATE_LIMITED}
 
 # Failures where the turn ALREADY reached upstream. Re-sending would duplicate
 # the message, so recovery retries only the capture phase.
@@ -67,6 +78,7 @@ DESCRIPTIONS = {
     CAPTURE_TIMEOUT: "the model never started responding",
     CAPTURE_EMPTY: "the response stream produced no text",
     ENGINE_DEAD: "the browser engine is unusable",
+    RATE_LIMITED: "the account is rate limited — too many messages, try again later",
     UNKNOWN: "an unrecognised browser error",
 }
 
@@ -98,6 +110,11 @@ def needs_user(code: str) -> bool:
     return code in NEEDS_USER
 
 
+def no_retry(code: str) -> bool:
+    """True when the recovery loop must surface this code instead of retrying."""
+    return code in NO_RETRY
+
+
 def describe(code: str) -> str:
     return DESCRIPTIONS.get(code, code)
 
@@ -105,6 +122,14 @@ def describe(code: str) -> str:
 # Most-specific first: the first pattern that matches wins. Order matters —
 # "browser has been closed" must resolve to CONTEXT_CLOSED, not BROWSER_DEAD.
 _PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Must precede CAPTURE_EMPTY/BROWSER_DEAD: a soft rate-limit banner leaves
+    # the assistant bubble empty, so without this the failure classifies as a
+    # retryable capture problem and gets hammered 3x.
+    (RATE_LIMITED, (
+        "messages too frequent", "too many requests", "try again later",
+        "rate limit", "ratelimit", "rate_limit", "usage limit",
+        "quota exceeded", "daily usage",
+    )),
     (SLOT_FULL, (
         "noslotavailable", "no browser slot free", "slots are held by live chat",
         "browser slots are held", "all 2 browser slots",
@@ -167,6 +192,16 @@ def classify(exc: BaseException) -> str:
     """Map any exception to a stable browser failure code."""
     if isinstance(exc, BrowserError):
         return exc.code
+
+    # Soft rate limit: the engine raises a dedicated type. Check it
+    # structurally (same trick as NoSlotAvailable) so this module never needs
+    # to import browser_scraper at module scope.
+    try:
+        from connectors.common.browser_scraper import SoftRateLimitError
+        if isinstance(exc, SoftRateLimitError):
+            return RATE_LIMITED
+    except Exception:
+        pass
 
     # Governor exhaustion is a distinct type — check it structurally so this
     # module never needs to import the governor at module scope.

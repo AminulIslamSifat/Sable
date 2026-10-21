@@ -242,6 +242,11 @@
     bar.appendChild(mkBtn("Open", function () {
       try {
         var doc = blk.src || "";
+        // Prefer the docked side pane; it owns its own blob lifetime.
+        if (window.SablePreview) {
+          window.SablePreview.open({ title: blk.title || "Preview", html: doc, source: doc });
+          return;
+        }
         if (!/charset/i.test(doc)) {
           if (/<head[^>]*>/i.test(doc)) {
             doc = doc.replace(/<head[^>]*>/i, function (m) { return m + '<meta charset="utf-8">'; });

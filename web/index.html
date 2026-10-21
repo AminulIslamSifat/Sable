@@ -50,11 +50,13 @@
   <link rel="stylesheet" href="/static/css/layout.css?v=100">
   <link rel="stylesheet" href="/static/css/ide.css?v=100">
   <link rel="stylesheet" href="/static/css/chat.css?v=113">
-  <link rel="stylesheet" href="/static/css/panels.css?v=101">
+  <link rel="stylesheet" href="/static/css/panels.css?v=111">
+  <link rel="stylesheet" href="/static/css/processes.css?v=10">
   <link rel="stylesheet" href="/static/css/components.css?v=101">
   <link rel="stylesheet" href="/static/css/render-components.css?v=37">
   <link rel="stylesheet" href="/static/css/render-html.css?v=9">
-  <link rel="stylesheet" href="/static/css/responsive.css?v=100">
+  <link rel="stylesheet" href="/static/css/preview-pane.css?v=6">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=101">
   <link rel="stylesheet" href="/static/css/agents.css?v=101">
   <link rel="stylesheet" href="/static/css/cookbook.css?v=101">
   <link rel="stylesheet" href="/static/css/search-panel.css?v=101">
@@ -321,14 +323,16 @@
           <img src="/static/assets/sable_icon.svg" alt="Sable">
           <div class="brand-text">
             <h1>Sable</h1>
-            <span>agentic chat</span>
+            <span>agent</span>
           </div>
         </div>
         <div class="sidebar-icon-row">
-          <div class="mode-toggle-compact" id="modeSwitcher" title="Switch between API and Scraper mode" onclick="event.stopPropagation()" style="--n:2; --i:0;">
-            <button id="modeApi" class="active" aria-label="API mode"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i></button>
-            <button id="modeScraper" aria-label="Scraper mode"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i></button>
-          </div>
+          <button id="procSidebarPill" class="sidebar-mini-pill sidebar-newchat-icon proc-sidebar-pill" title="All Sable processes">
+            <i data-lucide="activity" class="icon-lucide"></i><span id="procSidebarCount">0</span>
+          </button>
+          <button id="sidebarNewChatBtn" class="sidebar-mini-pill sidebar-newchat-icon" title="New Chat" aria-label="New Chat">
+            <span class="icon-emoji">✨</span><i data-lucide="square-pen" class="icon-lucide"></i>
+          </button>
         </div>
       </div>
       <div class="sidebar-top-content">
@@ -337,14 +341,6 @@
           <button id="layoutChat" title="Chat mode (no tools)"><span class="icon-emoji">💬</span>Chat</button>
           <button id="layoutStudy" title="Study mode"><span class="icon-emoji">📖</span>Study</button>
         </div>
-        <button id="sidebarNewChatBtn" class="sidebar-footer-btn" title="New Chat">
-          <span class="icon-emoji">✨</span>New Chat
-        </button>
-        <div class="scraper-engine-wrap" id="scraperEngineWrap">
-          <select id="scraperEngineSelect" title="Scraper engine"></select>
-        </div>
-        <div class="scraper-status" id="scraperStatus"></div>
-
       </div>
     </div>
     <div class="sidebar-section sidebar-chats">
@@ -776,6 +772,11 @@
               <div class="status-dropdown-menu" id="personaMenu"></div>
             </div>
           </div>
+          <div class="status-item sb-procs">
+            <button class="proc-pill" id="procPill" title="Sable processes" aria-label="Sable processes">
+              <span class="proc-pill-dot"></span><span class="proc-pill-count" id="procPillCount">0</span>
+            </button>
+          </div>
           <div class="status-item sb-right">
             <span class="status-context" id="statusContext" title="Context usage"></span>
           </div>
@@ -783,6 +784,8 @@
       </div>
     </div>
   </main>
+
+    <aside id="previewPane" class="preview-pane" aria-hidden="true"></aside>
 
   <div id="toast"></div>
 
@@ -2247,6 +2250,80 @@
   </div>
 
   <!-- Cheat Sheet Overlay -->
+  <!-- Running Processes Panel -->
+  <div id="procOverlay" class="settings-overlay hidden">
+    <div class="settings-panel proc-panel">
+
+      <div class="proc-head">
+        <h2 class="proc-title">Processes <span class="proc-by">by Sable</span></h2>
+        <span class="proc-updated" id="procUpdated"></span>
+        <div class="proc-head-actions">
+          <button id="procRefreshBtn" class="icon-btn" title="Refresh"><i data-lucide="refresh-cw" class="icon-lucide"></i></button>
+          <button id="procClose" class="icon-btn" title="Close"><i data-lucide="x" class="icon-lucide"></i></button>
+        </div>
+      </div>
+
+      <div class="proc-sys">
+        <span class="proc-sys-label"><i data-lucide="cpu" class="icon-lucide"></i>CPU</span>
+        <div class="proc-sys-bar"><div class="proc-sys-fill" id="procCpuFill"></div></div>
+        <span class="proc-sys-val" id="procCpuVal"></span>
+
+        <span class="proc-sys-label"><i data-lucide="memory-stick" class="icon-lucide"></i>RAM</span>
+        <div class="proc-sys-bar"><div class="proc-sys-fill" id="procRamFill"></div></div>
+        <span class="proc-sys-val" id="procRamVal"></span>
+
+        <span class="proc-sys-label"><i data-lucide="hard-drive" class="icon-lucide"></i>SWAP</span>
+        <div class="proc-sys-bar"><div class="proc-sys-fill" id="procSwapFill"></div></div>
+        <span class="proc-sys-val" id="procSwapVal"></span>
+
+        <span class="proc-sys-load" id="procLoad"></span>
+      </div>
+
+      <div class="proc-toolbar">
+        <input id="procFilter" class="proc-filter" type="text" placeholder="Filter by name, command or PID" autocomplete="off" spellcheck="false" />
+        <select id="procSort" class="proc-sort" title="Sort by">
+          <option value="cpu">CPU</option>
+          <option value="mem">MEM</option>
+          <option value="rss">RSS</option>
+          <option value="pid">PID</option>
+          <option value="cmd">COMMAND</option>
+        </select>
+        <button id="procSortDir" class="proc-sort-dir" title="Toggle sort direction"><i data-lucide="arrow-down" class="icon-lucide"></i></button>
+      </div>
+
+      <div class="proc-lock" id="procLock" hidden>
+        <span>Sable-spawned only</span>
+        <button id="procLockClear" type="button">Show all</button>
+      </div>
+
+      <div class="proc-tabs">
+        <button class="proc-tab active" data-tab="all">All</button>
+        <button class="proc-tab" data-tab="browser">Browser</button>
+        <button class="proc-tab" data-tab="command">Running command</button>
+      </div>
+
+      <div class="proc-table">
+        <div class="proc-cols">
+          <span>PID</span><span>CPU%</span><span>MEM%</span><span>RSS</span><span>S</span><span>Command</span><span></span>
+        </div>
+        <div id="procList" class="proc-list"></div>
+      </div>
+
+      <div class="proc-foot">
+        <span class="proc-foot-count" id="procFootCount"></span>
+        <span class="proc-foot-rate">
+          <input id="procRate" type="range" min="1000" max="10000" step="1000" value="4000" />
+          <span id="procRateVal">4000ms</span>
+        </span>
+      </div>
+
+      <div class="proc-hints">
+        <kbd>Ctrl+F</kbd> filter &middot; <kbd>Ctrl+D</kbd> kill selected &middot; arrows move
+      </div>
+
+    </div>
+  </div>
+
   <div id="cheatSheetOverlay" class="settings-overlay hidden">
     <div class="settings-panel" style="max-width:520px;">
       <div class="settings-header">
@@ -2362,13 +2439,14 @@
   <script src="/static/js/msg-actions.js?v=1"></script>
   <script src="/static/js/markdown.js?v=1"></script>
   <script src="/static/js/lightbox.js?v=3"></script>
-  <script src="/static/js/chat.js?v=13"></script>
+  <script src="/static/js/chat.js?v=14"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
   <script src="/static/js/gen-history.js?v=1"></script>
-  <script src="/static/js/tracknote.js?v=8"></script>
+  <script src="/static/js/tracknote.js?v=10"></script>
   <script src="/static/js/render-components.js?v=36"></script>
   <script src="/static/js/render-html.js?v=7"></script>
-  <script src="/static/js/sse.js?v=28"></script>
+  <script src="/static/js/preview-pane.js?v=12"></script>
+  <script src="/static/js/sse.js?v=29"></script>
   <script src="/static/js/sidebar.js?v=2"></script>
   <script src="/static/js/statusbar.js?v=2"></script>
   <script src="/static/js/settings-projects.js?v=3"></script>
@@ -2391,7 +2469,8 @@
   <script src="/static/js/prompt-panel.js?v=1"></script>
   <script src="/static/js/ocr-panel.js?v=1"></script>
   <script src="/static/js/agents.js?v=34"></script>
-  <script src="/static/js/filesystem.js?v=32"></script>
+  <script src="/static/js/filesystem.js?v=35"></script>
+  <script src="/static/js/processes.js?v=11"></script>
   <script src="/static/js/study-timer.js?v=2"></script>
   <script src="/static/js/study-notes.js?v=12"></script>
   <script src="/static/js/study-srs.js?v=1"></script>

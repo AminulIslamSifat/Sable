@@ -1589,156 +1589,22 @@ window.safeCopy = async function(text) {
       updateModeButtons(saved);
     })();
 
-    // ---------- Mode Switcher (API / Scraper) ----------
-    const modeApiBtn = document.getElementById('modeApi');
-    const modeScraperBtn = document.getElementById('modeScraper');
-    const scraperEngineWrap = document.getElementById('scraperEngineWrap');
-    const scraperEngineSelect = document.getElementById('scraperEngineSelect');
-    const scraperStatusEl = document.getElementById('scraperStatus');
+    // ---------- Scraper mode state (toggle UI removed from sidebar) ----------
+    // Mode is owned by server settings. `scraperMode` stays a top-level binding
+    // because settings-init.js reads it as a global, and statusbar.js reads the
+    // window flag. Both are kept in sync from the single server fetch below.
     let scraperMode = false;
-    let scraperEngines = [];
+    window._sableScraperEnabled = false;
 
-    function setScraperStatus(msg, type) {
-      scraperStatusEl.textContent = msg;
-      scraperStatusEl.className = 'scraper-status visible ' + (type || '');
-    }
-
-    function updateModeUI() {
-      modeApiBtn.classList.toggle('active', !scraperMode);
-      modeScraperBtn.classList.toggle('active', scraperMode);
-      scraperEngineWrap.classList.toggle('visible', scraperMode);
-      if (!scraperMode) {
-        scraperStatusEl.className = 'scraper-status';
-      }
-    }
-
-    async function loadScraperEngines() {
-      try {
-        const res = await fetch('/api/settings/scraper/engines');
-        if (res.ok) {
-          const data = await res.json();
-          scraperEngines = data.engines || [];
-          scraperEngineSelect.innerHTML = '';
-          for (const eng of scraperEngines) {
-            const opt = document.createElement('option');
-            opt.value = eng.id;
-            opt.textContent = eng.label;
-            scraperEngineSelect.appendChild(opt);
-          }
-        }
-      } catch {}
-    }
-
-    async function loadScraperSettings() {
-      try {
-        const res = await fetch('/api/settings/scraper');
-        if (res.ok) {
-          const data = await res.json();
-          scraperMode = !!data.enabled;
-          if (data.engine_type && scraperEngineSelect) {
-            scraperEngineSelect.value = data.engine_type;
-          }
-          updateModeUI();
-          if (scraperMode) {
-            setScraperStatus('● Browser connected — ' + (data.engine_label || 'Scraper'), 'ok');
-          }
-        }
-      } catch {}
-    }
-
-    async function setScraperMode(enabled) {
-      scraperMode = enabled;
-      updateModeUI();
-      if (enabled) {
-        setScraperStatus('Launching browser…', '');
-      }
-      try {
-        const payload = { enabled, headless: false };
-        if (enabled && scraperEngineSelect.value) {
-          payload.engine_type = scraperEngineSelect.value;
-        }
-        const res = await fetch('/api/settings/scraper', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          const data = await res.json();
-          scraperMode = !!data.enabled;
-          updateModeUI();
-          if (data.enabled) {
-            const pl = data.prelaunch;
-            if (pl && pl.status === 'ok') {
-              setScraperStatus('● Browser launched — ' + (data.engine_label || 'Scraper'), 'ok');
-            } else if (pl && pl.status === 'error') {
-              setScraperStatus('✗ ' + pl.message, 'err');
-            } else {
-              setScraperStatus('● Scraper enabled — ' + (data.engine_label || ''), 'ok');
-            }
-            showToast('Scraper mode ON — headed browser', 'success');
-            await loadModels();
-            // Navigate to latest scraper chat
-            await loadChats('scraper');
-            if (chatList.length > 0) await selectChat(chatList[0].id);
-          } else {
-            setScraperStatus('', '');
-            showToast('Scraper mode OFF — API chat', 'success');
-            await loadModels();
-            // Navigate to latest API chat
-            await loadChats('api');
-            if (chatList.length > 0) await selectChat(chatList[0].id);
-          }
-        } else {
-          const err = await res.json().catch(() => ({}));
-          showToast(err.detail || 'Could not update scraper mode', 'error');
-          scraperMode = !enabled;
-          updateModeUI();
-        }
-      } catch (e) {
-        showToast('Scraper mode error: ' + e.message, 'error');
-        scraperMode = !enabled;
-        updateModeUI();
-      }
-    }
-
-    modeApiBtn.addEventListener('click', () => {
-      if (!scraperMode) return;
-      setScraperMode(false);
-    });
-
-    modeScraperBtn.addEventListener('click', () => {
-      if (scraperMode) return;
-      setScraperMode(true);
-    });
-
-    scraperEngineSelect.addEventListener('change', async () => {
-      if (!scraperMode) return;
-      try {
-        const res = await fetch('/api/settings/scraper', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ engine_type: scraperEngineSelect.value, enabled: true, headless: false })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const pl = data.prelaunch;
-          if (pl && pl.status === 'ok') {
-            setScraperStatus('● Browser relaunched — ' + (data.engine_label || ''), 'ok');
-          } else if (pl && pl.status === 'error') {
-            setScraperStatus('✗ ' + pl.message, 'err');
-          }
-          showToast('Engine switched to ' + (data.engine_label || scraperEngineSelect.value), 'success');
-          await loadModels();
-        }
-      } catch {}
-    });
-
-    loadScraperEngines().then(async () => {
-      await loadScraperSettings();
-      // Refresh model list now that scraper state is known — if scraper is
-      // active with DeepSeek the dropdown must show DS model types, not Qwen.
-      await loadModels();
-    });
+    fetch('/api/settings/scraper')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data) return;
+        scraperMode = !!data.enabled;
+        window._sableScraperEnabled = scraperMode;
+        if (scraperMode && typeof loadModels === 'function') loadModels();
+      })
+      .catch(() => {});
 
   // ── Browser Session Monitor ──────────────────────────────────
   // Auth-aware fetch header — a raw fetch() bypasses the global wrapper, so
@@ -1910,12 +1776,20 @@ window.safeCopy = async function(text) {
   });
 
   // Code block run/preview button (delegated)
+  // Capture phase: some panes stopPropagation on clicks, so listening in the
+  // bubble phase can swallow the event before it reaches us.
   document.addEventListener('click', (e) => {
     const runBtn = e.target.closest('.code-run-btn');
     if (!runBtn) return;
-    const block = runBtn.closest('.code-block');
+    e.preventDefault();
+    e.stopPropagation();
+
+    const block = runBtn.closest('.code-block') || runBtn.parentElement;
     const codeEl = block?.querySelector('pre code');
-    if (!codeEl) return;
+    if (!codeEl) {
+      if (typeof showToast === 'function') showToast('Could not read this code block', 'error');
+      return;
+    }
     const lang = (runBtn.dataset.lang || '').toLowerCase();
     const raw = codeEl.textContent;
 
@@ -1932,9 +1806,14 @@ window.safeCopy = async function(text) {
       html = raw;
     }
 
-    const blob = new Blob([html], { type: 'text/html' });
-    window.open(URL.createObjectURL(blob), '_blank');
-  });
+    // Open in the docked preview pane (Code ⇄ Web tabs), not a new tab.
+    if (window.SablePreview) {
+      window.SablePreview.open({ title: 'Preview', html: html, source: raw });
+    } else {
+      const blob = new Blob([html], { type: 'text/html' });
+      window.open(URL.createObjectURL(blob), '_blank');
+    }
+  }, true);
 
   // Code block copy button (delegated)
   document.addEventListener('click', (e) => {

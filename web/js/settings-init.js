@@ -886,8 +886,9 @@
     const brandRow = document.querySelector('.brand-row');
     if (brandRow) {
       brandRow.addEventListener('click', (e) => {
-        // Don't toggle if they clicked the new-chat button itself
-        if (e.target.closest('#newChat')) return;
+        // Don't toggle if they clicked an interactive control in the brand row
+        // (new chat lives here now, alongside the other sidebar icon buttons).
+        if (e.target.closest('#newChat, #sidebarNewChatBtn, .sidebar-icon-row')) return;
         document.querySelector('.sidebar-top-content')?.classList.toggle('collapsed');
       });
     }

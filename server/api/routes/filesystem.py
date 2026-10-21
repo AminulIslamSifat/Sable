@@ -667,6 +667,236 @@ def filesystem_pending_diff(path: str = Query(..., description="File path to che
     }
 
 
+# --------------------------------------------------------------------------
+# Changed-files feed (the preview pane's "Files Changed" tab)
+# --------------------------------------------------------------------------
+
+_MAX_CHANGES = 500
+_CHANGE_WALK_DEPTH = 12
+
+# The project root — what "all changed files" means when no tree is given.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_CHANGE_SKIP = {
+    ".git", "__pycache__", "node_modules", ".venv", "venv", ".cache",
+    ".local", ".npm", ".mozilla", ".thunderbird", ".pytest_cache",
+    "dist", "build", "site-packages", ".mypy_cache", ".ruff_cache",
+    "target", "vendor", "sable_output", "output",
+}
+
+
+def _walk_change_backups(root: Path):
+    """Yield (live_file, backup_file) pairs under root, newest backup first.
+
+    Backups live in a sibling `.editor_tools_backups` dir next to the file, named
+    `<original>.<timestamp>.bak`. We never descend into the backup dir itself.
+    """
+    base_depth = len(root.parts)
+    for dirpath, dirnames, _filenames in os.walk(root):
+        d = Path(dirpath)
+
+        if d.name == _BACKUP_DIR_NAME:
+            dirnames[:] = []
+            live_dir = d.parent
+            try:
+                entries = list(d.iterdir())
+            except OSError:
+                continue
+            for bak in entries:
+                if not bak.name.endswith(".bak"):
+                    continue
+                stem = bak.name[: -len(".bak")]
+                if "." not in stem:
+                    continue
+                original = stem.rsplit(".", 1)[0]
+                live = live_dir / original
+                if live.is_file():
+                    yield live, bak
+            continue
+
+        if len(d.parts) - base_depth >= _CHANGE_WALK_DEPTH:
+            dirnames[:] = []
+            continue
+
+        dirnames[:] = [
+            n
+            for n in dirnames
+            if n == _BACKUP_DIR_NAME or (n not in _CHANGE_SKIP and not n.startswith("."))
+        ]
+
+
+@router.get("/api/filesystem/changes")
+def filesystem_changes(
+    root: str = Query("", description="Tree to scan"),
+    max_age: int = Query(_MAX_DIFF_AGE_SECONDS, description="Ignore backups older than this (seconds)"),
+) -> dict[str, Any]:
+    """List files with a *recent*, unreviewed edit backup, newest first."""
+    import time as _time
+
+    if root:
+        target = Path(os.path.expanduser(root))
+        if not target.is_dir() or not _is_allowed(str(target)):
+            target = _PROJECT_ROOT
+    else:
+        target = _PROJECT_ROOT
+
+    if not target.is_dir():
+        return {"changes": [], "count": 0, "error": "invalid root"}
+
+    seen: dict[str, dict[str, Any]] = {}
+    now = _time.time()
+
+    for live, bak in _walk_change_backups(target):
+        try:
+            st = bak.stat()
+        except OSError:
+            continue
+
+        # Stale backups are history, not pending work.
+        if now - st.st_mtime > max_age:
+            continue
+
+        # Only the newest backup per live file matters.
+        prev = seen.get(str(live))
+        if prev and prev["_mtime"] >= st.st_mtime:
+            continue
+
+        # A backup identical to the live file is not a pending change — the
+        # edit was already accepted, or the file was written back unchanged.
+        # Comparing here keeps the list honest instead of listing every
+        # touched file.
+        try:
+            if live.stat().st_size == st.st_size:
+                if live.read_bytes() == bak.read_bytes():
+                    seen.pop(str(live), None)
+                    continue
+            else:
+                # Sizes differ, so it definitely changed — nothing to read.
+                pass
+        except OSError:
+            continue
+
+        seen[str(live)] = {
+            "path": str(live),
+            "name": live.name,
+            "dir": str(live.parent),
+            "backup_path": str(bak),
+            "age_seconds": int(now - st.st_mtime),
+            "_mtime": st.st_mtime,
+        }
+
+    changes = sorted(seen.values(), key=lambda c: c["_mtime"], reverse=True)[:_MAX_CHANGES]
+    for c in changes:
+        c.pop("_mtime", None)
+
+    return {"changes": changes, "count": len(changes), "root": str(target)}
+
+
+@router.get("/api/filesystem/change-detail")
+def filesystem_change_detail(
+    path: str = Query(..., description="Live file path"),
+    backup: str = Query("", description="Explicit backup path"),
+) -> dict[str, Any]:
+    """Original + modified content for one changed file (no 1-hour cutoff)."""
+    live = Path(path)
+    if not _is_allowed(path) or not live.is_file():
+        return {"error": "file not found"}
+
+    bak = Path(backup) if backup else None
+    if bak is None or not bak.is_file():
+        info = _find_latest_backup(path)
+        bak = Path(info["backup_path"]) if info else None
+
+    try:
+        modified = live.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return {"error": f"read failed: {e}"}
+
+    # A created file has no backup. Diff it against an empty buffer so the
+    # whole file reads as added — which is exactly what happened.
+    if bak is None:
+        return {
+            "path": str(live),
+            "name": live.name,
+            "backup_path": "",
+            "created": True,
+            "original_content": "",
+            "modified_content": modified,
+        }
+
+    try:
+        original = bak.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return {"error": f"read failed: {e}"}
+
+    return {
+        "path": str(live),
+        "name": live.name,
+        "backup_path": str(bak),
+        "created": False,
+        "original_content": original,
+        "modified_content": modified,
+    }
+
+
+_OPEN_IN_APPS: dict[str, list[str]] = {
+    "filemanager": ["xdg-open"],
+    "vscode": ["code", "-n"],
+    "cursor": ["cursor", "-n"],
+    "zed": ["zed"],
+    "sublime": ["subl", "-n"],
+}
+
+
+@router.get("/api/filesystem/editors")
+def filesystem_editors() -> dict[str, Any]:
+    """Which "Open in" targets actually exist on this machine."""
+    import shutil
+
+    out = []
+    for key, cmd in _OPEN_IN_APPS.items():
+        out.append({"id": key, "available": bool(shutil.which(cmd[0]))})
+    return {"editors": out}
+
+
+@router.post("/api/filesystem/open-in")
+async def filesystem_open_in(request: Request) -> dict[str, Any]:
+    """Launch a file/dir in an external editor or the system file manager."""
+    import shutil
+    import subprocess
+
+    body = await request.json()
+    path = body.get("path", "")
+    app = str(body.get("app", "")).lower()
+
+    if not path or not _is_allowed(path):
+        return {"error": "Access denied"}
+    if app not in _OPEN_IN_APPS:
+        return {"error": f"Unknown app: {app}"}
+
+    target = Path(os.path.expanduser(path))
+    if not target.exists():
+        return {"error": "Path does not exist"}
+
+    cmd = list(_OPEN_IN_APPS[app])
+    if not shutil.which(cmd[0]):
+        return {"error": f"{cmd[0]} is not installed"}
+
+    # File managers want the containing dir; editors want the file itself.
+    cmd.append(str(target.parent if app == "filemanager" else target))
+
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        return {"error": f"launch failed: {e}"}
+
+    return {"ok": True, "app": app}
+
+
 @router.post("/api/filesystem/accept-edit")
 async def filesystem_accept_edit(request: Request) -> dict[str, Any]:
     """Accept an edit — keep the new content, remove the backup."""

@@ -1,0 +1,12 @@
+{
+  "name": "sable-desktop",
+  "productName": "Sable",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sable desktop shell — attaches to a running server on :61771 or boots one",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron44 .",
+    "start:port": "electron44 . --port=61771"
+  }
+}

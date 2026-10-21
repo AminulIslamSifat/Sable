@@ -1,0 +1,434 @@
+/* ==========================================================================
+   Sable Processes — minimal monitor panel
+   Flat table, aligned numeric columns, no nested cards.
+   ========================================================================== */
+
+/* ---------- status-bar pill ---------- */
+.proc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 17px;
+  padding: 0 7px 0 5px;
+  border: none;
+  border-radius: 99em;
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--panel) 22%, transparent);
+  box-shadow: inset 0 0 0 1px var(--shadow-inner-glow);
+  transition: color 0.15s, background 0.15s;
+}
+.proc-pill:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.proc-pill-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); opacity: 0.55; }
+.proc-pill.live .proc-pill-dot {
+  background: #6fcf97; opacity: 1;
+  box-shadow: 0 0 5px color-mix(in srgb, #6fcf97 70%, transparent);
+}
+.proc-pill.live { color: var(--text); }
+
+/* ---------- panel shell ---------- */
+.proc-panel {
+  width: min(94vw, 720px);
+  /* .settings-panel hardcodes height:600px — override it, do not just cap it,
+     otherwise the panel keeps a fixed slab and clips the footer/hints when
+     the row count changes. */
+  /* Fixed height, not auto: the row list needs a bounded middle region to
+     scroll inside. With height:auto the panel grew to fit every row and the
+     footer drifted off screen. */
+  height: min(86vh, 880px);
+  max-height: min(86vh, 880px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.proc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 18px 12px;
+  flex-shrink: 0;
+}
+.proc-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0;
+}
+.proc-updated {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+.proc-head-actions { display: flex; align-items: center; gap: 2px; margin-left: 4px; }
+
+/* ---------- system bars ---------- */
+.proc-sys {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 0 18px 14px;
+  flex-shrink: 0;
+}
+.proc-sys-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.proc-sys-label svg { width: 12px; height: 12px; opacity: 0.7; }
+.proc-sys-bar {
+  height: 7px;
+  border-radius: 99em;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  overflow: hidden;
+}
+.proc-sys-fill {
+  height: 100%;
+  border-radius: 99em;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+.proc-sys-fill.warn { background: #fbbf24; }
+.proc-sys-fill.hot  { background: #ef4444; }
+.proc-sys-val {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  white-space: nowrap;
+  text-align: right;
+  min-width: 96px;
+}
+.proc-sys-load {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  opacity: 0.65;
+  text-align: right;
+}
+
+/* ---------- toolbar ---------- */
+.proc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 18px 10px;
+  flex-shrink: 0;
+}
+.proc-filter {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  outline: none;
+}
+.proc-filter:focus { border-color: var(--accent); }
+.proc-filter::placeholder { color: var(--text-dim); opacity: 0.6; }
+
+.proc-sort {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+}
+.proc-sort-dir {
+  height: 28px;
+  width: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.proc-sort-dir:hover { color: var(--text); }
+.proc-sort-dir svg { width: 13px; height: 13px; transition: transform 0.2s; }
+.proc-sort-dir.desc svg { transform: rotate(180deg); }
+
+/* ---------- tabs ---------- */
+/* Full-width segmented pill switch: one track, equal thirds, the active
+   segment filled. No gaps, so it reads as a single control. */
+.proc-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin: 0 18px 12px;
+  padding: 2px;
+  border-radius: 99em;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  box-shadow: inset 0 0 0 1px var(--shadow-inner-glow);
+  flex-shrink: 0;
+}
+.proc-tab {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 99em;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.13s, background 0.13s;
+}
+.proc-tab:hover { color: var(--text); }
+.proc-tab.active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* title suffix */
+.proc-by {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  opacity: 0.6;
+  margin-left: 2px;
+}
+
+/* ---------- table ---------- */
+.proc-table { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+
+.proc-cols {
+  display: grid;
+  grid-template-columns: 64px 54px 54px 66px 20px minmax(0, 1fr) 22px;
+  gap: 8px;
+  padding: 0 18px 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.proc-cols > span:nth-child(2),
+.proc-cols > span:nth-child(3),
+.proc-cols > span:nth-child(4) { text-align: right; }
+
+.proc-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 18px 10px;
+}
+
+.proc-row {
+  display: grid;
+  grid-template-columns: 64px 54px 54px 66px 20px minmax(0, 1fr) 22px;
+  gap: 8px;
+  align-items: center;
+  height: 26px;
+  padding: 0 6px;
+  margin: 0 -6px;
+  border-radius: 5px;
+  cursor: default;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.proc-row:hover { background: color-mix(in srgb, var(--panel) 40%, transparent); }
+.proc-row.selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+}
+
+.proc-c-pid   { font-family: var(--font-mono, monospace); font-size: 10.5px; opacity: 0.85; }
+.proc-c-cpu   { text-align: right; font-weight: 600; color: var(--text-dim); }
+.proc-c-mem   { text-align: right; }
+.proc-c-rss   { text-align: right; }
+.proc-c-state { text-align: center; font-family: var(--font-mono, monospace); font-size: 10px; opacity: 0.7; }
+.proc-c-cmd {
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proc-c-cmd .proc-port {
+  color: #6fcf97;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.proc-cpu-warm { color: #fbbf24; }
+.proc-cpu-hot  { color: #ef4444; }
+
+.proc-kill {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-dim);
+  opacity: 0.75;
+  background: transparent;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+/* Always visible — a hidden affordance is a missing affordance. Muted by
+   default, neutral hover. No red: closing a process is routine, not danger. */
+.proc-row:hover .proc-kill { opacity: 1; color: var(--text); }
+.proc-kill:hover {
+  opacity: 1;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 75%, transparent);
+}
+.proc-kill:active { background: color-mix(in srgb, var(--panel) 90%, transparent); }
+.proc-kill svg { width: 11px; height: 11px; }
+
+/* ---------- footer ---------- */
+.proc-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  flex-shrink: 0;
+}
+.proc-foot-count {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.proc-foot-btn {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 10.5px;
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--panel) 50%, transparent);
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.proc-foot-btn:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.proc-foot-rate {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.proc-foot-rate input[type=range] {
+  width: 110px;
+  height: 3px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.proc-hints {
+  padding: 0 18px 14px;
+  font-size: 9.5px;
+  color: var(--text-dim);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+.proc-hints kbd {
+  font-family: inherit;
+  font-size: 9.5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+}
+
+.proc-empty {
+  padding: 26px 8px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+@media (max-width: 620px) {
+  .proc-cols, .proc-row { grid-template-columns: 56px 50px 50px 20px minmax(0, 1fr) 20px; }
+  .proc-cols > span:nth-child(4), .proc-c-rss { display: none; }
+}
+
+/* ---------- sidebar pill (beside New Chat) ---------- */
+.proc-sidebar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  /* Themed text colour, not the muted/dim tone. */
+  color: var(--text);
+}
+.proc-sidebar-pill .icon-lucide { width: 14px; height: 14px; }
+.proc-sidebar-pill span {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.proc-sidebar-pill.live { color: var(--text); }
+.proc-sidebar-pill span { color: inherit; }
+.proc-sidebar-pill.live .icon-lucide { opacity: 0.75; }
+
+/* ---------- scope lock chip ---------- */
+.proc-lock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 18px 10px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  flex-shrink: 0;
+}
+.proc-lock[hidden] { display: none; }
+.proc-lock button {
+  margin-left: auto;
+  padding: 0;
+  font-size: 10.5px;
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--accent-text, var(--text));
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  opacity: 0.85;
+}
+.proc-lock button:hover { opacity: 1; }

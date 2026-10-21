@@ -1685,76 +1685,30 @@
       color: var(--danger, #ef4444);
     }
 
-    /* --- Compact API/Scraper toggle (beside logo, thinking-switcher style) --- */
-    .brand-row .mode-toggle-compact { margin-top: -3px; }
-    .mode-toggle-compact {
-      display: flex;
-      border-radius: 99em;
-      overflow: visible;
-      border: none;
-      flex-shrink: 0;
-      position: relative;
-      margin-left: auto;
-      background-color: color-mix(in srgb, var(--panel) 12%, transparent);
-      box-shadow:
-        inset 0 0 0 1px var(--shadow-inner-glow),
-        inset 1.8px 3px 0px -2px var(--shadow-inner-highlight),
-        inset -2px -2px 0px -2px var(--shadow-inner-highlight),
-        inset -3px -8px 1px -6px var(--shadow-inner-glow),
-        inset -0.3px -1px 4px 0px rgba(0, 0, 0, 0.24),
-        inset -1.5px 2.5px 0px -2px rgba(0, 0, 0, 0.4),
-        inset 0px 3px 4px -2px rgba(0, 0, 0, 0.4),
-        inset 2px -6.5px 1px -4px rgba(0, 0, 0, 0.2),
-        0px 1px 5px 0px rgba(0, 0, 0, 0.2),
-        0px 6px 16px 0px rgba(0, 0, 0, 0.16);
-    }
-    .mode-toggle-compact::after {
-      content: '';
-      position: absolute;
-      top: 3px;
-      left: 3px;
-      width: calc((100% - 6px) / var(--n));
-      height: calc(100% - 6px);
-      border-radius: 99em;
-      background: color-mix(in srgb, var(--accent) 36%, transparent);
-      z-index: 0;
-      box-shadow:
-        inset 0 0 0 1px var(--shadow-inner-glow),
-        inset 2px 1px 0px -1px var(--shadow-inner-highlight),
-        inset -1.5px -1px 0px -1px var(--shadow-inner-highlight),
-        inset -2px -6px 1px -5px var(--shadow-inner-glow),
-        inset -1px 2px 3px -1px rgba(0, 0, 0, 0.4),
-        inset 0px -4px 1px -2px rgba(0, 0, 0, 0.2),
-        0px 3px 6px 0px rgba(0, 0, 0, 0.16);
-      transition: translate 400ms cubic-bezier(1, 0, 0.4, 1);
-      translate: calc(var(--i) * 100%) 0;
-    }
-    .mode-toggle-compact button {
-      flex: 1;
-      padding: 6px 10px;
-      font-size: var(--font-size-system);
-      font-weight: 600;
-      background: transparent;
-      color: var(--muted);
-      border: none;
-      border-radius: 99em;
-      cursor: pointer;
-      position: relative;
-      z-index: 1;
-      transition: color 0.2s;
-      white-space: nowrap;
+    /* --- Sidebar new-chat icon button (pill, beside logo) --- */
+    .sidebar-newchat-icon {
+      padding: 6px 11px;
       display: flex;
       align-items: center;
       justify-content: center;
+      border: none;
+      border-radius: 99em;
+      cursor: pointer;
+      color: var(--muted);
+      background: transparent;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.15s;
     }
-    .mode-toggle-compact button .icon-lucide { width: 14px; height: 14px; }
-    .mode-toggle-compact button .icon-emoji { font-size: 13px; }
-    .mode-toggle-compact button.active { color: #fff; }
-    .mode-toggle-compact button:hover:not(.active) { color: var(--text); }
+    .sidebar-newchat-icon .icon-lucide { width: 15px; height: 15px; }
+    .sidebar-newchat-icon .icon-emoji { font-size: 13px; }
+    .sidebar-newchat-icon:hover { color: var(--text); }
+    .sidebar-newchat-icon:active { transform: scale(0.9); }
+
 
     /* New chat + Terminal pill (top, raised beside logo) and API/Scraper pill (below it) */
     .sidebar-icon-row {
       display: flex;
+      align-items: center;
+      gap: 7px;
       justify-content: flex-end;
       margin-left: auto;
     }

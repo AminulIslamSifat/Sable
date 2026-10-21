@@ -526,6 +526,28 @@ class BaseScraperConnector:
                 "[%s] turn failed (attempt %d/%d, code=%s): %s",
                 self.backend_name, _attempt + 1, _RECOVERY_ATTEMPTS, code, exc,
             )
+            # Rate limit is NOT a browser fault. Relaunching the browser and
+            # re-sending the same message to a limiter that just said "too
+            # frequent" cannot succeed, and every retry re-hits the locked
+            # endpoint. Surface it as `rate_limited` so the chat route can
+            # switch accounts (its existing auto-switch path) instead of this
+            # loop burning 3 browser restarts and then reporting a bogus
+            # capture_empty.
+            if code == browser_errors.RATE_LIMITED:
+                _rl_msg = str(getattr(exc, "message", "") or exc or "").strip()
+                if not _rl_msg:
+                    _rl_msg = browser_errors.describe(code)
+                logger.warning(
+                    "[%s] rate limited — NOT retrying, surfacing rate_limited: %s",
+                    self.backend_name, _rl_msg[:160],
+                )
+                yield {
+                    "type": "rate_limited",
+                    "message": _rl_msg,
+                    "hours": "?",
+                    "provider": self.provider_name,
+                }
+                return
             last = _attempt + 1 >= _RECOVERY_ATTEMPTS
             if last or code in browser_errors.NEEDS_USER or code not in browser_errors.RECOVERABLE:
                 if not (code in browser_errors.NEEDS_USER or code not in browser_errors.RECOVERABLE):
