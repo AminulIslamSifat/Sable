@@ -1646,26 +1646,13 @@
         if (chunk.includes("data-lucide") || !_ansTimer) {
           activateLucideIcons(answerContent);
         }
-        // Only run the full re-render when the last append wasn't already applied
-        // via the fast text-node path. Rebuilding on every queue-drain mid-stream
-        // tore the DOM down each burst — the other half of the "frog jump".
-        if (!_ansTimer && !fast) {
-          // Final tick render: produce proper mermaid-wrap but defer heavy rendering
-          // to closeAnswer() which runs after stream truly ends or segment closes.
-          // This prevents partial math/mermaid from rendering mid-stream.
-          answerContent.innerHTML = renderMarkdown(raw);
-          pinScrollIfAtBottom();
-          // Neutralize mermaid during streaming to prevent flicker
-          answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
-            const pre = wrap.querySelector("pre.mermaid");
-            if (!pre) return;
-            const code = pre.textContent;
-            const div = document.createElement("div");
-            div.className = "code-block";
-            div.innerHTML = `<pre><code class="language-mermaid">${escHtml(code)}</code></pre>`;
-            wrap.replaceWith(div);
-          });
-        }
+        // NOTE: an "final tick" block used to live here that re-ran
+        // `innerHTML = renderMarkdown(raw)` whenever (!_ansTimer && !fast).
+        // It was dead weight: the `if (!fast)` block above already rendered the
+        // exact same `raw` in this same tick, so the second pass re-parsed
+        // identical input and threw away the lucide icons created in between.
+        // Removing it changes nothing on screen and saves one full markdown
+        // pipeline + DOM rebuild per final chunk.
       }
       function _enqueueAnswer(text) {
         _ansQueue += text;
@@ -1711,9 +1698,22 @@
           answerContent.dataset.raw = raw;
           answerContent.innerHTML = renderMarkdown(raw);
           pinScrollIfAtBottom();
-          renderMermaidDiagrams(answerContent);
-          renderMathJax(answerContent);
+          // Icons are cheap and must be right immediately — keep them sync.
           activateLucideIcons(answerContent);
+          // Mermaid + MathJax are the expensive tail: dagre layout + SVG build
+          // per diagram, and MathJax lazy-loads its own bundle on first use.
+          // Running them synchronously here is what made the LAST message of a
+          // long agentic loop take seconds — the main thread was already
+          // saturated, so this queued behind thousands of prior re-renders.
+          // Defer one tick: diagrams/math typeset ~10ms later instead of ~5s.
+          // Capture the node now — answerContent is nulled at the end of this fn.
+          const _postEl = answerContent;
+          setTimeout(() => {
+            if (!_postEl.isConnected) return;
+            renderMermaidDiagrams(_postEl);
+            renderMathJax(_postEl);
+            pinScrollIfAtBottom();
+          }, 0);
         }
         answerEl.classList.remove("streaming");
         // Removing .streaming also drops the reserved cursor padding, so the

@@ -62,6 +62,10 @@
     // Re-render lucide icons for newly visible elements
     if (window.lucide) window.lucide.createIcons();
 
+    // Start/stop the compact-chat mirror with the layout mode. Idempotent —
+    // startChatObserver() disconnects any existing observer first.
+    startChatObserver();
+
     // Let mode-dependent chrome react (search panel's study index strip).
     window.dispatchEvent(new CustomEvent('sable-mode-changed', { detail: { mode } }));
 
@@ -400,6 +404,15 @@
 
   function startChatObserver() {
     if (chatObserver) chatObserver.disconnect();
+    chatObserver = null;
+
+    // The mirror only feeds the IDE compact panel (#chatCompactMessages),
+    // which is display:none outside chat/IDE layout. Observing the whole chat
+    // subtree with {childList, subtree, characterData, attributes} meant every
+    // streamed character allocated a debounce timer for a callback that
+    // immediately bailed on its own mode check. ~60 timers/sec of pure waste.
+    // Don't even attach the observer unless the mirror can be seen.
+    if (document.body.getAttribute('data-mode') !== 'chat') return;
 
     const chat = document.getElementById('chat');
     if (!chat) return;

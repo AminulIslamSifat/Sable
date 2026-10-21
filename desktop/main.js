@@ -46,6 +46,13 @@ let lastLogSent = ""
 
 app.setName("Sable")
 
+// Wayland hands Chromium chunky wheel-emulation scroll steps instead of the
+// high-resolution axis_value120 events Gecko consumes (upstream Chromium bug
+// 712737). Content then teleports in quantized jumps and every jump forces a
+// synchronous decode+raster of the whole region. Smooth scrolling interpolates
+// those steps so the view tracks the input instead of snapping to it.
+app.commandLine.appendSwitch("enable-smooth-scrolling")
+
 // Single instance: focus the existing window instead of booting twice.
 if (!app.requestSingleInstanceLock()) {
   app.quit()
