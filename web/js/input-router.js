@@ -428,7 +428,9 @@
   document.addEventListener('keydown', onKeyDown, true);
 
   document.addEventListener('keydown', function (e) {
-    if (!e.altKey || !e.shiftKey) return;
+    // Dev inspector — moved off Alt per the Ctrl-only shortcut policy.
+    // Ctrl+Shift+Alt+I: no collision with Ctrl+Shift+I (focus chat input).
+    if (!e.ctrlKey || !e.altKey || !e.shiftKey) return;
     if (e.key !== 'I' && e.key !== 'i') return;
     e.preventDefault();
     e.stopPropagation();

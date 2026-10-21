@@ -331,9 +331,15 @@
   btn.addEventListener('click', toggle);
   if (closeBtn) closeBtn.addEventListener('click', close);
 
-  // VS Code parity: Ctrl/Cmd+` or Ctrl/Cmd+J toggles the terminal.
+  // Ctrl+J is owned by the central shortcut dispatcher (settings-ui.js) so the
+  // chord stays user-rebindable and toggles through sidebarHost.toggleTerminal
+  // — the same path the rail button uses. Only the VS Code extra (Ctrl+`) is
+  // kept here as a local fallback.
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.key.toLowerCase() === 'j')) { e.preventDefault(); toggle(); }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === '`') {
+      e.preventDefault();
+      toggle();
+    }
   });
 
   /* ---------- resize handle drag ---------- */

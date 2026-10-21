@@ -1386,19 +1386,24 @@
       });
     }
 
-    // ⌘K shortcut
+    // Ctrl+K inside the knowledge graph jumps to its own search box.
+    // Ctrl+K globally is the folder picker now, so this must never fire when
+    // the knowledge view isn't the thing on screen.
     window.addEventListener('keydown', (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        if (isOpen) {
-          e.preventDefault();
-          setMode('search');
-          setTimeout(() => searchInput?.focus(), 100);
-        }
+      if (!isOpen) return;
+      const view = document.getElementById('knowledgeView');
+      const visible = view && !view.classList.contains('hidden');
+      if (visible && (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        e.stopPropagation();
+        setMode('search');
+        setTimeout(() => searchInput?.focus(), 100);
+        return;
       }
-      if (e.key === 'Escape' && isOpen) {
+      if (e.key === 'Escape') {
         closeDetailPanel();
       }
-    });
+    }, true);
 
     // Zoom controls
     $('kbZoomIn')?.addEventListener('click', () => {

@@ -724,7 +724,7 @@
       syncState();
     });
 
-    // Observe body class changes to stay in sync (Alt+B, other toggles)
+    // Observe body class changes to stay in sync (Ctrl+Shift+B and other toggles)
     new MutationObserver(syncState).observe(body, { attributes: true, attributeFilter: ['class'] });
 
     // Initial state

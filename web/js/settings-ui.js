@@ -40,7 +40,22 @@
     });
 
     // ── Configurable Keyboard Shortcut System ────────────────────────────────
-    const SHORTCUTS_STORAGE_KEY = 'SABLE_SHORTCUTS';
+    // v2: Alt-based defaults were migrated to Ctrl. Bumping the key discards
+    // stale per-id overrides (which were all Alt+…) that would otherwise
+    // shadow the new Ctrl defaults forever.
+    const SHORTCUTS_STORAGE_KEY = 'SABLE_SHORTCUTS_V2';
+
+    // Chords that must keep working while a text field has focus.
+    const GLOBAL_INPUT_OK = new Set([
+      'toggle-terminal', 'toggle-files', 'pick-folder', 'open-search',
+      'toggle-preview', 'agent-mode', 'chat-mode', 'study-mode', 'new-session',
+      'toggle-settings', 'toggle-sidebar', 'cheat-sheet',
+    ]);
+
+    // Inside a real shell, readline owns most Ctrl chords (Ctrl+B = back a
+    // char, Ctrl+K = kill line, Ctrl+O, Ctrl+F…). Hijacking those would make
+    // the terminal unusable, so only these two punch through from an xterm.
+    const TERMINAL_INPUT_OK = new Set(['toggle-terminal', 'cheat-sheet']);
 
     function openLibraryTab(tabName) {
       libraryOverlay.classList.remove('hidden');
@@ -92,23 +107,134 @@
       }
     }
 
+    /* ── Action helpers ────────────────────────────────────────────────────
+       Every "open" shortcut is a TOGGLE: same chord closes what it opened.
+       These are the same entry points the UI buttons use — no DOM clicking,
+       no duplicated state.                                                     */
+
+    function toggleSettingsOverlay() {
+      settingsOverlay.classList.contains('hidden') ? openSettings() : closeSettings();
+    }
+
+    /** Generic sidebar-hosted panel toggle (files, todo, tasks, …). */
+    function toggleHostedPanel(id, opts) {
+      const host = window.sidebarHost;
+      if (!host) return;
+      if (host.getCurrent() === id) { host.closePanel(id); return; }
+      host.openPanel(id, opts);
+    }
+
+    function toggleTerminalPanel() {
+      const host = window.sidebarHost;
+      if (host && typeof host.toggleTerminal === 'function') host.toggleTerminal();
+    }
+
+    /** Ctrl+X — the send button's stop job, without pretending to click it. */
+    async function stopActiveGeneration() {
+      if (typeof isStreaming !== 'function' || !isStreaming()) return;
+
+      // Abort locally first so the UI unlocks instantly.
+      const ctrl = activeStreams.get(activeChatId);
+      if (ctrl) ctrl.abort();
+      if (typeof window._abortAllAgents === 'function') window._abortAllAgents();
+
+      // Then tell the server, same contract sendMessage() uses.
+      try {
+        const respId = typeof window.getActiveResponseId === 'function'
+          ? window.getActiveResponseId(activeChatId)
+          : null;
+        await fetch('/api/chat/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: activeChatId, response_id: respId }),
+        });
+      } catch (_) {}
+
+      // Force-clean anything still hanging after the grace window.
+      const stuckId = activeChatId;
+      setTimeout(() => {
+        if (activeStreams.has(stuckId)) {
+          activeStreams.delete(stuckId);
+          if (typeof updateSendBtn === 'function') updateSendBtn();
+          if (typeof _toggleStreamIndicator === 'function') _toggleStreamIndicator(stuckId, false);
+        }
+      }, 3000);
+    }
+
+    /** Ctrl+I — right-hand preview / browser pane. */
+    function togglePreviewPanel() {
+      if (window.SablePreview && typeof window.SablePreview.toggle === 'function') {
+        window.SablePreview.toggle();
+      }
+    }
+
+    /** Ctrl+K / Ctrl+O — folder picker for the IDE file tree. */
+    async function pickIdeFolder() {
+      // A picker dialog on top of a closed panel is useless — open it first.
+      const host = window.sidebarHost;
+      if (host && host.getCurrent() !== 'files') host.openPanel('files');
+      try {
+        const res = await fetch('/api/filesystem/pick-folder');
+        const data = await res.json();
+        if (!data.path) {
+          if (data.error && typeof showToast === 'function') showToast(data.error, 'error');
+          return;
+        }
+        // pickFsRoot is the complete path: sets both trees' roots, persists the
+        // folder, fires cwd-changed, and re-opens the files panel.
+        if (typeof window.pickFsRoot === 'function') {
+          window.pickFsRoot(data.path);
+        } else if (typeof window.openFsRoot === 'function') {
+          window.openFsRoot(data.path);
+        }
+      } catch (err) {
+        console.error('[shortcut] pick-folder failed:', err);
+        if (typeof showToast === 'function') showToast('Folder picker request failed', 'error');
+      }
+    }
+
+    /** Ctrl+F — document/conversation search panel (toggle). */
+    function toggleSearchPanel() {
+      const sp = window.searchPanel;
+      if (!sp) return;
+      sp.isOpen() ? sp.close() : sp.open();
+    }
+
+    /** Ctrl+Shift+C / Ctrl+Shift+S — layout mode switches. */
+    function switchLayoutMode(mode) {
+      if (typeof window.setLayoutMode === 'function') window.setLayoutMode(mode);
+    }
+
     const DEFAULT_SHORTCUTS = {
-      'open-deep-research': { keys: 'Alt+Shift+R', label: 'Open Deep Research', action: () => openLibraryTab('lib-research') },
-      'open-gallery': { keys: 'Alt+Shift+G', label: 'Open Gallery', action: () => openLibraryTab('lib-gallery') },
-      'open-library': { keys: 'Alt+L', label: 'Open Library', action: () => openLibrary() },
-      'open-memory': { keys: 'Alt+Shift+M', label: 'Open Personalization', action: () => openSettingsTab('personalization') },
-      'open-notes': { keys: 'Alt+Shift+N', label: 'Open Notes', action: () => openLibraryTab('lib-notes') },
-      'open-prompts': { keys: 'Alt+Shift+P', label: 'Open Prompts', action: () => openLibraryTab('lib-prompts') },
-      'open-tasks': { keys: 'Alt+Shift+T', label: 'Open Todo', action: () => openTodoPanel('todo') },
-      'search-conversations': { keys: 'Alt+F', label: 'Search Conversations', action: () => { const btn = document.getElementById('chatSearchBtn'); if (btn) btn.click(); } },
-      'toggle-sidebar': { keys: 'Alt+B', label: 'Toggle Sidebar', action: () => { const isMobile = window.matchMedia('(max-width: 860px)').matches; isMobile ? document.body.classList.toggle('sidebar-open') : document.body.classList.toggle('sidebar-collapsed'); } },
-      'focus-input': { keys: 'Alt+I', label: 'Focus Chat Input', action: () => inputEl?.focus() },
-      'new-session': { keys: 'Alt+N', label: 'New Session', action: () => createChat() },
-      'delete-session': { keys: 'Alt+Shift+D', label: 'Delete Session', action: () => { if (activeChatId) deleteChat(activeChatId); } },
-      'toggle-tts': { keys: 'Alt+Shift+S', label: 'Play/Stop TTS', action: () => { if (_ttsActive) stopGlobalTTS(); } },
-      'cheat-sheet': { keys: 'Alt+/', label: 'Shortcut Cheat Sheet', action: () => toggleCheatSheet() },
-      'open-agent-ops': { keys: 'Alt+Shift+A', label: 'Open Tasks', action: () => openTodoPanel('agent-tasks') },
-      'toggle-settings': { keys: 'Alt+,', label: 'Toggle Settings', action: () => settingsOverlay.classList.contains('hidden') ? openSettings() : closeSettings() },
+      /* ── Core: requested chords ── */
+      'new-session':       { keys: 'Ctrl+N',       label: 'New Chat',                action: () => createChat() },
+      'toggle-settings':   { keys: 'Ctrl+,',       label: 'Toggle Settings',         action: () => toggleSettingsOverlay() },
+      'stop-generation':   { keys: 'Ctrl+X',       label: 'Stop Generation',         action: () => stopActiveGeneration() },
+      'toggle-terminal':   { keys: 'Ctrl+J',       label: 'Toggle Terminal',         action: () => toggleTerminalPanel() },
+      'toggle-files':      { keys: 'Ctrl+B',       label: 'Toggle File Viewer',      action: () => toggleHostedPanel('files') },
+      'pick-folder':       { keys: 'Ctrl+K',       label: 'Open Folder…',            action: () => pickIdeFolder() },
+      'pick-folder-alt':   { keys: 'Ctrl+O',       label: 'Open Folder… (alt)',      action: () => pickIdeFolder() },
+      'agent-mode':        { keys: 'Ctrl+Shift+A', label: 'Switch to Agent Mode',    action: () => switchLayoutMode('agent') },
+      'chat-mode':         { keys: 'Ctrl+Shift+C', label: 'Switch to Chat Mode',     action: () => switchLayoutMode('chat') },
+      'study-mode':        { keys: 'Ctrl+Shift+S', label: 'Switch to Study Mode',    action: () => switchLayoutMode('study') },
+      'open-search':       { keys: 'Ctrl+F',       label: 'Search',                  action: () => toggleSearchPanel() },
+      'toggle-preview':    { keys: 'Ctrl+I',       label: 'Toggle Preview / Browser', action: () => togglePreviewPanel() },
+
+      /* ── Migrated from Alt → Ctrl (were working, kept and re-pinned) ── */
+      'open-deep-research': { keys: 'Ctrl+Shift+R', label: 'Open Deep Research',      action: () => openLibraryTab('lib-research') },
+      'open-gallery':       { keys: 'Ctrl+Shift+G', label: 'Open Gallery',            action: () => openLibraryTab('lib-gallery') },
+      'open-library':       { keys: 'Ctrl+L',       label: 'Toggle Library',          action: () => (libraryOverlay.classList.contains('hidden') ? openLibrary() : closeLibrary()) },
+      'open-memory':        { keys: 'Ctrl+Shift+M', label: 'Open Personalization',    action: () => openSettingsTab('personalization') },
+      'open-notes':         { keys: 'Ctrl+Shift+N', label: 'Open Notes',              action: () => openLibraryTab('lib-notes') },
+      'open-prompts':       { keys: 'Ctrl+Shift+P', label: 'Open Prompts',            action: () => openLibraryTab('lib-prompts') },
+      'open-tasks':         { keys: 'Ctrl+Shift+T', label: 'Open Todo',               action: () => openTodoPanel('todo') },
+      'search-conversations': { keys: 'Ctrl+Shift+F', label: 'Search Conversations',  action: () => { const btn = document.getElementById('chatSearchBtn'); if (btn) btn.click(); } },
+      'toggle-sidebar':     { keys: 'Ctrl+Shift+B', label: 'Toggle Sidebar',          action: () => { const isMobile = window.matchMedia('(max-width: 860px)').matches; isMobile ? document.body.classList.toggle('sidebar-open') : document.body.classList.toggle('sidebar-collapsed'); } },
+      'focus-input':        { keys: 'Ctrl+Shift+I', label: 'Focus Chat Input',        action: () => inputEl?.focus() },
+      'delete-session':     { keys: 'Ctrl+Shift+D', label: 'Delete Session',          action: () => { if (activeChatId) deleteChat(activeChatId); } },
+      'toggle-tts':         { keys: 'Ctrl+Shift+U', label: 'Play/Stop TTS',           action: () => { if (_ttsActive) stopGlobalTTS(); } },
+      'cheat-sheet':        { keys: 'Ctrl+/',       label: 'Shortcut Cheat Sheet',    action: () => toggleCheatSheet() },
+      'open-agent-ops':     { keys: 'Ctrl+Shift+O', label: 'Open Tasks',              action: () => openTodoPanel('agent-tasks') },
     };
 
     function getShortcuts() {
@@ -143,8 +269,22 @@
 
     function matchesEvent(parsed, e) {
       const key = e.key.toLowerCase();
-      const keyMatch = parsed.key === key || (parsed.key === '/' && e.key === '/') || (parsed.key === 'escape' && e.key === 'Escape');
-      return keyMatch && parsed.ctrl === (e.ctrlKey || e.metaKey) && parsed.shift === e.shiftKey && parsed.alt === e.altKey;
+
+      // Ctrl+O reports keyCode 79 with no usable `key` on some layouts, and
+      // Ctrl+, can arrive as ',' or '<'. Fall back to the physical key code so
+      // these never silently die.
+      let keyMatch = parsed.key === key;
+      if (!keyMatch && parsed.key.length === 1 && e.code) {
+        keyMatch = e.code.toLowerCase() === 'key' + parsed.key;
+      }
+      if (!keyMatch && parsed.key === ',' && e.key === '<') keyMatch = true;
+      if (!keyMatch && parsed.key === '/' && (e.key === '/' || e.key === '?')) keyMatch = true;
+      if (!keyMatch && parsed.key === 'escape' && e.key === 'Escape') keyMatch = true;
+
+      return keyMatch
+        && parsed.ctrl === (e.ctrlKey || e.metaKey)
+        && parsed.shift === e.shiftKey
+        && parsed.alt === e.altKey;
     }
 
     function isInputFocused() {
@@ -154,25 +294,66 @@
       return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
     }
 
-    // Global shortcut dispatcher
+    function isTerminalFocused() {
+      const el = document.activeElement;
+      return !!(el && el.closest && el.closest('.xterm'));
+    }
+
+    /** Is there text selected inside the focused field? */
+    function hasFieldSelection() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') {
+        try { return el.selectionStart !== el.selectionEnd; } catch (_) { return false; }
+      }
+      const sel = window.getSelection();
+      return !!(sel && sel.toString().length);
+    }
+
+    // Global shortcut dispatcher.
+    //
+    // Runs in the CAPTURE phase so no component's bubble-phase handler (or
+    // Monaco / xterm, which both swallow chords wholesale) can eat a chord
+    // first — that was the old "almost as good as broken" wiring.
     document.addEventListener('keydown', (e) => {
-      // Skip when recording a new shortcut
+      // Shortcut recorder owns the keyboard while reassigning.
       if (document.querySelector('.shortcut-recording')) return;
+
+      // Bare modifier press — nothing to match yet.
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
 
       const shortcuts = getShortcuts();
       for (const [id, sc] of Object.entries(shortcuts)) {
-        if (!sc.action) continue;
+        if (typeof sc.action !== 'function') continue;
+
         const parsed = parseKeys(sc.keys);
-        if (matchesEvent(parsed, e)) {
-          // Allow Escape and cheat-sheet even in inputs
-          if (isInputFocused() && id !== 'escape' && id !== 'cheat-sheet') continue;
-          e.preventDefault();
-          e.stopPropagation();
-          sc.action();
-          return;
+        if (!matchesEvent(parsed, e)) continue;
+
+        // A real shell keeps its readline chords; Ctrl+J still toggles out.
+        if (isTerminalFocused() && !TERMINAL_INPUT_OK.has(id)) return;
+
+        if (isInputFocused()) {
+          if (id === 'stop-generation') {
+            // Ctrl+X with text selected = cut. With nothing selected it does
+            // nothing anyway, so it doubles as Stop Generation right where
+            // his hands already are (the composer).
+            if (hasFieldSelection()) return;
+          } else if (!GLOBAL_INPUT_OK.has(id)) {
+            return;
+          }
         }
+
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          sc.action();
+        } catch (err) {
+          console.error('[shortcut]', id, err);
+        }
+        return;
       }
-    });
+    }, true);
 
     // Cheat sheet overlay
     const cheatSheetOverlay = document.getElementById('cheatSheetOverlay');

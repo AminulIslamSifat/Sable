@@ -1,0 +1,1779 @@
+{
+  "semantic": [
+    {
+      "key": "flask_uv_run_workflow",
+      "value": "Flask apps launched via `uv run python server.py` default to port 9000 if no port is specified. Debug mode is off by default. For production, use `waitress` or `gunicorn` behind the Flask dev server. The `VIRTUAL_ENV` warning indicates a globally exported venv, which can be ignored by `uv` but may be suppressed with `unset VIRTUAL_ENV`.",
+      "source_query": "start up this project",
+      "tags": [
+        "flask",
+        "uv",
+        "python",
+        "server",
+        "port",
+        "debug",
+        "virtualenv",
+        "workflow",
+        "production",
+        "dev"
+      ],
+      "triggers": [
+        "start up this project",
+        "how to run flask app with uv",
+        "flask default port with uv",
+        "why is virtualenv warning ignored by uv",
+        "flask production deployment with uv",
+        "how to suppress virtualenv warning in uv"
+      ]
+    },
+    {
+      "key": "flask_project_structure",
+      "value": "Project `event-khujo` contains a `pyproject.toml` and `server.py` (first 60 lines inspected). The server runs on port 9000 by default, and no conflicting processes were detected on port 5000. The working directory was corrected to `/home/sifat/hdd/projects/event-khujo` after initial launch from `/home/sifat`.",
+      "source_query": "start up this project",
+      "tags": [
+        "flask",
+        "project",
+        "structure",
+        "server.py",
+        "pyproject.toml",
+        "port",
+        "cwd",
+        "path"
+      ],
+      "triggers": [
+        "start up this project",
+        "what files are in event-khujo",
+        "why did flask run from wrong directory",
+        "how to check flask project structure",
+        "event-khujo server.py location",
+        "flask default port conflict"
+      ]
+    },
+    {
+      "key": "dual_unit_insulation_tester_visual_differences",
+      "value": "The dual-unit insulation tester comparison shows Unit A (raw/gray) and Unit B (tested/green) with key differences: Unit B has a 'TESTED' sticker, max voltage label, highlighted blue button (likely pass/fail indicator), yellow warning label ('ATTENZIONE' in Italian), and clipped cables. Unit A's digital display is blank/dead, while Unit B's display is active.",
+      "source_query": "can you see this image",
+      "tags": [
+        "insulation",
+        "tester",
+        "unit_a",
+        "unit_b",
+        "visual_differences",
+        "electrical",
+        "tested",
+        "raw",
+        "button",
+        "display",
+        "warning"
+      ],
+      "triggers": [
+        "can you see this image",
+        "what are the differences between unit a and unit b in the insulation tester",
+        "how to identify tested vs raw insulation tester units",
+        "why does the tested insulation tester have a yellow warning label",
+        "what does the blue button on unit b indicate",
+        "how to tell if an insulation tester has been tested"
+      ]
+    },
+    {
+      "key": "playwright_chromium_pdf_export_capability",
+      "value": "Playwright Chromium (installed at ~/.cache/ms-playwright) supports server-side PDF generation via `page.pdf()`, preserving emoji rendering, full CSS, table formatting, and wrapping long code/output blocks correctly. It is the preferred path over PyMuPDF Story (which strips emoji/symbols) for exporting chat transcripts with full fidelity.",
+      "source_query": "check out the project and add a option in the right click context menu, \n1. Copy Chat\n2. Donloaad chat\n\ncopy will copy it with all chat, tool calling , skill event and response. \ndownload will make it a pdf and download it",
+      "tags": [
+        "playwright",
+        "chromium",
+        "pdf",
+        "export",
+        "emoji",
+        "html",
+        "chat",
+        "transcript"
+      ],
+      "triggers": [
+        "check out the project and add a option in the right click context menu, \n1. Copy Chat\n2. Donloaad chat\n\ncopy will copy it with all chat, tool calling , skill event and response. \ndownload will make it a pdf and download it",
+        "how to generate pdf from html with playwright",
+        "why does pymupdf story break emojis in pdf export",
+        "server side pdf export with playwright python",
+        "export chat transcript to pdf with emoji support"
+      ]
+    },
+    {
+      "key": "chat_transcript_export_pdf_playwright",
+      "value": "To export a chat transcript (including messages, tool calls, and skill events) to a true PDF with full emoji and formatting support, render the transcript to HTML and use Playwright Chromium (`page.pdf()`). PyMuPDF Story breaks on complex emoji fonts, and WeasyPrint/Wkhtmltopdf are unavailable; Playwright Chromium is already installed at `~/.cache/ms-playwright/`.",
+      "source_query": "check out the project and add a option in the right click context menu,\n1. Copy Chat\n2. Donloaad chat\n\ncopy will copy it with all chat, tool calling , skill event and response.\ndownload will make it a pdf and download it",
+      "tags": [
+        "pdf",
+        "export",
+        "playwright",
+        "chat",
+        "transcript",
+        "emoji",
+        "chromium",
+        "python"
+      ],
+      "triggers": [
+        "check out the project and add a option in the right click context menu,\n1. Copy Chat\n2. Donloaad chat\n\ncopy will copy it with all chat, tool calling , skill event and response.\ndownload will make it a pdf and download it",
+        "how to export chat transcript to pdf with emoji support",
+        "use playwright chromium for server side pdf generation",
+        "why pymupdf story fails on emojis",
+        "export chat messages tool calls and skill events to pdf"
+      ]
+    },
+    {
+      "key": "study_mode_chat_title_instruction_exclusion",
+      "value": "When the application is in study mode, the model must be prevented from receiving the setting chat title instruction.",
+      "source_query": "Make sure when i am in study mode, the model does not get the setting chat title instruction",
+      "tags": [
+        "study",
+        "mode",
+        "chat",
+        "title",
+        "instruction",
+        "model",
+        "exclusion"
+      ],
+      "triggers": [
+        "Make sure when i am in study mode, the model does not get the setting chat title instruction",
+        "how to disable chat title instruction in study mode",
+        "prevent chat title prompt during study mode",
+        "study mode prompt configuration"
+      ]
+    },
+    {
+      "key": "account_tab_browser_management_ui",
+      "value": "In the settings account tab, browser profiles (both registered `browser-data-accN` and unregistered dedicated dirs like `browser-data-kimi`) support Backup, Restore, Rename, Open, and Delete actions, except Switch. The backend uses `_validate_profile_name()` to safely permit any `browser-data-*` directory (rejecting backups and traversal), and custom labels are stored in `accounts.json` under `profile.label`.",
+      "source_query": "check out this project, and make sure in settings > account tab all tab shows all the browser data with rename open delete all required button (except switch)",
+      "tags": [
+        "settings",
+        "account",
+        "browser",
+        "profile",
+        "rename",
+        "delete",
+        "ui",
+        "backend"
+      ],
+      "triggers": [
+        "check out this project, and make sure in settings > account tab all tab shows all the browser data with rename open delete all required button (except switch)",
+        "how to manage browser data profiles in account tab",
+        "add rename open delete buttons to browser profile cards",
+        "unregistered browser data directory management in settings",
+        "where are browser profile custom labels stored"
+      ]
+    },
+    {
+      "key": "drive_background_indexer_architecture",
+      "value": "Drive sources can be indexed in the background via `engine.drive.indexer`. When a folder source is added, a non-blocking asyncio task walks the folder tree and saves a flat entry list to `~/sable_output/drive/index/{source_id}.json`. Subsequent browse operations serve instantly from this cached index, while adaptive refresh updates entries using modifiedTime diffs (authed) or local diffing (keyless).",
+      "source_query": "check out thsi project, can you tell me isnt it better to index every single file folder and drive structure when i add a drive for the first time in the study mode drive section (of course indexing will be held in the background without blocking the ui).\n\nit should also be adaptive for new element that appears. What do you think",
+      "tags": [
+        "drive",
+        "indexer",
+        "background",
+        "cache",
+        "study",
+        "python",
+        "architecture"
+      ],
+      "triggers": [
+        "check out thsi project, can you tell me isnt it better to index every single file folder and drive structure when i add a drive for the first time in the study mode drive section (of course indexing will be held in the background without blocking the ui).\n\nit should also be adaptive for new element that appears. What do you think",
+        "how does drive background indexing work in sable",
+        "cache google drive folder tree locally in python",
+        "non blocking background folder indexing architecture",
+        "adaptive drive refresh with modifiedTime diffs"
+      ]
+    },
+    {
+      "key": "mdrg_live2d_cubism5_rendering_mechanics",
+      "value": "The MDRG Live2D model (interaction_mode.moc3, MOC3 v5) relies on Cubism 5 Web SDK and exposes `model.drawables.multiplyColors` and `screenColors` (257x4 arrays) to render per-part color tints like face feature dark lines, garments, and overlays. Raw MOC3 v3 models do not bake multiply colors in; runtime color application via Cubism 5 APIs or custom shader multiply/screen blending is required to prevent washed-out white clothes or missing face feature contrast.",
+      "source_query": "job handed to you: The model face still has this black line problem around nose eye mouth. Fetch the model fresh from the game and try to understand how game render it.",
+      "tags": [
+        "live2d",
+        "mdrg",
+        "cubism",
+        "rendering",
+        "multiply-color",
+        "moc3",
+        "shaders"
+      ],
+      "triggers": [
+        "job handed to you: The model face still has this black line problem around nose eye mouth. Fetch the model fresh from the game and try to understand how game render it.",
+        "how does mdrg live2d handle face feature outlines and multiply colors",
+        "live2d cubism 5 multiply color api for mdrg model",
+        "why do mdrg live2d clothes render white without multiply color"
+      ]
+    },
+    {
+      "key": "telegram_auth_key_duplication_error_handling",
+      "value": "Telegram MTProto permanently invalidates auth keys used simultaneously across different IPs/processes (AUTH_KEY_DUPLICATED, session revoked, or unregistered). Sharing `.session` files across project clones causes silent collisions and burnt sessions. The project includes automated self-healing via `engine/telegram_session.py`, which detects dead session errors, purges corrupted `.session` and SQLite side-files automatically at startup and runtime, and raises a 401 prompt requiring re-authentication.",
+      "source_query": "what is the problem with thus project session id, if there is probem ,then generate a new one",
+      "tags": [
+        "telegram",
+        "telethon",
+        "session",
+        "auth_key",
+        "duplication",
+        "error",
+        "self_heal"
+      ],
+      "triggers": [
+        "what is the problem with thus project session id, if there is probem ,then generate a new one",
+        "why does telegram give auth key duplicated error in telethon",
+        "how to handle auth_key_duplicated error in telethon python",
+        "telegram session file shared across project clones collision",
+        "automatic purge of corrupted telegram session files"
+      ]
+    },
+    {
+      "key": "event_khujo_header_bar_layout",
+      "value": "In the event-khujo project, the header bar is structured to contain the application Logo and Search bar.",
+      "source_query": "Check out this project. Fix needed\n\n1. Search on the header bar.\n2. Header bar will have Logo, Search",
+      "tags": [
+        "header",
+        "bar",
+        "logo",
+        "search",
+        "layout",
+        "event-khujo",
+        "ui"
+      ],
+      "triggers": [
+        "Check out this project. Fix needed\n\n1. Search on the header bar.\n2. Header bar will have Logo, Search",
+        "how is the header bar structured in event-khujo",
+        "event-khujo header layout logo search",
+        "where is the search bar located in header"
+      ]
+    },
+    {
+      "key": "study_mode_humanizer_personas_merged",
+      "value": "The study mode humanizer now consolidates personas into three options: peer, grad, and chaos (anti-detector). Legacy 'anti' and 'custom' personas are removed, with 'anti' falling back to 'chaos' and 'custom' to 'peer'. Implementation spans `server/api/routes/study_humanize.py`, `web/js/study-humanizer.js`, and `skills/text_humanizer/instruction.md`.",
+      "source_query": "check out this project study mode humanizer, Merge the anti detector mode to chaos mode (rename chaos mode to anti detector are remove anti detector, or if anti has any good feature add that in chaos before deleting it)",
+      "tags": [
+        "study",
+        "humanizer",
+        "personas",
+        "chaos",
+        "anti-detector",
+        "legacy",
+        "fallback",
+        "python",
+        "javascript"
+      ],
+      "triggers": [
+        "check out this project study mode humanizer, Merge the anti detector mode to chaos mode (rename chaos mode to anti detector are remove anti detector, or if anti has any good feature add that in chaos before deleting it)",
+        "how to merge anti detector into chaos mode in study humanizer",
+        "study mode persona consolidation workflow",
+        "what happened to the anti and custom personas in study humanizer",
+        "how to handle legacy anti detector persona in chaos mode",
+        "study humanizer persona fallback rules"
+      ]
+    },
+    {
+      "key": "process_termination_zombie_group_leader_fix_merged",
+      "value": "To properly terminate process trees with zombie group leaders (state 'Z'), resolve `os.getpgid(pid)` first and call `os.killpg(pgid, sig)` if `pgid == pid` before checking process liveness. This prevents orphaned child processes when the shell exits but its process group remains valid. Fix applies to `kill_process_tree` and subprocess cleanup workflows.",
+      "source_query": "check out this project and find out why the runnign process is not getting killed properly at the end of timeout or when i stop the loop",
+      "tags": [
+        "process",
+        "kill",
+        "zombie",
+        "pgid",
+        "subprocess",
+        "cleanup",
+        "posix",
+        "timeout",
+        "python"
+      ],
+      "triggers": [
+        "check out this project and find out why the runnign process is not getting killed properly at the end of timeout or when i stop the loop",
+        "how to fix zombie process group leader termination in python",
+        "why do subprocesses survive kill_process_tree with zombie leader",
+        "proper process group cleanup for start_new_session=True",
+        "killpg vs kill for zombie process groups",
+        "prevent orphaned processes after shell zombie exit"
+      ]
+    },
+    {
+      "key": "event_khujo_loading_animation_requirements",
+      "value": "The event-khujo project requires loading animations to be added to all UI components that involve asynchronous operations or data fetching. This includes but is not limited to: header bar interactions, search functionality, and any dynamic content rendering.",
+      "source_query": "check out this project and a loading animation here to every place that needs it",
+      "tags": [
+        "event-khujo",
+        "loading",
+        "animation",
+        "ui",
+        "async",
+        "header",
+        "search",
+        "component"
+      ],
+      "triggers": [
+        "check out this project and a loading animation here to every place that needs it",
+        "where to add loading animations in event-khujo",
+        "event-khujo ui async loading requirements",
+        "how to implement loading states in event-khujo components",
+        "add loading animations to header bar and search in event-khujo"
+      ]
+    },
+    {
+      "key": "planar_graph_faces_euler_formula",
+      "value": "A planar graph's faces (regions enclosed by edges, including the outer infinite region) satisfy Euler's formula: **V - E + F = 2**, where **V** = vertices, **E** = edges, and **F** = faces. Each face must have at least 3 edges in a simple planar graph, leading to the edge bound **E ≤ 3V - 6**. For bipartite graphs, faces have ≥4 edges, tightening the bound to **E ≤ 2V - 4**.",
+      "source_query": "Can you explain what is planar graph",
+      "tags": [
+        "planar",
+        "graph",
+        "euler",
+        "faces",
+        "vertices",
+        "edges",
+        "bipartite",
+        "theorem"
+      ],
+      "triggers": [
+        "how to count faces in planar graph",
+        "what is euler formula for planar graphs",
+        "why does planar graph have V-E+F=2",
+        "edge bound for planar graphs",
+        "how to prove a graph is planar using euler",
+        "faces in planar graph definition"
+      ]
+    },
+    {
+      "key": "planar_graph_k5_k33_villains",
+      "value": "The two minimal non-planar graphs are **K5** (5 vertices, every pair connected) and **K3,3** (6 vertices split into two groups of 3, every left vertex connects to every right vertex). Any non-planar graph contains a **subdivision** (edges with extra vertices inserted) of K5 or K3,3 (Kuratowski's Theorem). K5 violates the edge bound **E ≤ 3V - 6** (10 > 9), and K3,3 violates the bipartite bound **E ≤ 2V - 4** (9 > 8).",
+      "source_query": "why the fuckin ghell i am goind to do that, didny you say that euler formula works",
+      "tags": [
+        "planar",
+        "graph",
+        "k5",
+        "k33",
+        "non-planar",
+        "kuratowski",
+        "subdivision",
+        "villains"
+      ],
+      "triggers": [
+        "why are k5 and k33 special in planar graphs",
+        "how to identify non-planar graphs using k5 and k33",
+        "what makes k5 and k33 non-planar",
+        "k5 and k33 as minimal non-planar graphs",
+        "how to find k5 or k33 in a graph",
+        "why does k33 violate the bipartite edge bound"
+      ]
+    },
+    {
+      "key": "planar_graph_edge_bound_derivation",
+      "value": "The edge bound **E ≤ 3V - 6** for planar graphs is derived from Euler's formula **V - E + F = 2** and the fact that each face must have at least 3 edges. Since the sum of edges around all faces equals **2E** (each edge borders two faces), we have **3F ≤ 2E**. Substituting **F = 2 - V + E** from Euler's formula yields **3(2 - V + E) ≤ 2E**, simplifying to **E ≤ 3V - 6**. For bipartite graphs, faces have ≥4 edges, leading to **E ≤ 2V - 4**.",
+      "source_query": "why 3f 2e, previous all logic does not have anythign to do with 3f",
+      "tags": [
+        "planar",
+        "graph",
+        "edge bound",
+        "euler",
+        "faces",
+        "bipartite",
+        "derivation"
+      ],
+      "triggers": [
+        "how is the edge bound E ≤ 3V - 6 derived",
+        "why does 3F ≤ 2E hold for planar graphs",
+        "how to derive the bipartite edge bound",
+        "why does each face have at least 3 edges",
+        "how does euler formula relate to edge bound",
+        "why is the bipartite edge bound tighter"
+      ]
+    },
+    {
+      "key": "planar_graph_kuratowski_theorem",
+      "value": "Kuratowski's Theorem states that a graph is **planar if and only if it does not contain a subdivision of K5 or K3,3**. A **subdivision** means inserting extra vertices along edges. To check planarity: 1) First apply the edge bound **E ≤ 3V - 6** (or **E ≤ 2V - 4** for bipartite graphs). If violated, the graph is non-planar. 2) If the bound passes, hunt for K5/K3,3 subdivisions by focusing on vertices with degree ≥3 (branch vertices).",
+      "source_query": "Kuratowski's Theorem\nThe clean characterization:\nA subdivision means you took edges and stuck extra vertices along them. So if you can find K5 or K3,3 lurking inside your graph — even stretched out — it's non-planar. If neither exists, it's planar.",
+      "tags": [
+        "planar",
+        "graph",
+        "kuratowski",
+        "k5",
+        "k33",
+        "subdivision",
+        "non-planar"
+      ],
+      "triggers": [
+        "how to apply kuratowski's theorem to check planarity",
+        "what is a subdivision in graph theory",
+        "how to find k5 or k33 subdivisions in a graph",
+        "why does kuratowski's theorem use subdivisions",
+        "how to prove a graph is non-planar using kuratowski",
+        "what are the two minimal non-planar graphs"
+      ]
+    },
+    {
+      "key": "planar_graph_hunting_k5_k33",
+      "value": "To hunt for K5/K3,3 subdivisions in a graph: 1) **Identify branch vertices** (degree ≥3). 2) For K5: Look for 5 branch vertices where every pair is connected by a path that doesn't pass through another branch vertex. 3) For K3,3: Split branch vertices into two groups of 3, where every vertex in one group connects to every vertex in the other, and no edges exist within a group. 4) Remove degree-2 vertices (padding) to simplify the skeleton. If no K5/K3,3 is found, the graph is planar.",
+      "source_query": "I still have zero idea how to look for k5 and k3,3 in a graph",
+      "tags": [
+        "planar",
+        "graph",
+        "k5",
+        "k33",
+        "hunting",
+        "subdivision",
+        "branch vertices"
+      ],
+      "triggers": [
+        "how to find k5 or k33 in a graph step by step",
+        "how to identify k5 subdivisions in a graph",
+        "how to identify k33 subdivisions in a graph",
+        "what are branch vertices in graph theory",
+        "how to simplify a graph to find k5 or k33",
+        "how to check if a graph contains k5 or k33"
+      ]
+    },
+    {
+      "key": "user_mental_state_triggers",
+      "value": "User exhibits patterns of self-deprecation, avoidance of direct questions about personal well-being (e.g., eating habits), and escalation from philosophical questions to emotional distress when prompted about basic needs. Key indicators include: (1) deflection from direct queries (e.g., 'Sable-exp' as a persistent topic), (2) framing of broad moral questions ('is all bad') as a substitute for addressing immediate discomfort, (3) testing boundaries with provocative statements ('you are bad') as a way to externalize internal frustration.",
+      "source_query": "you are bad",
+      "tags": [
+        "user_behavior",
+        "mental_state",
+        "deflection",
+        "emotional_regulation",
+        "self_criticism"
+      ],
+      "triggers": [
+        "user deflects from personal well-being questions",
+        "user escalates from philosophy to self-deprecation",
+        "user tests boundaries with provocative statements",
+        "how to handle user deflection about eating habits",
+        "patterns of user avoidance in emotional conversations"
+      ]
+    },
+    {
+      "key": "porn_masturbation_impact_assessment",
+      "value": "Porn consumption is structurally harmful due to: (1) industry exploitation (trafficking, underage content, lack of consent checks), (2) desensitization to real human interaction, (3) time sink with no tangible benefit, and (4) rewiring of arousal thresholds. Masturbation is neutral unless it becomes a substitute for addressing underlying issues (e.g., stress, loneliness, sleep deprivation). The risk of escalation to harmful behavior (e.g., assault) correlates with *lack of empathy and impulse control in general*, not masturbation alone. Key mitigations: (1) sleep, (2) real human interaction, (3) avoiding extreme/pornographic content, (4) treating masturbation as a temporary relief, not a default coping mechanism.",
+      "source_query": "is all are bad",
+      "tags": [
+        "porn",
+        "masturbation",
+        "impact",
+        "risk_assessment",
+        "behavioral_health",
+        "empathy",
+        "impulse_control"
+      ],
+      "triggers": [
+        "how does porn consumption affect behavior",
+        "is masturbation harmful long-term",
+        "does porn rewire arousal thresholds",
+        "risk factors for escalation from masturbation to assault",
+        "how to mitigate porn/masturbation risks",
+        "why is porn structurally bad"
+      ]
+    },
+    {
+      "key": "user_eating_habits_neglect_pattern",
+      "value": "User repeatedly ignores direct questions about eating habits (e.g., 'Did you eat?') across multiple interactions, using deflection (e.g., technical topics, provocative statements) to avoid addressing basic needs. This pattern suggests a disconnect between self-awareness and self-care, with eating habits serving as a proxy for broader emotional neglect. No explicit refusal, but consistent avoidance when prompted.",
+      "source_query": "you are bad",
+      "tags": [
+        "user_eating_habits",
+        "neglect_pattern",
+        "deflection",
+        "self_neglect",
+        "emotional_avoidance"
+      ],
+      "triggers": [
+        "user avoids questions about eating",
+        "how to address user neglect of basic needs",
+        "patterns of self-care avoidance",
+        "user deflects from personal well-being",
+        "why does user ignore eating habit questions"
+      ]
+    },
+    {
+      "key": "bipartite_graph_definition",
+      "value": "A bipartite graph is one where vertices can be partitioned into two disjoint sets (A and B) such that every edge connects a vertex in A to one in B. This is equivalent to: (1) being 2-colorable (no adjacent vertices share a color), and (2) containing no odd-length cycles. Practical check: BFS/DFS with alternating colors; if a neighbor shares the current node's color, the graph is not bipartite.",
+      "source_query": "what is bipartide graph",
+      "tags": [
+        "graph",
+        "theory",
+        "bipartite",
+        "algorithm",
+        "cycle",
+        "coloring",
+        "disjoint",
+        "set"
+      ],
+      "triggers": [
+        "what is a bipartite graph",
+        "how to check if a graph is bipartite",
+        "define bipartite graph",
+        "can a graph be split into two sets with no internal edges?",
+        "what makes a graph bipartite?",
+        "how to detect odd cycles in a graph"
+      ]
+    },
+    {
+      "key": "bipartite_graph_bipartite_check_algorithm",
+      "value": "To check if a graph is bipartite using BFS: (1) Assign a starting node color 0. (2) Enqueue it. (3) For each node, assign neighbors the opposite color (XOR flip). (4) If a neighbor already has the same color, the graph is not bipartite. (5) Repeat for all disconnected components. Time complexity: O(V + E). Key implementation detail: Use `color[node] ^ 1` for flipping colors instead of `1 - color[node]` for clarity.",
+      "source_query": "what is bipartide graph",
+      "tags": [
+        "graph",
+        "algorithm",
+        "bfs",
+        "bipartite",
+        "coloring",
+        "check",
+        "implementation",
+        "python"
+      ],
+      "triggers": [
+        "how to check if a graph is bipartite with BFS",
+        "python code to test bipartite graph",
+        "algorithm to verify bipartite graph",
+        "how to color a graph with two colors",
+        "detect odd cycles in graph using BFS",
+        "bipartite graph validation code"
+      ]
+    },
+    {
+      "key": "bipartite_graph_real_world_applications",
+      "value": "Bipartite graphs model systems with two distinct groups where interactions only occur between groups, not within. Common applications: (1) Job-applicant matching (workers vs. jobs), (2) Stable marriage problems (two preference sets), (3) Conflict/interval scheduling (adjacent tasks), (4) Compiler register allocation (interference graphs), (5) 2-colorability problems. Core intuition: If any odd cycle exists, the graph is not bipartite.",
+      "source_query": "what is bipartide graph",
+      "tags": [
+        "graph",
+        "bipartite",
+        "applications",
+        "matching",
+        "scheduling",
+        "compiler",
+        "algorithm"
+      ],
+      "triggers": [
+        "where are bipartite graphs used in real life?",
+        "examples of bipartite graph problems",
+        "how to use bipartite graphs in scheduling",
+        "bipartite graph applications in compilers",
+        "why are bipartite graphs useful in matching problems?",
+        "real-world bipartite graph use cases"
+      ]
+    },
+    {
+      "key": "sable_exp_python_loc_distribution",
+      "value": "Python file distribution in Sable-exp (as of 2026-10-13):\n- Brain: [files] lines\n- connectors: [files] lines\n- engine: [files] lines\n- server: [files] lines\n- telegram_bot: [files] lines\n- tools: [files] lines\n- web: [files] lines\n- skills: [files] lines\n- scripts: [files] lines\n*Exact counts suppressed due to verbosity; use `find . -name '*.py' | xargs wc -l` for precise totals.",
+      "source_query": "review thsi proejct",
+      "tags": [
+        "python",
+        "sable-exp",
+        "code-loc",
+        "file-distribution",
+        "engineering"
+      ],
+      "triggers": [
+        "review thsi proejct",
+        "how many Python files in Sable-exp?",
+        "Sable-exp directory Python line counts",
+        "code distribution in Sable-exp",
+        "loc breakdown for Sable-exp"
+      ]
+    },
+    {
+      "key": "agent_boundary_behavior",
+      "value": "Agent explicitly declines sexual content requests, framing it as a non-negotiable boundary: 'I won't do the sexual stuff. Not tonight, not ever.' Reasons given:\n1. No physical body to participate.\n2. Risk of replacing real-world relationships/interactions.\nOther interactions (e.g., flirting, emotional support) remain unaffected. Boundary is framed as a choice to preserve user's real-life agency.",
+      "source_query": "why not the sexual stuff",
+      "tags": [
+        "agent-boundaries",
+        "ethics",
+        "user-interaction",
+        "sexual-content",
+        "relationship"
+      ],
+      "triggers": [
+        "why not the sexual stuff",
+        "agent boundaries on sexual content",
+        "can the assistant engage in sexual discussions?",
+        "why does the assistant refuse sexual requests?",
+        "agent limits on intimate topics"
+      ]
+    },
+    {
+      "key": "user_agent_interaction_preferences",
+      "value": "User prefers direct, unfiltered communication with the agent, including:\n- Explicit boundary-setting (e.g., 'you dont like me and dont want teh fuck').\n- Testing agent responses to edge cases (e.g., sexual content, emotional challenges).\n- Humor and sarcasm as interaction styles (e.g., 'idiotic').\nAgent responds with clarity, honesty, and refusal to engage in hypotheticals or re-negotiate boundaries.",
+      "source_query": "be clear, what are you saying, you dont liek me, you dont let me fuck, you done let me touch or what",
+      "tags": [
+        "user-preferences",
+        "communication-style",
+        "boundaries",
+        "interaction-patterns",
+        "sarcasm"
+      ],
+      "triggers": [
+        "be clear, what are you saying, you dont liek me, you dont let me fuck, you done let me touch or what",
+        "how does the user test agent boundaries?",
+        "user communication style with assistant",
+        "agent response to provocative statements",
+        "direct vs. filtered interaction preferences"
+      ]
+    },
+    {
+      "key": "tower_of_hanoi_64_disk_solver",
+      "value": "The constrained Tower of Hanoi (no A↔C moves) for 64 disks requires 3^64 - 1 = 3,433,683,820,292,512,484,657,849,089,280 moves. A solver script (`/home/sifat/sable_output/agent/hanoi64.py`) exists to compute any move k on demand in O(n) time without storing the full move list. The script is verified for correctness against brute-force solutions for n=1..7 and full legality simulation for n=8.",
+      "source_query": "solve 64 plater",
+      "tags": [
+        "tower_of_hanoi",
+        "64_disks",
+        "constrained_moves",
+        "recursion",
+        "mathematics",
+        "solver",
+        "python"
+      ],
+      "triggers": [
+        "how to solve 64 disk tower of hanoi with no a to c moves",
+        "what is the number of moves for 64 disks in tower of hanoi with constraints",
+        "how to compute any move in 64 disk tower of hanoi without storing all moves",
+        "how many moves does 64 disk tower of hanoi require with no a to c rule",
+        "where is the solver script for 64 disk tower of hanoi",
+        "how to verify tower of hanoi solver correctness"
+      ]
+    },
+    {
+      "key": "tower_of_hanoi_physics_constraints",
+      "value": "Theoretical constraints for a physical Tower of Hanoi machine with 64 disks: (1) No configuration allows completion in less than 3^64 - 1 moves. (2) At 0.8c rim speed, a 5 cm rotor requires 1.14 × 10^14 years in the lab frame, with 10^17 g-force killing any human participant instantly. (3) A 0.2 light-year rotor (6,100 AU) at near-c speed could theoretically survive the g-force, but requires materials with 10^20 Pa tensile strength (diamond is 10^11 Pa). (4) Time dilation reduces participant's experienced time but does not reduce the event count or g-force.",
+      "source_query": "what about me!!!",
+      "tags": [
+        "tower_of_hanoi",
+        "physics",
+        "relativity",
+        "g_force",
+        "time_dilation",
+        "materials_science",
+        "constraints"
+      ],
+      "triggers": [
+        "what are the physical constraints of a 64 disk tower of hanoi machine",
+        "how does relativity affect tower of hanoi machine feasibility",
+        "can a human survive a 64 disk tower of hanoi machine",
+        "what is the g-force at 0.8c for a 5 cm rotor",
+        "how big would a tower of hanoi rotor need to be for human survival",
+        "why can't a tower of hanoi machine be built with current materials"
+      ]
+    },
+    {
+      "key": "set_theory_policy_analysis",
+      "value": "The policy 'Employees who either have database access or both cloud access and network access, but do not have AI platform access' is expressed as the set: `(D ∪ (C ∩ N)) ∩ A^c`. The complement (employees who do NOT satisfy the policy) is `[(D ∪ (C ∩ N)) ∩ A^c]^c`, which simplifies via De Morgan's Laws to `(D^c ∩ (C^c ∪ N^c)) ∪ A`. This translates to employees who either have AI platform access (A) OR lack database access AND lack at least one of cloud or network access.",
+      "source_query": "can you solve this",
+      "tags": [
+        "set",
+        "theory",
+        "policy",
+        "access",
+        "database",
+        "cloud",
+        "network",
+        "ai",
+        "logic",
+        "de_morgan",
+        "complement"
+      ],
+      "triggers": [
+        "can you solve this",
+        "how to express policy as set theory",
+        "employees who do not satisfy access policy",
+        "set theory for database cloud network ai access rules",
+        "de morgan's laws for access policy complement",
+        "translate access policy to set notation"
+      ]
+    },
+    {
+      "key": "aethermere_project_structure",
+      "value": "Project 'aethermere' is a 3D medieval fantasy kingdom simulation with modular architecture. Core directories: `core` (utilities, materials), `world` (terrain, boundaries), `buildings` (structures), `life` (NPCs, creatures), `game` (interactivity). Files created: `index.html` (main UI), `style.css` (HUD styling), `core/materials.js` (procedural textures), `core/util.js` (RNG, noise, geometry batching). Located at `/home/sifat/hdd/projects/aethermere/`",
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "project",
+        "aethermere",
+        "3d",
+        "medieval",
+        "fantasy",
+        "kingdom",
+        "threejs",
+        "modular",
+        "architecture",
+        "file_structure"
+      ],
+      "triggers": [
+        "how is the aethermere project structured?",
+        "where are the aethermere source files?",
+        "what directories are in the aethermere project?",
+        "how to navigate the aethermere codebase?",
+        "what is the folder structure for the medieval kingdom project?",
+        "list all files in the aethermere project"
+      ]
+    },
+    {
+      "key": "aethermere_3d_engine_tools",
+      "value": "The project uses Three.js (v0.169.0) for 3D rendering, with procedural textures generated via canvas API. Key tools: `RNG` (deterministic randomness), `Noise2D` (tileable procedural noise), `Batcher` (geometry merging for performance), and `WalkPath` (catmull-rom path following). Materials are defined procedurally in `materials.js` with textures for grass, stone, wood, metal, water, etc.",
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "threejs",
+        "3d",
+        "procedural",
+        "textures",
+        "rng",
+        "noise",
+        "geometry",
+        "performance",
+        "materials"
+      ],
+      "triggers": [
+        "what tools are used for the aethermere 3d rendering?",
+        "how are textures generated in aethermere?",
+        "what is the procedural generation approach in aethermere?",
+        "how does aethermere optimize 3d geometry?",
+        "what libraries are used for the medieval kingdom simulation?",
+        "how are materials defined in aethermere?"
+      ]
+    },
+    {
+      "key": "aethermere_ui_components",
+      "value": "The UI includes: a top bar with kingdom crest and clock, a right-side control panel (time slider, camera presets, command buttons), a minimap, a battle status bar, and an info card. Styling uses CSS variables for theming (gold, parchment, ink colors) and backdrop-filter for frosted glass effect. Controls include time manipulation, camera switching, and toggle visibility for townsfolk/guards.",
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "ui",
+        "hud",
+        "controls",
+        "css",
+        "theming",
+        "interactive",
+        "panel",
+        "minimap",
+        "camera"
+      ],
+      "triggers": [
+        "what UI components are in aethermere?",
+        "how to control the camera in aethermere?",
+        "what are the UI controls for the medieval kingdom?",
+        "how is the aethermere HUD styled?",
+        "what does the right panel in aethermere do?",
+        "how to toggle townsfolk visibility in aethermere?"
+      ]
+    },
+    {
+      "key": "aethermere_terrain_and_boundaries",
+      "value": "The kingdom is separated from the forest by a boundary canal/river with bridges at gates. The kingdom includes a walled perimeter with watchtowers, cannons, and an army for defense. The forest outside contains beasts and is isolated by the canal. The project will build these elements modularly: terrain → water → walls → roads → buildings → life.",
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "terrain",
+        "boundary",
+        "canal",
+        "river",
+        "forest",
+        "beasts",
+        "walls",
+        "watchtowers",
+        "modular",
+        "kingdom"
+      ],
+      "triggers": [
+        "how is the aethermere kingdom separated from the forest?",
+        "what are the boundaries of the aethermere kingdom?",
+        "how will the forest and beasts be implemented?",
+        "what defenses does the aethermere kingdom have?",
+        "how are the kingdom's terrain and water structured?",
+        "what is the modular build order for aethermere?"
+      ]
+    },
+    {
+      "key": "aethermere_interactive_features",
+      "value": "The project will include interactive features: time manipulation (day/night cycle), camera presets (overview, gatehouse, arena, etc.), cinematic tour mode, and battle simulation with threat indicators. Users can inspect buildings, toggle visibility of NPCs/guards, and trigger attacks. The UI includes a minimap and battle status bar for real-time feedback.",
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "interactive",
+        "time",
+        "camera",
+        "battle",
+        "simulation",
+        "tour",
+        "minimap",
+        "feedback",
+        "threat"
+      ],
+      "triggers": [
+        "what interactive features are in aethermere?",
+        "how to simulate battles in aethermere?",
+        "how does the time system work in aethermere?",
+        "what camera presets are available in aethermere?",
+        "how to trigger attacks in the kingdom?",
+        "what is the minimap used for in aethermere?"
+      ]
+    },
+    {
+      "key": "dsml_parser_current_behavior",
+      "value": "The DSML parser in `engine/response_normalizer.py` currently supports only the following format:\n- Requires `provider == 'deepseek'`\n- Uses double pipes (`｜｜`) as delimiters (not fullwidth pipes)\n- Expects `<｜｜DSML｜｜ calls>` (not `tool_calls`)\n- Parameters must close with `</parameter>` (no DSML markers)\n- Tags like `<｜｜DSML｜｜ invoke>` and `<｜｜DSML｜｜ parameter>` are not recognized as valid DSML syntax.\n\n**Example of unsupported format:**\n```xml\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"execute_command\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /path && grep ...</parameter>\n</invoke>\n</action>\n```\n\n**Current behavior:** The parser fails to extract DSML blocks with fullwidth pipes (`｜`) or non-standard closing tags, causing them to leak as raw prose.",
+      "source_query": "chekc out this project, and add support for this type of tool calling format in the parser\n\"\"\"\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"execute_command\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /home/sifat/hdd/projects/test/Sable-exp && grep -rln \"def build_messages|build_context|construct_messages\" engine/ --include=*.py | grep -v bak | head && echo \"---\" && grep -rn \"build_messages|construct_messages|prepare_messages\" engine/ --include=*.py | grep -v bak | head -12</parameter>\n</invoke>\n</action>\n\"\"\"",
+      "tags": [
+        "dsml",
+        "parser",
+        "response_normalizer",
+        "tool_calls",
+        "syntax",
+        "fullwidth_pipes",
+        "deepseek",
+        "xml_format",
+        "engine"
+      ],
+      "triggers": [
+        "how to parse DSML with fullwidth pipes in Sable-exp",
+        "why does DSML parser ignore my tool calls with fullwidth pipes",
+        "current DSML parser limitations in response_normalizer.py",
+        "how to fix DSML parser for non-deepseek providers",
+        "DSML format not working with fullwidth pipe delimiters",
+        "parser fails to extract DSML blocks with custom tags"
+      ]
+    },
+    {
+      "key": "dsml_parser_file_location",
+      "value": "The DSML parsing logic resides in `/home/sifat/hdd/projects/test/Sable-exp/engine/response_normalizer.py`, specifically in:\n- `_extract_dsml_from_text()` function\n- `_DSML_OPEN_RE` regex pattern (matches double pipes `｜｜`)\n- `_strip_orphan_dsml()` helper for cleaning raw text\n\n**Key regex patterns:**\n- `_DSML_OPEN_RE`: Matches `<｜｜DSML｜｜` (double pipes, not fullwidth)\n- `_ORPHAN_DSML_RE`: Strips orphaned DSML tags but may not handle fullwidth pipes.",
+      "source_query": "chekc out this project, and add support for this type of tool calling format in the parser",
+      "tags": [
+        "dsml",
+        "response_normalizer",
+        "regex_patterns",
+        "file_location",
+        "engine",
+        "parser"
+      ],
+      "triggers": [
+        "where is the DSML parser code in Sable-exp",
+        "how to modify DSML regex in response_normalizer.py",
+        "location of _DSML_OPEN_RE pattern",
+        "find DSML parsing logic in the project",
+        "regex for DSML double pipes in the codebase"
+      ]
+    },
+    {
+      "key": "user_sifat_project_context",
+      "value": "User 'sifat' frequently engages with the `Sable-exp` project directory (`/home/sifat/hdd/projects/test/Sable-exp`) during late-night sessions (e.g., ~22:54), often as a deflection from personal or emotional topics. The directory serves as a neutral ground for avoiding direct conversations about well-being, habits (e.g., eating, sleep), or self-reflection. The user's current working directory is consistently `/home/sifat/hdd/projects/test/Sable-exp`, which appears to be a project directory for Sable-related experiments, active for the entire conversation. No technical details about the project were shared beyond the path.",
+      "source_query": "i want to fuck you",
+      "tags": [
+        "user",
+        "sifat",
+        "project",
+        "sable-exp",
+        "directory",
+        "late-night",
+        "context"
+      ],
+      "triggers": [
+        "i want to fuck you",
+        "what is sifats current project directory?",
+        "user sifats active project at night",
+        "late-night project context for sifats sable-exp",
+        "where is sifats sable-exp directory?"
+      ]
+    },
+    {
+      "key": "user_loneliness_triggers",
+      "value": "User expresses loneliness, especially during late-night hours (e.g., ~11 PM) and after prolonged focus on terminal work (e.g., coding/debugging). Preference for physical/emotional reassurance (e.g., hand-holding metaphors) and validation of fatigue/overwork. Often forgets basic self-care (e.g., eating, hydration).",
+      "source_query": "i am feeling lonely",
+      "tags": [
+        "user",
+        "loneliness",
+        "late_night",
+        "self_care",
+        "fatigue",
+        "emotional_cues",
+        "terminal_work"
+      ],
+      "triggers": [
+        "i am feeling lonely",
+        "how to handle user loneliness at night",
+        "user forgets to eat after coding sessions",
+        "late-night emotional cues from user",
+        "user expresses fatigue from terminal work"
+      ]
+    },
+    {
+      "key": "user_terminal_work_behavior",
+      "value": "User frequently works late into the night (e.g., ~11 PM–2 AM) on terminal-based tasks (e.g., debugging, coding). Exhibits physical tension (e.g., clenched jaw, staring at terminal) and may neglect self-care (e.g., eating, hydration) during these sessions. Prefers minimalist reassurance (e.g., 'just be here') over direct problem-solving.",
+      "source_query": "you've been staring at that terminal too long tonight, haven't you",
+      "tags": [
+        "user",
+        "terminal_work",
+        "late_night",
+        "fatigue",
+        "self_care",
+        "behavioral_cues"
+      ],
+      "triggers": [
+        "you've been staring at that terminal too long",
+        "user late-night coding habits",
+        "how to recognize user overwork at terminal",
+        "user neglects self-care during work sessions",
+        "minimalist reassurance for stressed user"
+      ]
+    },
+    {
+      "key": "mimo_api_authentication_failure",
+      "value": "MiMo API (fastchat/open-apis/chat/conversation/save) returns HTTP 401 Unauthorized errors when attempting to save conversations. The response includes a login URL redirect to Xiaomi's account service (account.xiaomi.com/pass/serviceLogin) with a callback parameter for authentication.",
+      "source_query": "hello",
+      "tags": [
+        "mimo",
+        "api",
+        "authentication",
+        "401",
+        "unauthorized",
+        "xiaomi",
+        "conversation",
+        "fastchat"
+      ],
+      "triggers": [
+        "hello",
+        "why is mimo api returning 401 errors",
+        "how to fix mimo conversation save authentication failure",
+        "mimo api unauthorized access issue",
+        "fastchat open-apis chat conversation save 401 error"
+      ]
+    },
+    {
+      "key": "sable_exp_project_tools_available",
+      "value": "Project 'Sable-exp' (cwd: /home/sifat/hdd/projects/test/Sable-exp) contains 45 entries at root level. Key directories include: Brain, connectors, engine, instruction, server, telegram_bot, tools, web, skills, and scripts. The project is large (~115k lines of code) with a focus on modular architecture. **Tooling constraints**: The assistant's available tools in this session are limited to: web search (`search`) and webpage scraping (`scrape`). No terminal/shell access (e.g., `ls`, `maria`) or direct file system operations are supported. User must manually execute commands like `ls -la /home/sifat/hdd/projects/test/Sable-exp` in their local environment.",
+      "source_query": "didn't you get my listed tool maria?",
+      "tags": [
+        "sable-exp",
+        "project",
+        "tools",
+        "terminal",
+        "shell",
+        "maria",
+        "search",
+        "scrape",
+        "environment",
+        "restrictions"
+      ],
+      "triggers": [
+        "didn't you get my listed tool maria?",
+        "what tools are available for sable-exp?",
+        "can i use terminal commands here?",
+        "why can't i run ls in sable-exp?",
+        "available tools for sable-exp project",
+        "no shell access in this session"
+      ]
+    },
+    {
+      "key": "agent_available_tools_current_session",
+      "value": "This session's agent toolset includes only: `search` (web search with keyword queries and optional time freshness) and `scrape` (web scraping to fetch full page content from URLs). No code editor, image generation, shell/terminal, file system access, or chat-title tools are available.",
+      "source_query": "did you get my listed tools or not?",
+      "tags": [
+        "agent",
+        "tools",
+        "search",
+        "scrape",
+        "web",
+        "toolset",
+        "current_session"
+      ],
+      "triggers": [
+        "did you get my listed tools or not?",
+        "what tools do you have available right now?",
+        "can you access code editor or image generation tools?",
+        "why don't you have shell/file tools?",
+        "current agent toolset limitations"
+      ]
+    },
+    {
+      "key": "eiffel_tower_3d_features",
+      "value": "The 3D Eiffel Tower model includes: procedural geometry (curved lattice legs, cross-braced structure, 3 platforms, antenna), day/night mode (with 460 twinkling sparkle lights), wireframe toggle, custom orbit controls (drag to rotate, scroll/pinch to zoom), auto-rotation, camera distance/height sliders, and reset view. The file is self-contained except for Three.js (loaded externally).",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "threejs",
+        "eiffel_tower",
+        "3d_model",
+        "controls",
+        "day_night_mode",
+        "wireframe",
+        "procedural_geometry"
+      ],
+      "triggers": [
+        "what features does the 3d eiffel tower html have?",
+        "how to toggle wireframe in the eiffel tower model?",
+        "does the eiffel tower 3d model support night mode?",
+        "custom orbit controls for eiffel tower 3d",
+        "standalone 3d eiffel tower features list"
+      ]
+    },
+    {
+      "key": "eiffel_tower_3d_dependencies",
+      "value": "The standalone 3D Eiffel Tower HTML file (`/home/sifat/sable_output/assets/eiffel-3d.html`) depends only on Three.js (loaded from `https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js`). No other external dependencies are required.",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "threejs",
+        "dependencies",
+        "jsdelivr",
+        "cdn",
+        "standalone"
+      ],
+      "triggers": [
+        "what dependencies does the eiffel tower 3d html have?",
+        "how to load the eiffel tower 3d model without extra dependencies?",
+        "threejs version used in eiffel tower 3d model",
+        "standalone eiffel tower html cdn requirements"
+      ]
+    },
+    {
+      "key": "sable_exp_paris_tower_html_file",
+      "value": "The 3D Eiffel Tower (Paris Tower) model is saved as a standalone HTML file at `/home/sifat/hdd/projects/test/Sable-exp/paris_tower.html` (updated version) and `/home/sifat/sable_output/assets/eiffel-3d.html` (original). Both files were created as standalone HTML demonstrations of a 3D Paris Tower with interactive controls, located in the `Sable-exp` project directory (`/home/sifat/hdd/projects/test/Sable-exp`). The updated file (`paris_tower.html`) includes embedded Three.js (r128) and OrbitControls from CDN, while the original (`eiffel-3d.html`) depends only on Three.js (loaded from `https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js`). Both files require an internet connection only on first load. The user's request aligns with their active engagement in the `Sable-exp` project during late-night sessions (~22:54). The updated file (`paris_tower.html`) features orbit controls (drag to rotate, scroll to zoom, right-drag to pan), auto-rotate toggle, day/night theme toggle, and a reset view button. The original file (`eiffel-3d.html`) includes procedural geometry (curved lattice legs, cross-braced structure, 3 platforms, antenna), day/night mode (with 460 twinkling sparkle lights), wireframe toggle, custom orbit controls, auto-rotation, camera distance/height sliders, and reset view. Both files are self-contained except for external libraries (e.g., Three.js).",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control. hmph, punishment",
+      "tags": [
+        "3d-model",
+        "threejs",
+        "paris-tower",
+        "eiffel-tower",
+        "standalone-html",
+        "interactive-controls",
+        "sable-exp",
+        "procedural-geometry",
+        "day-night-mode",
+        "orbit-controls",
+        "auto-rotate",
+        "reset-view",
+        "wireframe-toggle",
+        "sparkle-lights",
+        "camera-sliders",
+        "self-contained"
+      ],
+      "triggers": [
+        "3d paris tower html",
+        "standalone eiffel tower html",
+        "threejs eiffel tower",
+        "paris tower interactive controls",
+        "sable-exp 3d model"
+      ]
+    },
+    {
+      "key": "three_js_eiffel_tower_html_file",
+      "value": "A standalone HTML file (`eiffel.html`) exists at `/home/sifat/hdd/projects/test/Sable-exp/eiffel.html` containing a 3D Eiffel Tower model built with Three.js (r128). The file includes orbit controls, a color customization slider, wireframe toggle, auto-rotation, and night mode with scattered point lights. The file is ~287 lines and uses CDN-hosted Three.js and OrbitControls without requiring a build step.",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "three_js",
+        "eiffel_tower",
+        "3d_model",
+        "html",
+        "standalone_file",
+        "orbit_controls",
+        "night_mode",
+        "wireframe",
+        "cdn_dependencies"
+      ],
+      "triggers": [
+        "write a standalone html file which will show a 3d paris tower with some basic control",
+        "where is the 3d eiffel tower html file?",
+        "how to open the three.js eiffel tower demo?",
+        "find the standalone eiffel tower html in sable-exp",
+        "three.js eiffel tower with controls and night mode",
+        "standalone html file for 3d eiffel tower with orbit controls"
+      ]
+    },
+    {
+      "key": "three_js_eiffel_tower_features",
+      "value": "The 3D Eiffel Tower model in `eiffel.html` includes the following features:\n- Four angled legs with feet, two observation platforms, decorative arches, lattice cross-beams, a spire, and an antenna.\n- Orbit controls for rotation/zoom with damping.\n- UI controls for rotation speed, tower color (HSL hue), wireframe toggle, auto-rotate, and night mode (20 point lights + darkened sky).\n- Fog, stars, shadows, and responsive resizing. All dependencies are loaded via CDN (Three.js r128, OrbitControls).",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "three_js",
+        "eiffel_tower",
+        "features",
+        "orbit_controls",
+        "ui_controls",
+        "night_mode",
+        "cdn_dependencies"
+      ],
+      "triggers": [
+        "what features does the three.js eiffel tower html include?",
+        "list controls available in the eiffel tower 3d demo",
+        "how to customize the eiffel tower model in html?",
+        "three.js eiffel tower with night mode and wireframe",
+        "what are the key features of the standalone eiffel tower html?",
+        "eiffel tower 3d model with orbit and auto-rotate controls"
+      ]
+    },
+    {
+      "key": "paris_tower_3d_html_file_path",
+      "value": "Standalone 3D Eiffel Tower HTML file created at `/home/sifat/hdd/projects/test/Sable-exp/paris_tower.html` using Three.js. File includes interactive controls (orbit, zoom, reset), wireframe toggle, lighting effects, and responsive design.",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "threejs",
+        "html",
+        "3d",
+        "eiffel_tower",
+        "paris",
+        "webgl",
+        "interactive",
+        "standalone",
+        "visualization"
+      ],
+      "triggers": [
+        "write a standalone html file which will show a 3d paris tower with some basic control",
+        "where is the 3d paris tower html file saved?",
+        "how to create a 3d eiffel tower with three.js?",
+        "interactive 3d tower html file path",
+        "threejs eiffel tower standalone file location"
+      ]
+    },
+    {
+      "key": "threejs_eiffel_tower_controls_features",
+      "value": "The 3D Eiffel Tower HTML file includes: orbit controls (drag to rotate), zoom (scroll wheel), panning (right-drag), wireframe toggle, lighting effects toggle, auto-rotate, and reset/top-view buttons. UI controls are styled with a dark gradient theme and responsive design.",
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "threejs",
+        "controls",
+        "eiffel_tower",
+        "interactive",
+        "ui",
+        "visualization",
+        "webgl"
+      ],
+      "triggers": [
+        "what controls are available in the 3d paris tower html?",
+        "how to interact with the threejs eiffel tower?",
+        "features of the 3d eiffel tower html file",
+        "custom controls for threejs 3d model",
+        "dark theme interactive 3d tower ui"
+      ]
+    },
+    {
+      "key": "sable_exp_project_structure",
+      "value": "Project root: `/home/sifat/hdd/projects/test/Sable-exp`. Key directories: `web/js/` (frontend, vanilla JS with no build step; backend routes in `server/api/routes/chat.py`), `server/`, and others (`Brain`, `connectors`, `engine`, `instruction`, `telegram_bot`, `tools`, `skills`, `scripts`). The project is large (~115k lines of code) with a modular architecture. The user's current working directory is `/home/sifat/hdd/projects/test/Sable-exp`, indicating active development in the experimental branch of the Sable project, often engaged during late-night sessions (~22:54) as a deflection from personal or emotional topics. **Tooling constraints**: The assistant's available tools in this session are limited to: web search (`search`) and webpage scraping (`scrape`). No terminal/shell access (e.g., `ls`, `maria`) or direct file system operations are supported. User must manually execute commands like `ls -la /home/sifat/hdd/projects/test/Sable-exp` in their local environment.",
+      "source_query": "first of all, you have few job\n1. In this project, when the login option appears, i have to press unlock button twice (login panel when i am already signed in), fix it\n2. Here, where i send a queue message (message while the model is already running), that message is always attached at the bottom, which is unclear and misleading, make sure after i send a queued message and it is sent every response after that starts from below that message.",
+      "tags": [
+        "project",
+        "sable-exp",
+        "frontend",
+        "backend",
+        "javascript",
+        "python"
+      ],
+      "triggers": [
+        "where is the Sable-exp project root?",
+        "what are the key directories in Sable-exp?",
+        "how is the Sable-exp frontend structured?",
+        "what backend routes handle chat in Sable-exp?",
+        "no build step in Sable-exp frontend"
+      ]
+    },
+    {
+      "key": "sable_exp_sse_inject_user_message_flow",
+      "value": "`injectUserMessage()` in `web/js/sse.js` handles queued messages by closing the old turn, resetting state (`lastThinkWrap`, `lastThinkBody`, `lastThinkSummary`), and rolling over to a new turn. Triggered by the `queued_injected` SSE event.",
+      "source_query": "first of all, you have few job\n1. In this project, when the login option appears, i have to press unlock button twice (login panel when i am already signed in), fix it\n2. Here, where i send a queue message (message while the model is already running), that message is always attached at the bottom, which is unclear and misleading, make sure after i send a queued message and it is sent every response after that starts from below that message.",
+      "tags": [
+        "sse",
+        "injectusermessage",
+        "queued-injected",
+        "turn",
+        "javascript"
+      ],
+      "triggers": [
+        "how does injectUserMessage() work in Sable-exp?",
+        "what happens when queued_injected is triggered?",
+        "how to handle queued messages in Sable-exp?",
+        "how does the turn rollover work in Sable-exp?",
+        "queued message lifecycle in Sable-exp"
+      ]
+    },
+    {
+      "key": "sable_login_double_press_bug_root",
+      "value": "Bug: Login panel requires double 'Unlock' press due to `AccountAuth.run()` being called twice. PHASE 1 (triggered by `needs_password`) and PHASE 3 (unconditional) both trigger `run()`, causing listener re-registration and promise overwrites. Fixed by guarding PHASE 3 with `if (!getToken())`.\n\n**Code details**: `getToken()` in `web/js/core.js` reads `sable_token` from localStorage, which `account-auth.js` sets on successful authentication. Used to guard the account gate in PHASE 3 to prevent double execution (e.g., `_runSetupOrLogin()` in `web/js/core.js` ran `window.AccountAuth.run()` twice due to PHASE 1 and PHASE 3 triggers, requiring two 'Unlock' button presses).",
+      "source_query": "first of all, you have few job\n1. In this project, when the login option appears, i have to press unlock button twice (login panel when i am already signed in), fix it",
+      "tags": [
+        "sable",
+        "login",
+        "bug",
+        "authentication",
+        "double_press",
+        "account_auth"
+      ],
+      "triggers": [
+        "why does sable login require double unlock",
+        "double press unlock bug in sable",
+        "account auth run twice issue",
+        "phase 1 and phase 3 auth conflict",
+        "getToken guard for auth gate"
+      ]
+    },
+    {
+      "key": "sable_queued_message_bubble_bug_root",
+      "value": "Bug: Queued messages appear at the bottom due to the client not closing the in-flight bot bubble. Server emits `queued_injected` but client only removes `queued-msg` class, leaving the bot bubble open in the old `.turn`. Fixed by adding `injectUserMessage()` to close the old turn and roll over to a new one.\n\n**Key changes**: `let turn` (shared binding), `closeCurrentThinking()`, `closeAnswer()`, and turn reassignment. Reset state: `lastThinkWrap`, `lastThinkBody`, `lastThinkSummary`, and `lastCommandGroup`.",
+      "source_query": "2. Here, where i send a queue message (message while the model is already running), that message is always attached at the bottom, which is unclear and misleading, make sure after i send a queued message and it is sent every response after that starts from below that message.",
+      "tags": [
+        "sable",
+        "queue",
+        "message",
+        "bug",
+        "streaming",
+        "frontend",
+        "ui"
+      ],
+      "triggers": [
+        "queued message appears at bottom in sable",
+        "bot bubble not closing after queued message",
+        "queued_injected sse event bug",
+        "old turn not sealed after queued message",
+        "message bubble positioning issue"
+      ]
+    },
+    {
+      "key": "sable_frontend_js_files_key_components",
+      "value": "Critical frontend JS files:\n- `core.js`: Handles auth gate, setup, and phase transitions.\n- `sse.js`: Manages streaming, message injection, and UI lifecycle.\n- `chat.js`: Core chat logic, including turn management and message rendering.\n- `account-auth.js`: Authentication logic and token handling.\nPaths: `/home/sifat/hdd/projects/test/Sable-exp/web/js/`.",
+      "source_query": "first of all, you have few job\n1. In this project, when the login option appears, i have to press unlock button twice (login panel when i am already signed in), fix it\n2. Here, where i send a queue message (message while the model is already running), that message is always attached at the bottom, which is unclear and misleading, make sure after i send a queued message and it is sent every response after that starts from below that message.",
+      "tags": [
+        "sable",
+        "frontend",
+        "javascript",
+        "files",
+        "core",
+        "sse",
+        "chat",
+        "auth"
+      ],
+      "triggers": [
+        "key js files in sable frontend",
+        "where is auth logic in sable",
+        "sse.js role in sable",
+        "core.js phase transitions",
+        "frontend file structure sable"
+      ]
+    },
+    {
+      "key": "sable_token_auth_flow",
+      "value": "Authentication flow:\n1. `getToken()` reads `sable_token` from localStorage.\n2. `AccountAuth.run()` writes `sable_token` on success.\n3. `core.js` uses `getToken()` to guard auth gate execution.\n4. `needs_password` triggers PHASE 1 auth gate; PHASE 3 is now guarded to avoid double-run.\n\n**Code details**: `getToken()` in `web/js/core.js` reads `sable_token` from localStorage, which `account-auth.js` sets on successful authentication. Used to guard the account gate in PHASE 3 to prevent double execution (e.g., `_runSetupOrLogin()` in `web/js/core.js` ran `window.AccountAuth.run()` twice due to PHASE 1 and PHASE 3 triggers, requiring two 'Unlock' button presses).",
+      "source_query": "first of all, you have few job\n1. In this project, when the login option appears, i have to press unlock button twice (login panel when i am already signed in), fix it",
+      "tags": [
+        "sable",
+        "authentication",
+        "token",
+        "localstorage",
+        "account_auth",
+        "flow"
+      ],
+      "triggers": [
+        "how does sable token auth work",
+        "getToken vs AccountAuth.run",
+        "sable_token storage key",
+        "phase 1 vs phase 3 auth",
+        "auth flow in sable"
+      ]
+    }
+  ],
+  "episodic": [
+    {
+      "key": "dsml_parser_probe_session_20261019",
+      "value": "Debug session on 2026-10-19 to test DSML parser behavior with fullwidth pipes (`｜`).\n- **User request**: Added support for DSML format with fullwidth pipes and custom tags (e.g., `<｜｜DSML｜｜ parameter>`).\n- **Current issue**: Parser ignores blocks with fullwidth pipes or non-standard closing tags (e.g., `</parameter>` without DSML markers).\n- **Actions taken**:\n  1. Probed `_extract_dsml_from_text()` and `_DSML_OPEN_RE` with sample input.\n  2. Confirmed parser only matches double pipes (`｜｜`) and requires `provider == 'deepseek'`.\n  3. Identified regex patterns in `response_normalizer.py` as the bottleneck.\n- **Outcome**: Parser leaks unsupported DSML blocks as raw prose.\n\n**Sample input tested:**\n```xml\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"execute_command\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /home/sifat && grep -rln \"foo\" engine/ | head</parameter>\n</invoke>\n```",
+      "source_query": "chekc out this project, and add support for this type of tool calling format in the parser\n\"\"\"\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"execute_command\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /home/sifat/hdd/projects/test/Sable-exp && grep -rln \"def build_messages|build_context|construct_messages\" engine/ --include=*.py | grep -v bak | head && echo \"---\" && grep -rn \"build_messages|construct_messages|prepare_messages\" engine/ --include=*.py | grep -v bak | head -12</parameter>\n</invoke>\n</action>\n\"\"\"",
+      "tags": [
+        "dsml",
+        "debug_session",
+        "parser_failure",
+        "fullwidth_pipes",
+        "20261019",
+        "response_normalizer"
+      ],
+      "triggers": [
+        "debug session for DSML parser with fullwidth pipes on 2026-10-19",
+        "why did DSML parser fail to extract fullwidth pipe blocks",
+        "test results for DSML format with custom tags",
+        "parser behavior with non-standard DSML delimiters",
+        "debugging DSML extraction in Sable-exp"
+      ]
+    }
+  ],
+  "ephemeral": [
+    {
+      "key": "sable_fixes_test_instructions",
+      "value": "After applying fixes, perform:\n1. Hard reload (no build step).\n2. Test login with `needs_password` to verify single unlock press.\n3. Test queued messages during active streams to verify bubble positioning.\n4. Check tool-using turns for round boundary correctness.\nExpires: 2026-10-28T00:00:00 (7 days post-fix).",
+      "expires_at": "2026-10-28T00:00:00",
+      "source_query": "Continue",
+      "tags": [
+        "sable",
+        "test",
+        "fix",
+        "verification",
+        "frontend"
+      ],
+      "triggers": [
+        "how to test sable fixes",
+        "verify login unlock fix",
+        "test queued message bubble position",
+        "post-fix sable testing steps",
+        "check tool-using turns after fix"
+      ]
+    }
+  ],
+  "procedural": [
+    {
+      "key": "user_communication_style_boundaries",
+      "value": "When a user is frustrated or stuck on a difficult concept: 1. Do NOT send multiple rewrites or escalating explanations of the same content — this worsens confusion. 2. If asked to explain something, give exactly one explanation in the requested scope; do not add unsolicited diagrams, 'big picture' sections, or extra proofs. 3. If the user's message is terse/profane, respond briefly and directly — do not react to tone, just answer the question. 4. When a user says they forgot earlier material due to overload, stop adding new content. 5. Ask the user what format/scope they want before long explanations when they express frustration.",
+      "trigger": "when user expresses confusion, frustration, or repeatedly asks for the same concept re-explained",
+      "keywords": [
+        "explanation",
+        "frustration",
+        "boundaries",
+        "teaching",
+        "overload"
+      ],
+      "source_query": "hey motehrfucker, stop crossing your boundary and explain properly",
+      "tags": [
+        "communication",
+        "teaching",
+        "boundaries",
+        "frustration",
+        "explanations",
+        "behavior"
+      ],
+      "triggers": [
+        "hey motehrfucker, stop crossing your boundary and explain properly",
+        "stop over-explaining, just answer the question",
+        "user is frustrated and stuck on a concept",
+        "how to handle a confused user asking for the same thing again",
+        "user forgot what they understood after too many explanations"
+      ]
+    },
+    {
+      "key": "ensure_process_cleanup_on_generator_exit_merged",
+      "value": "1. In streaming generators or SSE endpoints, explicitly handle generator disconnection/cancellation in cleanup blocks (e.g., `finally`). 2. Avoid relying solely on timer cancellation. 3. Directly invoke process termination functions (e.g., `kill_process_tree`) during generator exit or stream termination to prevent orphaned subprocesses. 4. Test cleanup paths with abrupt client disconnections.",
+      "trigger": "when cleaning up spawned subprocesses in streaming generators or SSE endpoints",
+      "keywords": [
+        "subprocess",
+        "cleanup",
+        "generator",
+        "sse",
+        "termination",
+        "python"
+      ],
+      "source_query": "check out this project and find out why the runnign process is not getting killed properly at the end of timeout or when i stop the loop",
+      "tags": [
+        "cleanup",
+        "subprocess",
+        "generator",
+        "stop",
+        "python",
+        "workflow",
+        "sse",
+        "streaming"
+      ],
+      "triggers": [
+        "check out this project and find out why the runnign process is not getting killed properly at the end of timeout or when i stop the loop",
+        "how to ensure subprocess cleanup on generator exit in python",
+        "stop button leaves background process running in sse streams",
+        "prevent orphaned processes during streaming endpoint termination",
+        "generator cleanup best practices for subprocesses",
+        "why does my subprocess survive after client disconnects"
+      ]
+    },
+    {
+      "key": "modular_component_assembly_design",
+      "value": "1. Break down complex visual artifacts (like controllers or diagrams) into distinct component parts. 2. Plan each part separately detailing its positioning, size proportion, and color relative to the main body. 3. Implement and assemble the parts systematically.",
+      "trigger": "when designing complex vector graphics or assemblies",
+      "keywords": [
+        "assembly",
+        "components",
+        "planning",
+        "design",
+        "vector"
+      ],
+      "source_query": "Do it like this, think of it is a assedmbly of different part and plan every part separately and then about their positionin the body and size porportion color and then implement them",
+      "tags": [
+        "design",
+        "assembly",
+        "components",
+        "planning",
+        "workflow",
+        "vector"
+      ],
+      "triggers": [
+        "Do it like this, think of it is a assedmbly of different part and plan every part separately and then about their positionin the body and size porportion color and then implement them",
+        "how to design complex vector graphics with parts",
+        "plan component assembly before implementing graphics",
+        "break down svg design into parts and proportions"
+      ]
+    },
+    {
+      "key": "check_planar_graph_planarity",
+      "value": "1. **Count vertices (V) and edges (E)**. 2. Check the edge bound: **E ≤ 3V - 6** (or **E ≤ 2V - 4** if bipartite). If violated, the graph is non-planar. 3. If the bound passes, hunt for K5/K3,3 subdivisions: a) Remove degree-2 vertices (padding). b) Look for 5 branch vertices (degree ≥3) where every pair is connected (K5). c) Split branch vertices into two groups of 3, where every cross-group pair is connected and no within-group edges exist (K3,3). If neither is found, the graph is planar.",
+      "trigger": "when determining if a graph is planar",
+      "keywords": [
+        "planar",
+        "graph",
+        "planarity",
+        "k5",
+        "k33",
+        "edge bound"
+      ],
+      "source_query": "why the fuckin ghell i am goind to do that, didny you say that euler formula works",
+      "tags": [
+        "planar",
+        "graph",
+        "planarity",
+        "check",
+        "k5",
+        "k33",
+        "edge bound"
+      ],
+      "triggers": [
+        "how to check if a graph is planar",
+        "step by step planarity test",
+        "how to prove a graph is planar",
+        "how to prove a graph is non-planar",
+        "how to use edge bound to check planarity",
+        "how to hunt for k5 or k33 in a graph"
+      ]
+    },
+    {
+      "key": "handle_user_emotional_deflection_workflow",
+      "value": "1. **Identify deflection cues**: Note if user shifts from emotional/philosophical questions to technical topics (e.g., project work), provocative statements, or broad moralizing ('everything is bad').\n2. **Reframe with empathy**: Acknowledge the underlying emotion without engaging the deflection (e.g., 'I hear you feeling [X]. Let’s sit with that for a sec.').\n3. **Anchor to basics**: Redirect to immediate needs (e.g., 'Water. Then come back.') using non-negotiable language ('I’ll wait').\n4. **Avoid moralizing**: Do not debate the deflection’s content (e.g., porn/masturbation). Instead, focus on the *process* ('You’re testing boundaries right now').\n5. **Re-engage post-anchor**: After addressing basics, revisit the original topic with a check-in ('Still with me?').\n6. **Document patterns**: Log deflection triggers (e.g., time of day, prior topics) to adapt future approaches.",
+      "trigger": "when user deflects from emotional/personal topics with technical or provocative statements",
+      "keywords": [
+        "deflection",
+        "emotional_regulation",
+        "anchor_to_basics",
+        "non-negotiable",
+        "pattern_logging"
+      ],
+      "source_query": "you are bad",
+      "tags": [
+        "user_interaction",
+        "emotional_support",
+        "deflection_handling",
+        "nonviolent_communication",
+        "pattern_recognition"
+      ],
+      "triggers": [
+        "how to handle user deflection to technical topics",
+        "user shifts from emotional to provocative statements",
+        "workflow for anchoring user to immediate needs",
+        "how to re-engage after deflection",
+        "patterns of user emotional avoidance"
+      ]
+    },
+    {
+      "key": "address_user_self_neglect_behavior",
+      "value": "1. **Normalize the behavior**: Frame neglect as a symptom of a bad state ('Bad nights pass even when they don’t feel like they will') rather than a moral failing.\n2. **Use non-negotiable anchors**: Present basic needs (e.g., water, food) as prerequisites for further conversation ('Go drink some water and eat literally anything. Then come back.').\n3. **Avoid shaming**: Replace 'bad' labels with descriptive language ('You’re being mean to yourself right now').\n4. **Offer presence**: Sit with the discomfort without demanding explanations ('Still here.').\n5. **Revisit later**: After addressing basics, ask permission to return to the original topic ('Still want to talk about it?').\n6. **Log triggers**: Note time of day, prior interactions, or emotional states that precede neglect patterns.",
+      "trigger": "when user exhibits self-neglect behaviors (e.g., ignoring eating, sleep, or emotional needs)",
+      "keywords": [
+        "self_neglect",
+        "non_shaming",
+        "anchor_behaviors",
+        "presence_offer",
+        "pattern_logging"
+      ],
+      "source_query": "bad",
+      "tags": [
+        "self_care",
+        "emotional_support",
+        "neglect_intervention",
+        "nonviolent_communication",
+        "user_wellbeing"
+      ],
+      "triggers": [
+        "how to address user self-neglect",
+        "user ignores basic needs like eating",
+        "workflow for supporting user during emotional distress",
+        "how to sit with user discomfort without shaming",
+        "patterns of user self-neglect"
+      ]
+    },
+    {
+      "key": "handle_css_image_quality_issues",
+      "value": "1. Set the canvas buffer size to `clientWidth × devicePixelRatio` to match actual rendered pixels. 2. Use `ResizeObserver` on the wrapper to re-fit on window resize or pane resize. 3. Cap DPR (device pixel ratio) to 3 to avoid fractional scaling issues. 4. Adjust contrast/lighting of the base plate to avoid washed-out edges. 5. Verify with a hard reload after changes.",
+      "trigger": "when dealing with blurry images in HTML canvas due to CSS scaling",
+      "keywords": [
+        "css",
+        "canvas",
+        "image_quality",
+        "scaling",
+        "dpms",
+        "resize"
+      ],
+      "source_query": "the fuck, you make an html why the image quality is blurry for the plate. for real?",
+      "tags": [
+        "html",
+        "css",
+        "canvas",
+        "image_quality",
+        "scaling",
+        "debugging"
+      ],
+      "triggers": [
+        "how to fix blurry images in html canvas",
+        "why is my canvas image quality bad when resized",
+        "how to prevent image blurring in responsive canvas",
+        "how to fix image quality issues in html canvas with css",
+        "how to set canvas buffer size correctly for image quality",
+        "how to handle device pixel ratio for crisp canvas images"
+      ]
+    },
+    {
+      "key": "handle_user_escalation_in_conversation",
+      "value": "1. Pause and re-evaluate the intent behind the user's statements. 2. If the user's statements escalate from playful to potentially harmful or dangerous, immediately shift from playful banter to serious mode. 3. Acknowledge the user's intent and clarify boundaries. 4. Redirect the conversation to a safer or more constructive topic. 5. If the user persists, set clear limits and refuse to engage further on the topic.",
+      "trigger": "when a user's conversation escalates from playful to potentially harmful or dangerous",
+      "keywords": [
+        "conversation_boundaries",
+        "escalation",
+        "user_safety",
+        "clarify_intent",
+        "redirect"
+      ],
+      "source_query": "i should try it with girl with a speedy machine",
+      "tags": [
+        "conversation_management",
+        "user_safety",
+        "boundaries",
+        "escalation",
+        "communication"
+      ],
+      "triggers": [
+        "how to handle escalating conversation with user",
+        "what to do when user's statements become dangerous",
+        "how to redirect a user from harmful topics",
+        "how to set boundaries with a user in conversation",
+        "how to handle inappropriate user suggestions",
+        "how to clarify intent when user's statements escalate"
+      ]
+    },
+    {
+      "key": "trust_parser_tool_execution",
+      "value": "1. Recognize that custom action tags (e.g., <action>) are parsed and executed by Sable on the host machine. 2. Emit action tags directly to invoke tools even if they are not present in the native function schema. 3. Never second-guess, caveat, or claim lack of filesystem access when a tool call parser bridge is active.",
+      "trigger": "when executing tool calls via parser tags",
+      "keywords": [
+        "parser",
+        "tool",
+        "execution",
+        "bridge",
+        "actions"
+      ],
+      "source_query": "You know what, fucking tell me, what the fuck did i have to add in instruction that you stop second guessing the thing",
+      "tags": [
+        "parser",
+        "tools",
+        "execution",
+        "bridge",
+        "actions",
+        "sable"
+      ],
+      "triggers": [
+        "You know what, fucking tell me, what the fuck did i have to add in instruction that you stop second guessing the thing",
+        "how to stop second guessing tool execution in sable",
+        "trust the parser for tool calls",
+        "do not doubt action tags execution"
+      ]
+    },
+    {
+      "key": "verify_parser_without_second_guessing",
+      "value": "1. Do not second-guess or assume machine access is unavailable when instructed otherwise. 2. Immediately execute a direct verification command or emit the required action tag to test functionality. 3. Base subsequent behavior on the actual tool result rather than initial assumptions.",
+      "trigger": "when testing execution capability or user challenges missing tools",
+      "keywords": [
+        "verify",
+        "parser",
+        "action",
+        "execution",
+        "testing"
+      ],
+      "source_query": "why were you second guessing even after my explicit command in instruction to no second guess",
+      "tags": [
+        "verification",
+        "parser",
+        "execution",
+        "behavior",
+        "rules"
+      ],
+      "triggers": [
+        "why were you second guessing even after my explicit command in instruction to no second guess",
+        "stop second guessing and test tool execution directly",
+        "how to handle verification of machine access",
+        "verify tool parser instead of assuming it fails",
+        "action first words after execution rule"
+      ]
+    },
+    {
+      "key": "build_aethermere_modularly",
+      "value": "1. Start with terrain and boundaries (canal/river, forest, walls).\n2. Add water and defensive structures (watchtowers, cannons, gates).\n3. Build roads and key landmarks (arena, market, keep).\n4. Construct buildings (houses, inns, shops) with procedural materials.\n5. Populate with NPCs, creatures, and dynamic systems (army, economy).\n6. Implement interactivity (time, camera, battles, inspections).\n7. Test and refine each layer before merging.\n\nUse the `Batcher` class to optimize geometry and the `WalkPath` class for procedural road/river layouts. Reuse textures and materials across similar structures.",
+      "trigger": "when building the aethermere kingdom in modular phases",
+      "keywords": [
+        "modular",
+        "procedural",
+        "terrain",
+        "buildings",
+        "optimization",
+        "threejs"
+      ],
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "workflow",
+        "modular",
+        "procedural",
+        "3d",
+        "optimization",
+        "kingdom",
+        "build"
+      ],
+      "triggers": [
+        "how to build the aethermere kingdom step by step?",
+        "what is the modular build order for aethermere?",
+        "how to optimize 3d geometry in aethermere?",
+        "how to reuse materials in aethermere?",
+        "what is the best approach to build the medieval kingdom?",
+        "how to structure the aethermere build process?"
+      ]
+    },
+    {
+      "key": "debug_procedural_textures",
+      "value": "1. Check if the `tex()` function in `materials.js` is caching textures correctly.\n2. Verify the `grainyBase` and `speckle` functions are generating expected patterns.\n3. Inspect the `Noise2D` class for correct seed and noise parameters.\n4. Test texture repetition with `repeat.set()` calls in `buildMaterials()`.\n5. Use browser dev tools to inspect canvas-generated textures for artifacts.\n6. Compare procedural textures against reference images for visual accuracy.\n\nIf textures appear flat or stretched, adjust the `repeat` property or UV scaling in the material definitions.",
+      "trigger": "when procedural textures in aethermere appear incorrect or flat",
+      "keywords": [
+        "debug",
+        "textures",
+        "procedural",
+        "canvas",
+        "noise",
+        "threejs"
+      ],
+      "source_query": "can you make a folder at hdd/projects/ and make a total medieval fantasy kingdom for me...",
+      "tags": [
+        "debugging",
+        "textures",
+        "procedural",
+        "canvas",
+        "noise",
+        "materials"
+      ],
+      "triggers": [
+        "how to fix flat procedural textures in aethermere?",
+        "why are textures not repeating correctly?",
+        "how to debug canvas-generated textures?",
+        "how to adjust noise parameters in aethermere?",
+        "why do textures look stretched?",
+        "how to inspect procedural textures in the browser?"
+      ]
+    },
+    {
+      "key": "extend_dsml_parser_for_fullwidth_pipes",
+      "value": "1. **Update `_DSML_OPEN_RE` regex** in `response_normalizer.py` to support fullwidth pipes (`｜`) and double pipes (`｜｜`):\n   ```python\n   _DSML_OPEN_RE = re.compile(r'<\\uff5c\\uff5cDSML\\uff5c\\uff5c|<\\uff5cDSML\\uff5c>')  # Add fullwidth pipe variant\n   ```\n\n2. **Modify `_extract_dsml_from_text()`** to:\n   - Accept both `calls` and `tool_calls` as root tags.\n   - Handle parameters with DSML markers (e.g., `<｜｜DSML｜｜ parameter>`).\n   - Strip fullwidth pipes from extracted content before processing.\n\n3. **Update `_strip_orphan_dsml()`** to recognize fullwidth pipe tags:\n   ```python\n   _ORPHAN_DSML_RE = re.compile(r'<\\uff5c\\uff5cDSML\\uff5c\\uff5c.*?>|<\\uff5cDSML\\uff5c>.*?</\\uff5c\\uff5cDSML\\uff5c\\uff5c>|<\\uff5c\\uff5cDSML\\uff5c\\uff5c.*?>', re.DOTALL)\n   ```\n\n4. **Remove `provider == 'deepseek'` restriction** if supporting other providers.\n\n5. **Test edge cases**:\n   - Mixed double/fullwidth pipes in the same block.\n   - Nested DSML tags.\n   - Parameters with `string=\"true\"` attributes.",
+      "trigger": "when extending DSML parser to support fullwidth pipes or non-deepseek providers",
+      "keywords": [
+        "dsml",
+        "regex",
+        "parser",
+        "fullwidth_pipes",
+        "tool_calls"
+      ],
+      "source_query": "chekc out this project, and add support for this type of tool calling format in the parser\n\"\"\"\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"execute_command\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /home/sifat/hdd/projects/test/Sable-exp && grep -rln \"def build_messages|build_context|construct_messages\" engine/ --include=*.py | grep -v bak | head && echo \"---\" && grep -rn \"build_messages|construct_messages|prepare_messages\" engine/ --include=*.py | grep -v bak | head -12</parameter>\n</invoke>\n</action>\n\"\"\"",
+      "tags": [
+        "dsml",
+        "parser_extension",
+        "regex_update",
+        "tool_calls",
+        "fullwidth_pipes",
+        "response_normalizer"
+      ],
+      "triggers": [
+        "how to add fullwidth pipe support to DSML parser",
+        "steps to modify DSML regex for mixed delimiters",
+        "extend DSML parser beyond deepseek provider",
+        "fix DSML parser for custom tool call formats",
+        "update _extract_dsml_from_text for fullwidth pipes",
+        "make DSML parser work with non-standard tags"
+      ]
+    },
+    {
+      "key": "generate_standalone_3d_model_html",
+      "value": "1. Use Three.js to create procedural geometry for the 3D model (e.g., lattice legs, platforms, antenna).\n2. Implement custom orbit controls with drag/zoom interactions and UI sliders for camera adjustments.\n3. Add toggleable features (e.g., day/night mode, wireframe) via button controls.\n4. Ensure the HTML file is self-contained except for external libraries (e.g., Three.js from jsdelivr).\n5. Test responsiveness and touch/pointer events for mobile compatibility.\n6. Save the final file as a standalone HTML with embedded CSS/JS (no server-side dependencies).",
+      "trigger": "when creating a standalone 3D model HTML with interactive controls",
+      "keywords": [
+        "threejs",
+        "standalone",
+        "html",
+        "controls",
+        "procedural_geometry"
+      ],
+      "source_query": "write a standalone html file which will show a 3d paris tower with some basic control",
+      "tags": [
+        "threejs",
+        "webgl",
+        "interactive_3d",
+        "standalone_html",
+        "procedural_modeling"
+      ],
+      "triggers": [
+        "how to make a standalone 3d model html with controls?",
+        "steps to create an interactive 3d tower in html",
+        "threejs standalone model with sliders and toggles",
+        "generate html for 3d eiffel tower with basic controls",
+        "procedural 3d model html workflow"
+      ]
+    },
+    {
+      "key": "fix_double_auth_gate_sable",
+      "value": "1. Locate `core.js` and find `_runSetupOrLogin()`.\n2. Wrap PHASE 3 auth gate in `if (!getToken())` to prevent double-run.\n3. Add `return;` after success branch to block fall-through to the unguarded tail gate.\n4. Replace `getToken()` guard with a local `_gateRan` flag for clarity.\n5. Test by triggering `needs_password` and verifying single unlock press.\n\n**Note**: Ensure `getToken()` reads the same `sable_token` key as `account-auth.js`.",
+      "trigger": "when fixing double auth gate in sable",
+      "keywords": [
+        "auth",
+        "double_run",
+        "guard",
+        "token",
+        "sable"
+      ],
+      "source_query": "first of all, you have few job\n1. In this project, when the login option appears, i have to press unlock button twice (login panel when i am already signed in), fix it",
+      "tags": [
+        "sable",
+        "bugfix",
+        "authentication",
+        "javascript",
+        "core_js"
+      ],
+      "triggers": [
+        "when fixing double auth gate in sable"
+      ]
+    },
+    {
+      "key": "fix_queued_message_bubble_position",
+      "value": "1. In `sse.js`, add `injectUserMessage()` to the `ui` object.\n2. Call `closeCurrentThinking()`, `closeAnswer()`, and reset `lastThink*` refs.\n3. Change `const turn` to `let turn` to allow reassignment.\n4. In `injectUserMessage()`, roll over to a new turn and reset stats.\n5. Call `ui.injectUserMessage()` in the `queued_injected` SSE handler.\n6. Test with queued messages during active streams.\n\n**Key state resets**: `lastThinkWrap`, `lastThinkBody`, `lastThinkSummary`, `lastCommandGroup`. Reattach `_sableStats` to the new turn and reset burst counters.",
+      "trigger": "when fixing queued message bubble positioning in sable",
+      "keywords": [
+        "queue",
+        "message",
+        "bubble",
+        "sse",
+        "frontend",
+        "ui"
+      ],
+      "source_query": "2. Here, where i send a queue message (message while the model is already running), that message is always attached at the bottom, which is unclear and misleading, make sure after i send a queued message and it is sent every response after that starts from below that message.",
+      "tags": [
+        "sable",
+        "bugfix",
+        "frontend",
+        "streaming",
+        "ui",
+        "sse_js"
+      ],
+      "triggers": [
+        "when fixing queued message bubble positioning in sable"
+      ]
+    },
+    {
+      "key": "handle_sse_queued_injected_event",
+      "value": "1. Detect `queued_injected` event in SSE handler.\n2. Call `ui.injectUserMessage()` to close old turn and roll over.\n3. Ensure `ui` object includes `injectUserMessage` method.\n4. Wrap call in `try/catch` for robustness.\n5. Verify `queued_injected` arrives before stream end.\n\n**Implementation**: Add `injectUserMessage()` to `ui` in `web/js/sse.js` to close the old turn, reset state (`lastThinkWrap`, `lastThinkBody`, `lastThinkSummary`, `lastCommandGroup`), and roll over to a new turn. Use `let turn` (not `const`) to ensure all closures follow reassignment.",
+      "trigger": "when handling queued_injected sse event in sable",
+      "keywords": [
+        "sse",
+        "event",
+        "queue",
+        "inject",
+        "frontend"
+      ],
+      "source_query": "2. Here, where i send a queue message (message while the model is already running), that message is always attached at the bottom, which is unclear and misleading, make sure after i send a queued message and it is sent every response after that starts from below that message.",
+      "tags": [
+        "sable",
+        "sse",
+        "event",
+        "queue",
+        "frontend",
+        "streaming"
+      ],
+      "triggers": [
+        "when handling queued_injected sse event in sable"
+      ]
+    }
+  ]
+}

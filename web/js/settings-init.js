@@ -302,40 +302,54 @@
     // Guard: prevents sending while a stop request is in-flight
     let _stopInFlight = false;
 
+    /**
+     * Canonical stop-generation routine. Shared by the send button's stop-mode
+     * state and the Ctrl+X shortcut so the two can never drift apart.
+     */
+    async function stopGeneration() {
+      if (_stopInFlight) return;
+      if (!isStreaming()) return;
+
+      _stopInFlight = true;
+      const ctrl = activeStreams.get(activeChatId);
+      if (ctrl) ctrl.abort();
+      // Nuclear stop: abort all active agent sub-streams for this chat
+      if (typeof window._abortAllAgents === "function") window._abortAllAgents();
+      // Fallback: if abort doesn't end the stream within 3s, force-clean
+      const _stuckId = activeChatId;
+      setTimeout(() => {
+        if (activeStreams.has(_stuckId)) {
+          activeStreams.delete(_stuckId);
+          updateSendBtn();
+          _toggleStreamIndicator(_stuckId, false);
+        }
+      }, 3000);
+      // Await the stop API so upstream generation is actually halted before
+      // the user can send a new message — eliminates CHAT_IN_PROGRESS race.
+      try {
+        const _respId = typeof window.getActiveResponseId === "function"
+          ? window.getActiveResponseId(activeChatId)
+          : null;
+        await fetch("/api/chat/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: activeChatId, response_id: _respId }),
+        });
+      } catch (_) {}
+      // Small grace period for upstream to fully release the session
+      await new Promise(r => setTimeout(r, 500));
+      _stopInFlight = false;
+    }
+
+    // Exposed for the shortcut dispatcher (settings-ui.js).
+    window.sableStopGeneration = stopGeneration;
+
     async function sendMessage() {
       // Block sends while a stop is being processed — prevents CHAT_IN_PROGRESS race
       if (_stopInFlight) return;
 
       if (isStreaming()) {
-        _stopInFlight = true;
-        const ctrl = activeStreams.get(activeChatId);
-        if (ctrl) ctrl.abort();
-        // Nuclear stop: abort all active agent sub-streams for this chat
-        if (typeof window._abortAllAgents === "function") window._abortAllAgents();
-        // Fallback: if abort doesn't end the stream within 3s, force-clean
-        const _stuckId = activeChatId;
-        setTimeout(() => {
-          if (activeStreams.has(_stuckId)) {
-            activeStreams.delete(_stuckId);
-            updateSendBtn();
-            _toggleStreamIndicator(_stuckId, false);
-          }
-        }, 3000);
-        // Await the stop API so upstream generation is actually halted before
-        // the user can send a new message — eliminates CHAT_IN_PROGRESS race.
-        try {
-          const _respId = typeof window.getActiveResponseId === "function"
-            ? window.getActiveResponseId(activeChatId)
-            : null;
-          await fetch("/api/chat/stop", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: activeChatId, response_id: _respId }),
-          });
-        } catch (_) {}
-        // Small grace period for upstream to fully release the session
-        await new Promise(r => setTimeout(r, 500));
-        _stopInFlight = false;
+        await stopGeneration();
         return;
       }
 
