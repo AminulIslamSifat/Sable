@@ -2522,17 +2522,37 @@ async def chat(request: ChatRequest):
                 # API backends get 0 backend-level empty retries; the connector owns that.
                 _EMPTY_RESPONSE_MAX_RETRIES = 3
                 _empty_response_retries = 0
+                # Hard cap across ALL accounts. Without this, each successful
+                # auto-switch resets _empty_response_retries to 0, so a fully
+                # rate-limited provider loops 3 empties × N accounts before
+                # giving up — the "repeats again and again" symptom.
+                _EMPTY_RESPONSE_MAX_TOTAL = 9
+                _empty_response_total = 0
                 _main_got_first = False
                 _main_request_sent = False
                 _main_timeout_retries = 0
                 _main_stall_retries = 0
+                # Pre-request phase watchdog. API backends (DeepSeek, Gemini, …)
+                # NEVER emit `request_sent` — only the Qwen scraper does — so this
+                # flag can stay False for the whole life of a hung request. Without
+                # a bounded wait the loop blocks forever on `__anext__()`, the SSE
+                # body never closes, the frontend's isStreaming() never clears, and
+                # the send button silently becomes a stop button until pressed
+                # manually. 45s covers browser launch + session creation + jitter.
+                _MAIN_PRE_REQUEST_TIMEOUT = 45.0
                 _main_iter = round_event_source.__aiter__()
 
                 while True:
                     try:
                         if not _main_request_sent:
-                            # Pre-request phase: consume setup events without timeout pressure
-                            event = await _main_iter.__anext__()
+                            # Pre-request phase: wait for request_sent with a hard
+                            # timeout. Setup events pass through; a timeout is
+                            # handled as a first-chunk timeout and retried below.
+                            print(f"[MAIN-STREAM]   ↳ waiting for request_sent (timeout={_MAIN_PRE_REQUEST_TIMEOUT}s)...")
+                            event = await asyncio.wait_for(
+                                _main_iter.__anext__(),
+                                timeout=_MAIN_PRE_REQUEST_TIMEOUT,
+                            )
                             if event.get("type") == "request_sent":
                                 _main_request_sent = True
                                 print(f"[MAIN-STREAM]   ✓ request_sent — starting first-chunk timer ({_MAIN_FIRST_CHUNK_TIMEOUT}s)")
@@ -2646,6 +2666,21 @@ async def chat(request: ChatRequest):
                         _should_break = True  # default: exit inner loop normally
                         if not _got_answer_content and not stream_error:
                             _empty_response_retries += 1
+                            _empty_response_total += 1
+                            if _empty_response_total > _EMPTY_RESPONSE_MAX_TOTAL:
+                                # Global cap hit — stop looping across accounts and
+                                # fail cleanly so the stream terminates and the
+                                # frontend can send again without manual stop.
+                                logger.warning("[main-stream] Empty-response TOTAL cap (%d) hit for chat %s — failing cleanly",
+                                               _EMPTY_RESPONSE_MAX_TOTAL, active_chat_id)
+                                error_message = (
+                                    f"Upstream '{request.model}' kept returning empty responses "
+                                    f"across {_empty_response_total} attempts — likely rate limited. "
+                                    f"Check the provider / wait before retrying."
+                                )
+                                stream_error = True
+                                yield sse({"type": "error", "message": error_message})
+                                break
                             if _empty_response_retries <= _EMPTY_RESPONSE_MAX_RETRIES:
                                 print(f"[MAIN-STREAM]   ⚠ EMPTY RESPONSE (retry {_empty_response_retries}/{_EMPTY_RESPONSE_MAX_RETRIES})")
                                 logger.warning("[main-stream] Empty response for chat %s, retry %d/%d",

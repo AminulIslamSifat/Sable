@@ -130,6 +130,11 @@
     }
 
     async function _runSetupOrLogin() {
+      // Did the account gate run during THIS page load? A token is not proof —
+      // it survives from a previous session — so track the gate explicitly.
+      // PHASE 1 runs it when the server says needs_password; PHASE 3 runs it
+      // otherwise; the fallback at the bottom runs it when status is unknown.
+      let _gateRan = false;
       // Check if first-run setup is needed
       try {
           const statusRes = await _origFetch("/api/setup/status");
@@ -144,6 +149,7 @@
               showPhase(phaseAccount);
               if (window.AccountAuth) {
                 await window.AccountAuth.run();
+                _gateRan = true;
                 try {
                   const s2 = await _origFetch("/api/setup/status");
                   if (s2.ok) status = await s2.json();
@@ -159,6 +165,7 @@
                   }, 50);
                 });
                 await window.AccountAuth.run();
+                _gateRan = true;
                 try {
                   const s2 = await _origFetch("/api/setup/status");
                   if (s2.ok) status = await s2.json();
@@ -307,39 +314,57 @@
 
             // === PHASE 3: Login ===
             // Account (email/password) gate — the only front door.
-            showPhase(phaseAccount);
-            if (!window.AccountAuth) {
-              await new Promise((resolve) => {
-                const _wait = setInterval(() => {
-                  if (window.AccountAuth) { clearInterval(_wait); resolve(); }
-                }, 50);
-              });
+            // Run it ONLY if PHASE 1 didn't already. PHASE 1 fires whenever the
+            // server reports needs_password, and it awaits the very same gate;
+            // calling run() again here rebuilt the panel, re-registered every
+            // listener and orphaned the first run's promise — so the first
+            // Unlock click was swallowed and the button had to be pressed twice.
+            if (!_gateRan) {
+              showPhase(phaseAccount);
+              if (!window.AccountAuth) {
+                await new Promise((resolve) => {
+                  const _wait = setInterval(() => {
+                    if (window.AccountAuth) { clearInterval(_wait); resolve(); }
+                  }, 50);
+                });
+              }
+              // Blocks until sign-in succeeds (or the tab is abandoned).
+              await window.AccountAuth.run();
+              _gateRan = true;
             }
-            // Blocks until sign-in succeeds (or the tab is abandoned).
-            await window.AccountAuth.run();
             if (getToken()) {
               _authReady = true;
               showPhase(null);
               // Token acquired during the account gate — let the boot sequence
               // (loadModels + loadChats) continue without a page reload.
             }
+            // MUST return here. Without it, control falls through to the
+            // "status check failed" fallback below, which re-shows the account
+            // phase and calls AccountAuth.run() a SECOND time on the happy path
+            // — rebuilding the panel, re-registering every listener and
+            // orphaning the first run's promise (the two-click Unlock bug).
+            return;
           }
       } catch {
         // Setup status check failed — fall through to normal login
       }
 
-      // === Status check failed — fall back to the account gate ===
-      _authReady = true;
-      showPhase(phaseAccount);
-      if (!window.AccountAuth) {
-        await new Promise((resolve) => {
-          const _wait = setInterval(() => {
-            if (window.AccountAuth) { clearInterval(_wait); resolve(); }
-          }, 50);
-        });
+      // === Status check failed (or reported nothing usable) — fall back ===
+      // Only reachable when the gate genuinely hasn't run yet.
+      if (!_gateRan) {
+        _authReady = true;
+        showPhase(phaseAccount);
+        if (!window.AccountAuth) {
+          await new Promise((resolve) => {
+            const _wait = setInterval(() => {
+              if (window.AccountAuth) { clearInterval(_wait); resolve(); }
+            }, 50);
+          });
+        }
+        await window.AccountAuth.run();
+        _gateRan = true;
+        if (getToken()) { _authReady = true; showPhase(null); }
       }
-      await window.AccountAuth.run();
-      if (getToken()) { _authReady = true; showPhase(null); }
     }
 
     const ACTIVE_CHAT_KEY = "sable_active_chat";

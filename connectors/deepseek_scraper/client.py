@@ -50,6 +50,17 @@ SPEC = ScraperSpec(
     sse_target="/api/v0/chat/completion",
     stealth_mode=True,
     instruction_provider="deepseek",
+    # Soft refusals render as transcript siblings, not toasts. Verified live on
+    # acc2 by rapid-firing messages until the limiter tripped:
+    #   <span>Messages too frequent. Try again later.</span>
+    # sibling of the last .ds-message, no SSE frame, empty assistant bubble.
+    error_text_markers=(
+        "Messages too frequent",
+        "Too many requests",
+        "Try again later",
+        "rate limit",
+        "usage limit",
+    ),
 )
 
 # Values that mean "thinking on" for set_thinking_mode().

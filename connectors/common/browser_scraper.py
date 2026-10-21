@@ -51,6 +51,18 @@ class ScraperSpec:
     # so `:not([data-ghost-old='true'])` matched stale panels and `.last`
     # returned the PREVIOUS answer.
     old_mark_selector: str | None = None
+    # Rate-limit / soft-error banners rendered as TRANSCRIPT CHILDREN.
+    #
+    # DeepSeek does NOT use a toast or modal for "Messages too frequent.
+    # Try again later." — it appends a bare <span> as a SIBLING of the
+    # assistant ``.ds-message`` bubble. Consequences when undetected:
+    #   * the assistant content element is empty  → net_content stays ""
+    #   * no SSE frame is ever emitted           → nothing to parse
+    #   * the turn is classified as an EMPTY RESPONSE and retried/rotated
+    # That is the "Sable repeats the same reply forever" symptom: a rate
+    # limit silently masquerades as an empty completion. Matching the banner
+    # text here lets the engine raise a real rate_limited event instead.
+    error_text_markers: tuple[str, ...] = ()
 
     def sel(self, key: str, default: str = "") -> str:
         return self.selectors.get(key, default)
@@ -69,6 +81,22 @@ _UI_GARBAGE_WORDS = (
     r"Copy|Download|Share|Regenerate|Good response\?|Was this helpful\?|"
     r"Rate|Feedback|Dislike|Like|View more|Show less|Expand|Collapse|Read more"
 )
+
+
+class SoftRateLimitError(RuntimeError):
+    """Upstream rejected the turn with a soft rate-limit banner.
+
+    Raised by :meth:`BaseBrowserEngine.get_response` when the provider renders
+    a "too many messages / try again later" notice as a transcript child
+    instead of returning an answer. Distinguished from a generic failure so
+    the scraper stream can emit a ``rate_limited`` event (which triggers
+    account auto-switch) rather than retrying an empty completion forever.
+    """
+
+    def __init__(self, message: str, provider: str = "") -> None:
+        super().__init__(message)
+        self.message = message
+        self.provider = provider
 
 _THOUGHT_IGNORED_EXACT = {
     "thoughts", "thinking", "expand to view model thoughts",
@@ -970,6 +998,11 @@ class BaseBrowserEngine:
                 break
             if time.time() > deadline:
                 return ""
+            # A soft rate-limit banner can appear INSTEAD of any generation.
+            # Without this probe the loop burns its full 60s deadline, then
+            # returns "" — indistinguishable from a genuine empty completion.
+            if await self.detect_soft_error():
+                break
             await asyncio.sleep(0.3)
 
         # Phase 2 — stream loop. Completion is driven by the NETWORK first
@@ -1157,6 +1190,17 @@ class BaseBrowserEngine:
         cleaned = self._clean_garbage(final)
         if live_display and cleaned:
             live_display(cleaned)
+
+        # Empty capture → is it "said nothing" or "refused to say anything"?
+        # Only the latter is retryable-by-account-switch; the former must stay
+        # an empty response. Raising here (rather than returning "") is what
+        # stops the 3x-empty-retry loop from silently hammering a locked
+        # endpoint on every account.
+        if not cleaned:
+            soft = await self.detect_soft_error()
+            if soft:
+                self._log("soft_rate_limit", text=soft[:160])
+                raise SoftRateLimitError(soft, provider=getattr(self.spec, "provider", ""))
         # Remember this turn's output so the NEXT turn's `!= last_thinking` /
         # `!= last_response` guards have a real baseline. `_last_thinking` was
         # initialised once and never updated, so a turn that produced no fresh
@@ -1203,6 +1247,45 @@ class BaseBrowserEngine:
         try:
             return await self.page.evaluate(js, sel) or ""
         except Exception:
+            return ""
+
+    async def detect_soft_error(self) -> str:
+        """Return the rate-limit / soft-error banner text, or "".
+
+        Providers that render refusals as transcript children (DeepSeek's
+        "Messages too frequent. Try again later.") leave the assistant bubble
+        empty and emit no SSE. Scanning the markers here is what separates
+        "upstream said no" from "upstream said nothing" — the two used to be
+        indistinguishable, so a rate limit was retried as an empty response.
+
+        Scoped to the LAST few transcript entries so an old banner from a
+        previous turn can never poison a healthy one.
+        """
+        markers = tuple(getattr(self.spec, "error_text_markers", ()) or ())
+        if not markers:
+            return ""
+        js = """(markers) => {
+            const bubbles = [...document.querySelectorAll('.ds-message')];
+            if (!bubbles.length) return '';
+            // Walk siblings AFTER the last assistant bubble only.
+            const last = bubbles[bubbles.length - 1];
+            const container = last.parentElement;
+            if (!container) return '';
+            const kids = [...container.children];
+            const start = kids.indexOf(last);
+            for (const node of kids.slice(start)) {
+                const t = (node.innerText || node.textContent || '').trim();
+                if (!t || t.length > 300) continue;
+                for (const m of markers) {
+                    if (t.toLowerCase().includes(m.toLowerCase())) return t;
+                }
+            }
+            return '';
+        }"""
+        try:
+            return (await self.page.evaluate(js, list(markers))) or ""
+        except Exception as exc:
+            self._log("soft_error_probe_failed", error=str(exc))
             return ""
 
     async def _read_response_dom(self, response_sel: str) -> str:

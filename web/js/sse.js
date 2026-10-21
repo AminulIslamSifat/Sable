@@ -1233,16 +1233,35 @@
       // calls will bail if the user has switched away before they fire.
       const turnChatId = chatId;
 
-      const turn = document.createElement("div");
+      // `let`, not `const`: a queued user message delivered mid-stream seals this
+      // turn and rolls a fresh one out below the user bubble (see
+      // injectUserMessage). Every closure here shares the binding, so reassigning
+      // it moves subsequent renders to the new turn automatically.
+      let turn = document.createElement("div");
       turn.className = "turn";
       pane.appendChild(turn);
+      // Turns abandoned by a mid-stream user injection. finalize() has to sweep
+      // these too — they hold a real, user-visible answer that still needs a
+      // toolbar, a speed badge and a settled pending-card state.
+      const _sealedTurns = [];
+      // True once a queued message has been injected. finalize() uses it to tell
+      // "the model genuinely returned nothing" apart from "the answer lives in
+      // a sealed turn now", so it doesn't fire a false Empty-response error.
+      let _injected = false;
+      // skillRounds is a flat log across the whole stream. On injection the retry
+      // bar must only consider rounds from the CURRENT turn, otherwise it stitches
+      // pre- and post-injection commands into one bogus retry payload.
+      let _skillRoundFloor = 0;
 
       // ── Response timing ────────────────────────────────────────────────
       // A turn may be several separate text segments separated by tool calls.
       // Each segment is measured on its own: start when text begins, end when
       // a tool starts (or the stream ends). Speed per segment = tokens / its
       // own duration. Final speed = average of all segment speeds.
-      const _stats = { t0: performance.now(), tFirst: 0, tEnd: 0, bursts: [] };
+      // `let`: a mid-stream user injection starts a fresh stats window for the
+      // new turn (see injectUserMessage) so the speed badge doesn't inherit the
+      // pre-injection start time.
+      let _stats = { t0: performance.now(), tFirst: 0, tEnd: 0, bursts: [] };
       turn._sableStats = _stats;
       let _burstStart = 0;
       let _burstChars = 0;
@@ -1727,8 +1746,78 @@
         return lastCommandGroup;
       }
 
+      // A message queued while the model was working has just been delivered
+      // (SSE `queued_injected`). Close the response that was in flight so it
+      // freezes ABOVE the user bubble the server just persisted, then step out
+      // of the way — every later delta starts a fresh turn BELOW it.
+      // Without this, `turn` keeps hosting the still-open bubble and the rest
+      // of the reply streams into a card that sits above the user's message,
+      // which reads as the answer belonging to the wrong thing.
+      function injectUserMessage() {
+        closeCurrentThinking();
+        // Drop the closed reasoning block: the new turn belongs under the user
+        // bubble, so the old round's thinking must not be rebuilt by the next
+        // delta and re-open above it.
+        lastThinkWrap = null;
+        lastThinkBody = null;
+        lastThinkSummary = null;
+        closeAnswer();
+        // .streaming carries live-only affordances (stop cursor, tool tray).
+        // Whatever remains in this turn is settled history now.
+        turn.querySelectorAll(".msg.bot.streaming").forEach((el) => el.classList.remove("streaming"));
+        // Roll the turn over. ensureAnswer() appends into `turn`, so leaving it
+        // pointing at the sealed one would reopen the bubble ABOVE the user
+        // message — the exact bug this is here to fix.
+        lastCommandGroup = null;
+        _closeBurst();
+        // Settle the sealed turn NOW. finalize() runs against the live turn, so
+        // anything still spinning in the abandoned one (backend-status card,
+        // pending skill cards) would spin forever otherwise.
+        _settleTurn(turn);
+        _sealedTurns.push(turn);
+        _injected = true;
+        _skillRoundFloor = skillRounds.length;
+        // The backend-status card and its pending flag belong to the sealed
+        // turn. Flip them here instead of relying on the next appendAnswer,
+        // which would look for them in the NEW turn and find nothing.
+        pendingShown = false;
+        const _oldProc = bsCard.querySelector(".bs-processing-text");
+        if (_oldProc) _oldProc.style.display = "none";
+        const _oldStatus = bsCard.querySelector(".bs-status");
+        if (_oldStatus) _oldStatus.textContent = "done";
+
+        turn = document.createElement("div");
+        turn.className = "turn";
+        pane.appendChild(turn);
+        // Fresh stats for the new turn: reusing _stats kept the pre-injection
+        // t0, so the speed badge reported total seconds from the start of the
+        // whole stream while bursts only covered post-injection segments.
+        _stats = { t0: performance.now(), tFirst: 0, tEnd: 0, bursts: [] };
+        turn._sableStats = _stats;
+      }
+
+      // Mark a turn as settled history: kill live-only affordances and freeze
+      // any card that is still mid-flight. Shared by injectUserMessage() and
+      // finalize() so a sealed turn is never left half-alive.
+      function _settleTurn(t) {
+        if (!t) return;
+        // Freeze the timing window so attachSpeedBadge reports this turn's own
+        // span, not everything up to finalize().
+        if (t._sableStats && !t._sableStats.tEnd) t._sableStats.tEnd = performance.now();
+        t.querySelectorAll(".msg.bot.streaming").forEach((el) => el.classList.remove("streaming"));
+        t.querySelectorAll(".skill-card.pending").forEach((card) => {
+          const status = card.querySelector(".pending-status");
+          if (status) {
+            status.textContent = "interrupted";
+            status.style.color = "var(--danger)";
+          }
+          card.classList.remove("pending");
+        });
+      }
+
       scrollBottom();
       return {
+        injectUserMessage,
         appendThinking(text) {
           hidePending();
           ensureThinkingBlock();
@@ -2340,18 +2429,26 @@
             }
             card.classList.remove("pending");
           });
-          if (!turn.querySelector(".msg.bot") && !turn.querySelector(".skill-card") && !turn.querySelector(".approval-pending-note")) {
+          // A turn abandoned by a mid-stream user injection is settled, not
+          // empty — sweeping it below keeps it alive, so don't cry wolf when the
+          // live turn has no bot content but a sealed turn holds the answer.
+          const _sealedHasContent = _injected && _sealedTurns.some(
+            (t) => t.querySelector(".msg.bot") || t.querySelector(".skill-card")
+          );
+          if (!_sealedHasContent && !turn.querySelector(".msg.bot") && !turn.querySelector(".skill-card") && !turn.querySelector(".approval-pending-note")) {
             ensureAnswer();
             answerEl.classList.remove("streaming");
             answerContent.textContent = "⚠ Empty response from upstream — check server terminal for WAF/auth details.";
           }
-          // Attach toolbar to every bot message in this turn.
-          // Copy + read-aloud come from msg-actions.js (shared with every other
-          // message kind); only the Regenerate handler is local to the stream.
-          turn.querySelectorAll(".msg.bot").forEach(botEl => {
+          // Everything that needs a toolbar: the live turn plus every sealed
+          // turn. Without this the pre-injection answer never gets Copy / TTS /
+          // Regenerate or a speed badge — a visible regression on this path.
+          const _turnsToSweep = [..._sealedTurns, turn];
+          _sealedTurns.forEach((t) => _settleTurn(t));
+          _turnsToSweep.forEach((sweepTurn) => sweepTurn.querySelectorAll(".msg.bot").forEach(botEl => {
             if (botEl.querySelector(".msg-toolbar")) return;
             window.MsgActions.attach(botEl, "bot", {
-              speedTurn: turn,
+              speedTurn: sweepTurn,
               regen: () => {
                 if (isStreaming()) return;
                 const pane = botEl.closest(".tab-pane") || activePane;
@@ -2364,18 +2461,20 @@
                 if (!prevUser) { showToast("No user message to regenerate from", "error"); return; }
                 const userText = prevUser.querySelector(".user-text")?.textContent || "";
                 if (!userText) return;
-                turn.remove();
+                // Remove this bot's own turn, not the live one — a sealed turn
+                // and the current turn are different elements.
+                sweepTurn.remove();
                 inputEl.value = userText;
                 sendMessage();
               }
             });
-          });
+          }));
 
           // Commands ran but no normal answer ever arrived — pin a retry bar
           // under the last command group so the tool results can be resent.
           const hasCommands = turn.querySelectorAll(".skill-card").length > 0;
           if (hasCommands && !sawNormalAnswer && !turn.querySelector(".retry-command-bar")) {
-            const lastRound = skillRounds.filter(r => r.length).pop() || [];
+            const lastRound = skillRounds.slice(_skillRoundFloor).filter(r => r.length).pop() || [];
             if (lastRound.length) {
               const stacks = turn.querySelectorAll(".skill-stack");
               const bar = document.createElement("div");
@@ -2746,8 +2845,49 @@
       }
       let _lastSkillName = "";
 
+      // ── Read watchdog ──────────────────────────────────────────────────
+      // reader.read() has NO timeout. If the server wedges (hung upstream, dead
+      // browser, blocked generator) the body never closes, this loop never
+      // exits, sendMessage's finally never runs, endStream() is never called,
+      // and isStreaming() stays true forever — the send button silently turns
+      // into a stop button until the user presses it manually. Backend watchdogs
+      // cover most cases; this is the client-side backstop for the rest.
+      //
+      // 75s: the server's own pre-request (45s) + first-chunk (15s) watchdogs
+      // fire well before this. A single tick means the socket is genuinely dead.
+      const _READ_STALL_MS = 75000;
+      async function _readWithWatchdog() {
+        let _timer;
+        const _watchdog = new Promise((_, reject) => {
+          _timer = setTimeout(
+            () => reject(Object.assign(new Error("stream stalled"), { name: "StreamStallError" })),
+            _READ_STALL_MS
+          );
+        });
+        try {
+          return await Promise.race([reader.read(), _watchdog]);
+        } finally {
+          clearTimeout(_timer);
+        }
+      }
+
       while (true) {
-        const { done, value } = await reader.read();
+        let _chunk;
+        try {
+          _chunk = await _readWithWatchdog();
+        } catch (e) {
+          if (e && e.name === "StreamStallError") {
+            // Treat as a terminal error: surface it in the transcript and stop
+            // reading. Throwing here would bypass the caller's empty-response
+            // handling, so set the flag and break instead.
+            gotError = true;
+            try { ui.replaceWithError("Stream stalled — no data for 75s. The connection was dropped; send again to retry."); } catch (_) {}
+            try { reader.cancel(); } catch (_) {}
+            break;
+          }
+          throw e;
+        }
+        const { done, value } = _chunk;
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -2834,6 +2974,10 @@
             if (typeof window._sableFinalizeQueued === "function") {
               window._sableFinalizeQueued(evt.temp_ids || [], evt.ids || [], evt.text || "");
             }
+            // Seal the in-flight answer above the user bubble. Everything the
+            // model streams from here on lands in a NEW turn beneath it, so the
+            // reply reads top-to-bottom instead of pinning itself to the bottom.
+            try { ui.injectUserMessage(); } catch (_) {}
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {

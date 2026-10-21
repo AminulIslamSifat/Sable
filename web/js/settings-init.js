@@ -546,6 +546,12 @@
       } finally {
         ui.finalize();
         endStream(streamChatId);
+        // Safety net: endStream is idempotent, but a concurrent stop/recovery can
+        // leave a migrated key behind. Sweep this chat's entry unconditionally so
+        // isStreaming() can never stay true after a turn ends — that state locks
+        // the send button into stop-mode with no way back except a manual click.
+        try { if (activeStreams.has(streamChatId)) activeStreams.delete(streamChatId); } catch (_) {}
+        try { if (activeChatId === streamChatId) updateSendBtn(); } catch (_) {}
 
         // After first message, provider is now locked in DB — lock the dropdown
         const meta = chatList.find(c => c.id === streamChatId);

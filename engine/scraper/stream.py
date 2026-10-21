@@ -421,6 +421,20 @@ class ScraperEngine(ScraperLifecycle):
         except SystemExit as exc:
             yield {"type": "error", "message": f"Browser engine exited unexpectedly: {exc}"}
         except Exception as exc:
+            # A soft rate-limit banner is NOT a generic failure. Emit the
+            # dedicated event so the chat route routes it through the
+            # account auto-switch path instead of the empty-response retry
+            # loop (which re-hits the same locked account 3x and then
+            # masquerades as "empty response" to the user).
+            from connectors.common.browser_scraper import SoftRateLimitError
+            if isinstance(exc, SoftRateLimitError):
+                logger.warning("Browser scraper hit a soft rate limit: %s", exc.message)
+                yield {
+                    "type": "rate_limited",
+                    "message": str(exc.message),
+                    "provider": getattr(exc, "provider", ""),
+                }
+                return
             logger.exception("Browser scraper response capture failed")
             yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
 
