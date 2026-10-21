@@ -389,8 +389,9 @@
   align-items: center;
   gap: 5px;
   padding: 6px 11px;
-  /* Themed text colour, not the muted/dim tone. */
-  color: var(--text);
+  /* Themed accent, not plain body text: --accent-text is the theme's
+     legibility-safe accent tone (#7a6230 in light). */
+  color: var(--accent-text, var(--accent));
 }
 .proc-sidebar-pill .icon-lucide { width: 14px; height: 14px; }
 .proc-sidebar-pill span {
@@ -399,9 +400,9 @@
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
-.proc-sidebar-pill.live { color: var(--text); }
+.proc-sidebar-pill.live { color: var(--accent-text, var(--accent)); }
 .proc-sidebar-pill span { color: inherit; }
-.proc-sidebar-pill.live .icon-lucide { opacity: 0.75; }
+.proc-sidebar-pill .icon-lucide { color: inherit; opacity: 0.9; }
 
 /* ---------- scope lock chip ---------- */
 .proc-lock {

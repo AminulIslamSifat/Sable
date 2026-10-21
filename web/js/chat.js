@@ -1000,3 +1000,69 @@
       document.addEventListener("keydown", onEsc);
     }
 
+
+/* ==========================================================================
+   Chat density — adapt gutters to the column's OWN width
+   --------------------------------------------------------------------------
+   #chat is a flex sibling of the sidebar and the preview pane, so opening a
+   preview squeezes it without touching the viewport. A ResizeObserver stamps
+   data-chat-density on #chat and <body>; chat.css turns that into tighter
+   gutters, a wider text column and a bigger share for user bubbles.
+
+   Thresholds are on the column, not the window — a 1400px monitor with the
+   preview pane dragged wide is just as cramped as a small laptop.
+   ========================================================================== */
+(function () {
+  var chat = document.getElementById("chat");
+  if (!chat || typeof ResizeObserver === "undefined") return;
+
+  var TIERS = [
+    { name: "ultra",   max: 520 },
+    { name: "cramped", max: 680 },
+    { name: "tight",   max: 900 },
+  ];
+
+  var last = null;
+
+  function classify(width) {
+    for (var i = 0; i < TIERS.length; i++) {
+      if (width < TIERS[i].max) return TIERS[i].name;
+    }
+    return "roomy";
+  }
+
+  function apply(width) {
+    var tier = classify(width);
+    if (tier === last) return;
+    last = tier;
+
+    if (tier === "roomy") {
+      chat.removeAttribute("data-chat-density");
+      document.body.removeAttribute("data-chat-density");
+    } else {
+      chat.setAttribute("data-chat-density", tier);
+      document.body.setAttribute("data-chat-density", tier);
+    }
+
+    // Gutter change moves scrollHeight; re-pin only if he's already at the
+    // bottom — scrollBottom() respects _atBottom and won't yank him while
+    // he's reading up.
+    if (typeof window._sableScrollBottom === "function") {
+      try { window._sableScrollBottom(); } catch (e) {}
+    }
+  }
+
+  var raf = 0;
+  var ro = new ResizeObserver(function (entries) {
+    var w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : chat.clientWidth;
+    if (!w) return;
+    // Coalesce the burst of frames the pane resize grip emits.
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(function () { apply(w); });
+  });
+
+  ro.observe(chat);
+
+  // First paint: attribute set before layout settles still lands a frame later.
+  apply(chat.clientWidth || window.innerWidth);
+})();

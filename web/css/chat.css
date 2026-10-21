@@ -148,6 +148,12 @@
       align-items: center;
       justify-content: center;
       --chat-width: min(88%, 860px);
+      /* Gutters + user-bubble ratio are vars so the density tiers at the bottom
+         of this file can tighten them when the preview pane squeezes the
+         column. Keyed off #chat's own width, not the viewport. */
+      --chat-pad-x: 22px;
+      --chat-pad-top: 60px;
+      --user-ratio: 0.55;
     }
 
     .tab-pane {
@@ -158,7 +164,7 @@
          anchoring tries to do the same job and fights our scrollTop writes,
          producing the visible bounce. Turn it off. */
       overflow-anchor: none;
-      padding: 60px 22px 120px;
+      padding: var(--chat-pad-top) var(--chat-pad-x) 120px;
       display: none;
       flex-direction: column;
       gap: 14px;
@@ -215,8 +221,8 @@
 
     .user {
       align-self: flex-end;
-      width: calc(var(--chat-width) * 0.5);
-      max-width: calc(var(--chat-width) * 0.5);
+      width: calc(var(--chat-width) * var(--user-ratio));
+      max-width: calc(var(--chat-width) * var(--user-ratio));
       background: color-mix(in srgb, var(--panel-2) 55%, transparent);
       border: 1px solid var(--border);
       color: var(--text);
@@ -1662,3 +1668,52 @@
 .critique-log .md-content strong { color: var(--text, #f0f0f0); }
 
 
+
+/* ==========================================================================
+   Chat density tiers
+   --------------------------------------------------------------------------
+   The chat column is a flex sibling of the sidebar AND the preview pane. When
+   the preview pane opens, <main> gets squeezed but nothing inside it knew that
+   — --chat-width is a % of a now-tiny box, yet the 22px side gutters and the
+   50% user bubble stayed desktop-sized, so the content looked cramped inside
+   fat margins.
+
+   chat.js observes #chat's own width and stamps data-chat-density on both
+   #chat and <body>. Tiers tighten the gutters, widen the text column to use
+   the reclaimed space, and give user bubbles a bigger share so short messages
+   stop wrapping after three words.
+   ========================================================================== */
+
+/* ~under a 900px column: preview pane open on a laptop. */
+#chat[data-chat-density="tight"] {
+  --chat-pad-x: 14px;
+  --chat-pad-top: 44px;
+  --chat-width: min(94%, 860px);
+  --user-ratio: 0.62;
+}
+
+/* ~under 680px: side-by-side is getting genuinely narrow. */
+#chat[data-chat-density="cramped"] {
+  --chat-pad-x: 8px;
+  --chat-pad-top: 32px;
+  --chat-width: 100%;
+  --user-ratio: 0.72;
+}
+
+/* ~under 520px: preview pane is taking most of the screen. */
+#chat[data-chat-density="ultra"] {
+  --chat-pad-x: 4px;
+  --chat-pad-top: 24px;
+  --chat-width: 100%;
+  --user-ratio: 0.82;
+}
+
+/* The composer lives in .input-area, outside #chat — reach it off <body>. */
+body[data-chat-density="tight"] .input-area { padding: 10px 12px 8px; }
+body[data-chat-density="tight"] .input-composite { max-width: none; }
+
+body[data-chat-density="cramped"] .input-area { padding: 8px 8px 6px; }
+body[data-chat-density="cramped"] .input-composite { max-width: none; padding: 4px 6px; }
+
+body[data-chat-density="ultra"] .input-area { padding: 6px 4px 4px; }
+body[data-chat-density="ultra"] .input-composite { max-width: none; padding: 3px 5px; }

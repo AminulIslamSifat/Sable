@@ -17,13 +17,26 @@
     function _positionMenu(menuEl, alignRight) {
       if (!inputComposite) return;
       const rect = inputComposite.getBoundingClientRect();
-      menuEl.style.bottom = (window.innerHeight - rect.top + 2) + "px";
+
+      // A position:fixed element is positioned against its CONTAINING BLOCK,
+      // not necessarily the viewport. `backdrop-filter` on .input-composite
+      // and `container-type` on .status-bar both establish one, so viewport
+      // maths landed the menu at the wrong place (left doubled, big gap).
+      // Resolve the real containing block and offset everything by it.
+      const cbEl = menuEl.offsetParent;
+      const hasCb = cbEl && cbEl !== document.body && cbEl !== document.documentElement;
+      const cb = hasCb ? cbEl.getBoundingClientRect() : null;
+      const cbBottom = cb ? cb.bottom : window.innerHeight;
+      const cbLeft = cb ? cb.left : 0;
+      const cbRight = cb ? cb.right : window.innerWidth;
+
+      menuEl.style.bottom = (cbBottom - rect.top + 2) + "px";
       menuEl.style.minWidth = Math.max(100, rect.width * 0.3) + "px";
       if (alignRight) {
         menuEl.style.left = "auto";
-        menuEl.style.right = (window.innerWidth - rect.right) + "px";
+        menuEl.style.right = (cbRight - rect.right) + "px";
       } else {
-        menuEl.style.left = rect.left + "px";
+        menuEl.style.left = (rect.left - cbLeft) + "px";
         menuEl.style.right = "auto";
       }
     }
