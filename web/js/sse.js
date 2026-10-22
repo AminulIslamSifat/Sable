@@ -2846,6 +2846,17 @@
       }
       let _lastSkillName = "";
 
+      // ── Tool-in-flight tracking ────────────────────────────────────────
+      // A tool run legitimately produces NO stream bytes for minutes. That is
+      // not a stalled socket, so the read watchdog must not be armed against
+      // it — the watchdog only guards the model's own response stream.
+      //
+      //   tool_pending ──> skill_start ──> skill_output… ──> skill_end
+      //        └──────────── parse_error (tool never ran)
+      let _toolDepth = 0;    // between skill_start and skill_end
+      let _toolPending = 0;  // between tool_pending and its skill_start/parse_error
+      const _toolsInFlight = () => _toolDepth + _toolPending > 0;
+
       // ── Read watchdog ──────────────────────────────────────────────────
       // reader.read() has NO timeout. If the server wedges (hung upstream, dead
       // browser, blocked generator) the body never closes, this loop never
@@ -2856,13 +2867,18 @@
       //
       // 75s: the server's own pre-request (45s) + first-chunk (15s) watchdogs
       // fire well before this. A single tick means the socket is genuinely dead.
+      //
+      // While a tool is in flight the budget is 15 minutes instead — long enough
+      // for a real tool run, short enough that a truly dead socket still dies.
       const _READ_STALL_MS = 75000;
+      const _TOOL_STALL_MS = 900000;
       async function _readWithWatchdog() {
         let _timer;
+        const _budget = _toolsInFlight() ? _TOOL_STALL_MS : _READ_STALL_MS;
         const _watchdog = new Promise((_, reject) => {
           _timer = setTimeout(
             () => reject(Object.assign(new Error("stream stalled"), { name: "StreamStallError" })),
-            _READ_STALL_MS
+            _budget
           );
         });
         try {
@@ -3089,12 +3105,17 @@
             // as time spent writing characters we never saw.
             ui.closeBurst();
             ui.showToolPending(evt);
+            _toolPending++;
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
           } else if (evt.type === "parse_error") {
             // Parser couldn't parse tool_call JSON — clear pending animation
             ui.showToolDone();
+            if (_toolPending > 0) _toolPending--;
           } else if (evt.type === "skill_start") {
+            // Hand the pending slot over to the running-tool slot.
+            if (_toolPending > 0) _toolPending--;
+            _toolDepth++;
             if (evt.name === "ask_user") {
               if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
               continue; // MCQ card rendered on skill_output
@@ -3118,6 +3139,7 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+            if (_toolDepth > 0) _toolDepth--;
 
           } else if (evt.type === "doc_changed") {
             // A study tool mutated a document (highlights / notes / progress /

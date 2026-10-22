@@ -347,6 +347,8 @@ def _get_available_backends() -> set[str]:
         "groq": "connectors.groq.client",
         "mistral": "connectors.mistral.client",
         "openai": "connectors.openai.client",
+        # Free tier is anonymous — no credential needed, always available.
+        "opencode": "connectors.opencode.client",
     }
     for backend, module_path in _key_providers.items():
         try:

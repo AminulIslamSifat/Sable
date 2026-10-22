@@ -161,7 +161,10 @@ from server.models import ChatRequest
 from ..dependencies import service, sse
 
 # Backends that read local files directly (base64 inline) — no Playwright upload needed
-_DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
+# Backends whose connector reads the local file itself (no server-side upload).
+# `opencode` inherits OpenAICompatClient's multimodal path, which calls
+# prepare_inline_file + to_openai_image on each path.
+_DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai", "opencode"})
 
 # --- Conversation file logger ---
 from engine.config import OUTPUT_ROOT as _OUT

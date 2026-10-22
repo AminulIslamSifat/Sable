@@ -184,6 +184,24 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
             logger.debug("Telegram session preflight skipped: %s", exc)
 
     app.state._tg_preflight_task = _aio.create_task(_telegram_session_preflight())
+
+    # Refresh the OpenCode free-model list from models.dev in the background.
+    # Runs on every start so newly added free models appear without a code change.
+    async def _opencode_free_sync() -> None:
+        try:
+            from engine.plugins.opencode_free import sync as _sync_oc
+            result = await _sync_oc()
+            if result.get("ok"):
+                logger.info(
+                    "opencode-free: %d models (%d new, %d updated, %d pruned)",
+                    result["total"], result["added"], result["updated"], result["removed"],
+                )
+            else:
+                logger.warning("opencode-free: sync failed: %s", result.get("error"))
+        except Exception as exc:
+            logger.warning("opencode-free: sync skipped: %s", exc)
+
+    app.state._oc_free_task = _aio.create_task(_opencode_free_sync())
     # Load saved agent config and apply to runtime + registry
     try:
         from engine.config import AGENT_CONFIG_PATH

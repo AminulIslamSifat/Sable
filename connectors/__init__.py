@@ -128,6 +128,11 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     elif backend == "openai":
         from connectors.openai.client import get_client
         _registry[backend] = get_client()
+    elif backend == "opencode":
+        # Free-tier inference via opencode.ai — plain HTTP, no subprocess.
+        # A vendored binary lives in connectors/opencode/bin/ for reference.
+        from connectors.opencode.client import get_client
+        _registry[backend] = get_client()
     elif backend == "local":
         from connectors.local.client import get_client
         _registry[backend] = get_client()

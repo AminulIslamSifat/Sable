@@ -315,6 +315,16 @@ class OpenAICompatClient:
             )
         return self._http
 
+    def _auth_headers(self, key: str) -> dict[str, str]:
+        """Headers for an API call. Subclasses override to add extras or
+        drop Authorization entirely (e.g. anonymous free-tier backends)."""
+        return {"Authorization": f"Bearer {key}"}
+
+    def _tweak_payload(self, payload: dict[str, Any], model_id: str) -> None:
+        """Final chance to mutate the outgoing JSON body before it is sent.
+        Subclasses use this for provider-specific gates or field renames."""
+        return None
+
     # ------------------------------------------------------------------
     # Thinking / reasoning helpers
     # ------------------------------------------------------------------
@@ -425,7 +435,7 @@ class OpenAICompatClient:
             try:
                 http = await self._get_http()
                 resp = await http.post(
-                    url, headers={"Authorization": f"Bearer {key}"}, json=body,
+                    url, headers=self._auth_headers(key), json=body,
                 )
                 if resp.status_code in (401, 403, 429):
                     self._rotate_key()
@@ -588,6 +598,8 @@ class OpenAICompatClient:
             if oai_tools:
                 payload["tools"] = oai_tools
 
+        self._tweak_payload(payload, model_id)
+
         _tool_round = 0
         while _tool_round < self.MAX_TOOL_ROUNDS:
             _tool_round += 1
@@ -633,7 +645,7 @@ class OpenAICompatClient:
 
                     async with http.stream(
                         "POST", url,
-                        headers={"Authorization": f"Bearer {key}"},
+                        headers=self._auth_headers(key),
                         json=payload,
                     ) as response:
                         if response.status_code in (401, 403, 429):
