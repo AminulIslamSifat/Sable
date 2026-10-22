@@ -36,6 +36,7 @@ from connectors.common.native_tools import (
     openai_to_openai_tools,
     format_openai_tool_result,
     native_call_to_tag_event,
+    native_preview_lines,
 )
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
@@ -311,7 +312,9 @@ class OpenAICompatClient:
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0, connect=15.0),
+                # read=None: SSE has no legitimate per-chunk deadline. A slow
+                # model writing a big tool-call body must not be killed mid-stream.
+                timeout=httpx.Timeout(None, connect=15.0, write=120.0, pool=15.0),
             )
         return self._http
 
@@ -660,6 +663,8 @@ class OpenAICompatClient:
 
                         in_thinking = False
                         _tc_buffers: dict[int, dict] = {}
+                        _pending_tag = ""
+                        _last_progress = 0
                         # Provider-agnostic safety net for reasoning that leaks
                         # into content as <think>...</think> (llama-server, MiMo,
                         # custom endpoints, etc.). Idempotent when already split.
@@ -737,6 +742,31 @@ class OpenAICompatClient:
                                         buf["name"] = fn["name"]
                                     if fn.get("arguments"):
                                         buf["args_str"] += fn["arguments"]
+
+                                    # Live card — mirrors the XML/text path so a
+                                    # native call renders while it streams instead
+                                    # of popping in fully formed at the end.
+                                    if buf["name"] and buf["name"] != _pending_tag:
+                                        _pending_tag = buf["name"]
+                                        _last_progress = 0
+                                        yield {"type": "tool_pending", "tag": buf["name"], "attrs": {}}
+
+                                    _nbytes = len(buf["args_str"].encode("utf-8"))
+                                    if _nbytes and _nbytes - _last_progress >= 32:
+                                        _last_progress = _nbytes
+                                        _partial_args = None
+                                        try:
+                                            _partial_args = json.loads(buf["args_str"])
+                                        except (ValueError, json.JSONDecodeError):
+                                            pass
+                                        yield {
+                                            "type": "tool_progress",
+                                            "tag": buf["name"],
+                                            "bytes": _nbytes,
+                                            "preview_lines": native_preview_lines(
+                                                _partial_args, buf["args_str"], _nbytes
+                                            ),
+                                        }
 
                         # Handle tool calls
                         if _tc_buffers:

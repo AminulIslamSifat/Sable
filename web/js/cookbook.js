@@ -501,10 +501,10 @@
       }
     } catch (e) { /* fallback: hardcoded common skills */ }
     if (!_allSkills.length) {
-      _allSkills = ["code_editor","grep_search","online_search","browser_control","execute_command",
+      _allSkills = ["code_editor","grep_search","online_search","browser","execute_command",
         "file_uploader","http_client","deep_research","document_skills",
         "frontend_design","graph_master","svg_creator","system_repair","testing_debugging",
-        "text_humanizer","youtube_downloader","phone_control","simulacra_engine","study_suite"];
+        "text_humanizer","youtube_downloader","phone_control","study_suite"];
     }
   }
 

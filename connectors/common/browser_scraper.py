@@ -287,6 +287,12 @@ class BaseBrowserEngine:
 
         self.mutation_event = asyncio.Event()
         self.system_injected = False
+        # Hello-seed bookkeeping. The warmup must fire EXACTLY ONCE per
+        # upstream conversation, and — critically — BEFORE any attachment is
+        # loaded into the composer. A bare 'hello' sent while a file sits in
+        # the composer carries that file out with it, so the real turn arrives
+        # with no attachment (files landing on the generic hello).
+        self._hello_warmed = False
         self.current_model_type = "default"
         self.has_fresh_chat = False
 
@@ -730,6 +736,7 @@ class BaseBrowserEngine:
 
     async def new_chat(self, reapply_model: bool = True) -> None:
         self.system_injected = False
+        self._hello_warmed = False
         try:
             btn = self.page.locator('[aria-label="New chat"]').first
             if await btn.is_visible(timeout=3000):
@@ -759,11 +766,15 @@ class BaseBrowserEngine:
             current = getattr(self.page, "url", "") or ""
             if current == url:
                 self.system_injected = True
+                self._hello_warmed = True
                 self._log("resume_chat_already_there", url=url)
                 return True
             await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(2)
             self.system_injected = True   # instructions already in the upstream session
+            # A resumed conversation is already warmed — seeding another bare
+            # 'hello' would be a stray message in the middle of a live thread.
+            self._hello_warmed = True
             self.has_fresh_chat = False
             self._log("resume_chat_ok", url=url)
             return True
@@ -852,11 +863,31 @@ class BaseBrowserEngine:
         """
         return None
 
+    async def ensure_warmup(self) -> bool:
+        """Run the provider's hello seed once, if this chat still needs it.
+
+        Idempotent and cheap. The connector calls this BEFORE loading any
+        attachment into the composer: ``_send_hello_warmup`` sends its own bare
+        'hello', and whatever is sitting in the composer at that moment goes
+        out with it. Warming up after an upload is what attached files to the
+        generic hello instead of the real message.
+
+        Sets the flag before dispatching so a provider whose warmup silently
+        no-ops (or throws internally) can never loop it forever.
+        """
+        if self.system_injected or self._hello_warmed:
+            return False
+        self._hello_warmed = True
+        await self._send_hello_warmup()
+        return True
+
     async def send_msg(self, message: str, raw: bool = False) -> bool:
         for attempt in range(3):
             try:
-                if not raw and not self.system_injected:
-                    await self._send_hello_warmup()
+                if not raw:
+                    # No-op when the connector already warmed up before
+                    # uploading attachments; still covers plain text turns.
+                    await self.ensure_warmup()
 
                 field = await self._find_input_field()
                 if field is None:

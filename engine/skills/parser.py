@@ -18,6 +18,7 @@ from engine.skills.json_depth import json_structurally_complete
 
 import json
 import uuid
+from functools import lru_cache
 from engine.skills.json_repair import repair_json
 from engine.skills.json_sanitize import sanitize_transport
 import logging
@@ -42,9 +43,13 @@ def _plog(msg: str) -> None:
     except Exception:
         pass
 
-# All recognized tool names — built from tools/*/tool.json at engine init,
-# but hardcoded here as fallback for standalone use.
-KNOWN_TAGS = (
+# Fallback tool names, used only when tools/*/tool.json cannot be read (e.g.
+# parser imported standalone in a test). The live list is built by
+# get_known_tags() below — this literal goes stale the moment a tool is added,
+# which is exactly the bug it used to be for: resilience.py built its repair
+# regex from this tuple directly, so memory/critique/generate_image/mcp_list/
+# study_* calls were never recognised as repairable malformed tool calls.
+_FALLBACK_TAGS = (
     "execute_command",
     "get_file",
     "read_file",
@@ -56,7 +61,6 @@ KNOWN_TAGS = (
     "edit_file",
     "create_file",
     "insert_file",
-    "run_simulacra",
     "spawn_agent",
     "agent_status",
     "kill_agent",
@@ -68,12 +72,40 @@ KNOWN_TAGS = (
     "mcp_call",
     "web_search",
     "web_fetch",
+    "fetch_docs",
     "online_search",
     "chat_title",
     "computer_use",
+    "browser",
     "load_tool",
     "teacher_guidance",
 )
+
+
+@lru_cache(maxsize=1)
+def get_known_tags() -> tuple[str, ...]:
+    """Return every recognised tool name — live, from tools/*/tool.json.
+
+    Cached; call ``get_known_tags.cache_clear()`` (or ``reload_tools()``, which
+    does it for you) after adding a tool at runtime. Falls back to the static
+    tuple above if the tools tree is unavailable or empty, so a standalone
+    parser import still has a usable name set.
+    """
+    try:
+        from engine.tools_loader import discover_tools
+
+        names = {fn["name"] for t in discover_tools() for fn in t.functions}
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("get_known_tags: tools_loader unavailable (%s)", exc)
+        names = set()
+    if not names:
+        return _FALLBACK_TAGS
+    return tuple(sorted(names | set(_FALLBACK_TAGS)))
+
+
+# Backwards-compatible alias. Prefer get_known_tags() — this snapshot is taken
+# once at import and cannot see tools added later.
+KNOWN_TAGS = _FALLBACK_TAGS
 
 # Params that map to the content field for handler compatibility.
 _CONTENT_PARAM_KEYS = ("body", "content", "command")
@@ -777,7 +809,7 @@ class SkillParser:
     )
 
     def __init__(self, known_tags: tuple[str, ...] | None = None) -> None:
-        self._known_tags = set(known_tags or KNOWN_TAGS)
+        self._known_tags = set(known_tags or get_known_tags())
         self.buf = ""
         # Parity of backticks across the WHOLE fed stream. The buffer is
         # sliced ~20 ways during parsing, so the backtick that opened a code

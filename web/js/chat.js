@@ -491,7 +491,6 @@
       generate_image: 180,
       web_search: 15,
       web_fetch: 30,
-      run_simulacra: 30,
       view_file: 10,
       grep: 15,
       glob: 10,

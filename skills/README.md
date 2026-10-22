@@ -47,7 +47,6 @@ All 25 skills organized by category:
 | Skill | Key | Tags | Priority | Description |
 |:--|:--|:--|:--|:--|
 | Code Editor | `code_editor` | `view_file`, `edit_file`, `create_file`, `insert_file` | 100 | Native file I/O — the ONLY skill that mutates files on disk |
-| Browser Control | `browser_control` | `execute_command` | 85 | Playwright daemon for browser automation and scraping |
 
 ### Data Skills
 | Skill | Key | Tags | Priority | Description |
@@ -66,7 +65,6 @@ All 25 skills organized by category:
 | Graph Master | `graph_master` | — | — | Mathematical plots and function graphs |
 | SVG Creator | `svg_creator` | — | — | Data structure visualizations and diagrams |
 | Frontend Design | `frontend_design` | — | — | UI component design and prototyping |
-| Simulacra Engine | `simulacra_engine` | — | — | Physics simulations and interactive demos |
 
 ### System & Device Skills
 | Skill | Key | Tags | Priority | Description |

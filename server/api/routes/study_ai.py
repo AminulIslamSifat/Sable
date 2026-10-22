@@ -473,8 +473,8 @@ def _study_tool_sections() -> str:
     try:
         from engine.tools_loader import get_study_tool_schemas
         # Study mode exposes EXACTLY get_study_tool_schemas() - the study-gated
-        # tools plus the shared allow-list (online_search / simulacra /
-        # image_generator / code_editor / file_uploader / grep_search). Same set
+        # tools plus the shared allow-list (online_search / image_generator /
+        # code_editor / file_uploader / grep_search). Same set
         # the native tool-calling path sends, so the prompt-injected
         # (Qwen/scraper) path and the native path can never disagree.
         #

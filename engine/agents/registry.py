@@ -74,7 +74,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
     "visuals": RoleConfig(
         system_prompt="",
-        allowed_skills=["graph_master", "svg_creator", "frontend_design", "simulacra_engine"],
+        allowed_skills=["graph_master", "svg_creator", "frontend_design"],
         output_format="",
         default_model="qwen3.8-max",
         default_timeout=300,

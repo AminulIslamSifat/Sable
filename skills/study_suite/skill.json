@@ -5,7 +5,7 @@
   "category": "study",
   "description": "Flashcards, Anki decks, practice problems, mock exams, cheat sheets.",
   "trigger": "Flashcards, Anki decks, practice problems, mock exams, cheat sheets, formula sheets.",
-  "not_this_if": "Visual concept map -> use SVG Creator or Simulacra Engine.",
+  "not_this_if": "Visual concept map -> use SVG Creator.",
   "tags": [
     "create_note",
     "execute_command"

@@ -1,7 +1,7 @@
 [
   {
     "name": "computer_use",
-    "description": "Control the computer: take screenshots, move/click mouse, type text, press keys, manage windows, read/write clipboard. Works on Windows and Linux (X11 + Wayland).",
+    "description": "Control the computer AND render-verify web pages. Two distinct screenshot modes: (1) action=screenshot captures the live DESKTOP (whole screen or x/y/x2/y2 region) — use it to see what the user sees, inspect a GUI app, or verify a native window; (2) action=web_screenshot captures a WEB PAGE with headless Chromium/Playwright — pass url, and optionally width/height/full_page/device_scale_factor/dark_mode/wait_for_selector/delay. USE web_screenshot to actually LOOK at any HTML you or the user produced (a render_html block, a generated file, localhost:5173, a live site) instead of assuming it rendered correctly. Also: mouse move/click/drag/scroll, keyboard type/key, window list/focus/resize/close, clipboard get/set, screen_info, screen_parse (accessibility tree), and web_browser for a persistent Chromium (status/start/close, keeps cookies+login between calls). Works on Windows and Linux (X11 + Wayland).",
     "parameters": {
       "type": "object",
       "properties": {

@@ -184,7 +184,7 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
             "default_model": "qwen3.7-max",
             "default_timeout": 300,
             "max_parallel": 2,
-            "allowed_skills": ["execute_command", "graph_master", "svg_creator", "frontend_design", "simulacra_engine", "code_editor"],
+            "allowed_skills": ["execute_command", "graph_master", "svg_creator", "frontend_design", "code_editor"],
             "default_skills": ["graph_master", "svg_creator"],
             "required_sections": ["Task", "Output Path"],
         },

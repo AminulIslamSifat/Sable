@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Generator
 from typing import Any
@@ -122,6 +123,169 @@ def handle_online_search(
     except Exception as exc:
         yield _output_event(tag_id, f"Search error: {exc}\n", "stderr")
         yield _end_event(tag_id, name, False, started, error=str(exc))
+
+
+def _ctx7_get(path: str, params: dict[str, str], timeout: float = 20.0) -> Any:
+    """GET context7.com/api/v1/<path> and decode the JSON body.
+
+    Context7 serves public docs without an API key. If CONTEXT7_API_KEY is set
+    in the environment we forward it — that only raises the rate limit.
+    """
+    url = f"https://context7.com/api/v1/{path.lstrip('/')}"
+    headers = {"User-Agent": "sable-agent/1.0"}
+    api_key = os.environ.get("CONTEXT7_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    res = httpx.get(url, params=params, headers=headers, timeout=timeout, follow_redirects=True)
+    res.raise_for_status()
+    return res.json()
+
+
+def _slug(name: str) -> str:
+    """Lowercase alphanumeric-only form, for fuzzy ID matching."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _pick_library(hits: list[dict[str, Any]], library: str) -> dict[str, Any]:
+    """Choose the best hit for ``library``, trusting Context7's relevance order.
+
+    Do NOT re-sort by trust. Context7's ``score`` is already relevance-ranked and
+    correct: querying 'next.js middleware' puts /vercel/next.js first at 516.
+    An earlier version sorted trust-first and demoted it to 5th, behind random
+    verified packages — over-engineering that made resolution strictly worse.
+
+    The one thing relevance order gets wrong is a same-name package outranking
+    the canonical repo, so an exact ID-slug match is promoted when present.
+    """
+    target = _slug(library)
+    for hit in hits:
+        if _slug(str(hit.get("id", "")).rsplit("/", 1)[-1]) == target:
+            return hit
+    return hits[0]
+
+
+def handle_fetch_docs(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    """fetch_docs — version-accurate library documentation via Context7.
+
+    Two modes:
+      * library given  -> resolve it to a Context7 ID, then pull docs on topic.
+      * no library     -> search the index and return candidate library IDs.
+
+    The point is to stop hallucinating APIs from stale training data. Everything
+    returned carries a source URL back to the upstream repo file.
+    """
+    started = time.time()
+
+    library = (attrs.get("library") or "").strip()
+    topic = (attrs.get("topic") or "").strip() or content.strip()
+    version = (attrs.get("version") or "").strip()
+
+    try:
+        tokens = int(attrs.get("tokens", "5000") or 5000)
+    except (TypeError, ValueError):
+        tokens = 5000
+    tokens = min(20000, max(1000, tokens))
+
+    if not library and not topic:
+        yield _output_event(tag_id, "Provide a library name, a topic, or both\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Empty library and topic")
+        return
+
+    # ── Mode 1: no library -> discover candidate IDs ──────────────────────
+    if not library:
+        yield _output_event(tag_id, f"📚 Searching Context7 for: {topic}\n")
+        try:
+            data = _ctx7_get("search", {"query": topic})
+        except Exception as exc:
+            yield _output_event(tag_id, f"Context7 search failed: {exc}\n", "stderr")
+            yield _end_event(tag_id, name, False, started, error=str(exc))
+            return
+
+        hits = data.get("results") or []
+        if not hits:
+            yield _output_event(tag_id, "No matching libraries.\n")
+            yield _end_event(tag_id, name, True, started, {"results": []})
+            return
+
+        lines = []
+        for h in hits[:10]:
+            mark = "✓" if h.get("verified") else " "
+            lines.append(f"{mark} {h.get('id')}")
+            lines.append(f"    {h.get('title')} — {h.get('description', '')[:110]}")
+            bits = []
+            if h.get("trustScore"):
+                bits.append(f"trust {h['trustScore']}")
+            if h.get("stars", -1) and h.get("stars", 0) > 0:
+                bits.append(f"{h['stars']}★")
+            if h.get("versions"):
+                bits.append("versions: " + ", ".join(h["versions"][:4]))
+            if bits:
+                lines.append(f"    {' · '.join(bits)}")
+            lines.append("")
+
+        yield _output_event(tag_id, wrap_untrusted("\n".join(lines), source="context7") + "\n")
+        yield _output_event(
+            tag_id,
+            "Pick an ID above and call fetch_docs again with `library` set.\n",
+        )
+        yield _end_event(tag_id, name, True, started, {"results": hits[:10]})
+        return
+
+    # ── Mode 2: library given -> resolve then pull docs ───────────────────
+    lib_id = library
+    if not lib_id.startswith("/"):
+        yield _output_event(tag_id, f"🔎 Resolving '{library}'…\n")
+        try:
+            data = _ctx7_get("search", {"query": f"{library} {topic}".strip()})
+        except Exception as exc:
+            yield _output_event(tag_id, f"Resolution failed: {exc}\n", "stderr")
+            yield _end_event(tag_id, name, False, started, error=str(exc))
+            return
+        hits = data.get("results") or []
+        if not hits:
+            yield _output_event(tag_id, f"No library matched '{library}'.\n", "stderr")
+            yield _end_event(tag_id, name, False, started, error="No library match")
+            return
+        pick = _pick_library(hits, library)
+        lib_id = pick["id"]
+        yield _output_event(tag_id, f"   → {lib_id} ({pick.get('title')})\n\n")
+
+    if version:
+        topic = f"{topic} {version}".strip()
+
+    params = {"type": "txt", "tokens": str(tokens)}
+    if topic:
+        params["topic"] = topic
+
+    yield _output_event(tag_id, f"📖 Fetching docs: {lib_id}\n")
+    try:
+        res = httpx.get(
+            f"https://context7.com/api/v1{lib_id}",
+            params=params,
+            headers={"User-Agent": "sable-agent/1.0"},
+            timeout=30,
+            follow_redirects=True,
+        )
+        res.raise_for_status()
+        text = res.text
+    except Exception as exc:
+        yield _output_event(tag_id, f"Docs fetch failed: {exc}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
+
+    if not text.strip():
+        yield _output_event(tag_id, "Context7 returned no docs for that topic.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Empty docs")
+        return
+
+    yield _output_event(tag_id, f"✓ {len(text):,} chars\n\n")
+    yield _output_event(tag_id, wrap_untrusted(text, source="context7") + "\n")
+    yield _end_event(
+        tag_id, name, True, started,
+        {"library": lib_id, "topic": topic, "chars": len(text)},
+    )
 
 
 def handle_openweb(

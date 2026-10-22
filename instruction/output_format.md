@@ -416,7 +416,6 @@ Inline `$E=mc^2$` · Block `$$...$$` · never a code fence for math.
 
 ## Always Forbidden
 Dataview queries · Templater syntax · code fences used for math · mixed Mermaid node syntax.
-Multiple tool_call blocks in the same message.
 
 ## Tool Call Rules
 

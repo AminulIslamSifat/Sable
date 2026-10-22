@@ -1055,7 +1055,7 @@ DEFAULT_CDP_PORT = 9222
 # Headless Chrome defaults WebGL to SwiftShader (CPU rasterizer) — any animated
 # canvas then pegs a core. Force ANGLE onto the real GL driver so headless uses
 # the same GPU path as a normal window. Keep in sync with
-# skills/browser_control/scripts/browser_control.py.
+# engine/browser/session.py.
 # NOTE: --use-angle=swiftshader is the OPPOSITE of this — it causes the CPU burn.
 _GPU_ARGS = [
     "--use-angle=gl",

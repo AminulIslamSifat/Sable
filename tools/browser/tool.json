@@ -1,0 +1,387 @@
+[
+  {
+    "name": "browser",
+    "description": "Persistent native browser automation (Playwright, in-process - no subprocess). ONE browser stays alive between calls, so cookies, logins and tabs survive. Use for: opening/scraping pages, clicking and typing through multi-step web flows, capturing network and console logs, running JS in the page, and taking screenshots to actually SEE what a page rendered. NOT for the desktop GUI - use computer_use for that.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "open",
+            "back",
+            "forward",
+            "reload",
+            "wait",
+            "screenshot",
+            "annotate",
+            "snapshot",
+            "dump_html",
+            "extract",
+            "source",
+            "eval",
+            "click",
+            "type",
+            "press",
+            "hover",
+            "select",
+            "tabs",
+            "tab_new",
+            "tab_switch",
+            "tab_close",
+            "cookies",
+            "set_cookies",
+            "storage",
+            "network_start",
+            "network_stop",
+            "network_log",
+            "network_clear",
+            "console_start",
+            "console_stop",
+            "console_log",
+            "console_clear",
+            "status",
+            "close",
+            "find",
+            "scroll",
+            "drag",
+            "upload",
+            "check",
+            "uncheck",
+            "focus",
+            "dblclick",
+            "set",
+            "route",
+            "unroute",
+            "har_replay"
+          ],
+          "description": "Operation. RECOMMENDED LOOP: action=snapshot to get @eN refs, then pass those refs as `selector` (e.g. '@e3') to click/type/extract. Re-snapshot after any page change. BLOCKED BY A SITE? If you hit 'this browser or app may not be secure', a bot wall, or a login that refuses to proceed, call action=close then reopen the SAME url with headless=false - headed Chromium gets past most of these. ALWAYS call action=close when the task is done. It kills the browser."
+        },
+        "url": {
+          "type": "string",
+          "description": "For open/tab_new. http(s)://, file://, or a local path (auto-converted to file://). Bare domains get https:// prepended."
+        },
+        "selector": {
+          "type": "string",
+          "description": "Element target for click/type/hover/select/extract/dump_html/screenshot/wait. Accepts an @eN ref from action=snapshot (preferred) or a normal CSS selector. Unknown refs fail instantly with the list of valid ones."
+        },
+        "text": {
+          "type": "string",
+          "description": "Text to type (action=type)."
+        },
+        "key": {
+          "type": "string",
+          "description": "Key or combo for action=press, e.g. 'Enter', 'ctrl+a'."
+        },
+        "value": {
+          "type": "string",
+          "description": "Option value for action=select."
+        },
+        "js": {
+          "type": "string",
+          "description": "JavaScript for action=eval. Prefix 'b64:' for base64 or 'file:' for a path."
+        },
+        "index": {
+          "type": "integer",
+          "description": "Tab index for tab_switch/tab_close.",
+          "minimum": 0
+        },
+        "filename": {
+          "type": "string",
+          "description": "Output filename for screenshot. '.png' appended if missing. Defaults to a timestamped name."
+        },
+        "full_page": {
+          "type": "boolean",
+          "description": "Screenshot the whole scrollable page, not just the viewport."
+        },
+        "screenshot": {
+          "type": "boolean",
+          "description": "For open/click: also capture a screenshot after the action finishes."
+        },
+        "clip": {
+          "type": "object",
+          "description": "Screenshot region: {x, y, width, height}."
+        },
+        "wait_until": {
+          "type": "string",
+          "enum": [
+            "load",
+            "domcontentloaded",
+            "networkidle",
+            "commit"
+          ],
+          "description": "Navigation event to wait for on open. Default domcontentloaded."
+        },
+        "url_pattern": {
+          "type": "string",
+          "description": "For action=wait: wait until the page URL matches this pattern."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "attached",
+            "detached",
+            "visible",
+            "hidden"
+          ],
+          "description": "For action=wait with a selector. Default visible."
+        },
+        "seconds": {
+          "type": "number",
+          "description": "For action=wait with no selector/url_pattern: sleep this long (max 120)."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Timeout for click/wait in milliseconds. Default 10000 (click) / 30000 (wait).",
+          "minimum": 100,
+          "maximum": 300000
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Truncate dump_html/extract/source output to this many chars. Default 20000.",
+          "minimum": 100
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max entries for network_log/console_log. Default 100.",
+          "minimum": 1,
+          "maximum": 5000
+        },
+        "only_errors": {
+          "type": "boolean",
+          "description": "For network_log: only HTTP status >= 400."
+        },
+        "level": {
+          "type": "string",
+          "description": "For console_log: filter by level (log, warning, error, info, debug)."
+        },
+        "cookies": {
+          "type": "string",
+          "description": "For set_cookies: JSON array of Playwright cookie objects."
+        },
+        "browser": {
+          "type": "string",
+          "enum": [
+            "chromium",
+            "firefox",
+            "webkit"
+          ],
+          "description": "Engine to launch. Default chromium. user_data_dir only applies to chromium."
+        },
+        "executable_path": {
+          "type": "string",
+          "description": "Absolute path to a browser binary to use instead of Playwright's bundled build. e.g. /usr/bin/google-chrome-stable"
+        },
+        "browser_binary": {
+          "type": "string",
+          "description": "Shortcut for the binary: 'chrome', 'chromium', 'edge', 'brave', or any executable name on PATH. Resolved to a path automatically."
+        },
+        "user_data_dir": {
+          "type": "string",
+          "description": "Chrome profile directory for a persistent context (keeps logins). Defaults to ~/sable_output/browser/profile. Chromium only."
+        },
+        "headless": {
+          "type": "boolean",
+          "description": "Run without a visible window. Default true. Set FALSE when a site blocks automation (Google, Cloudflare, most login walls) - headed mode usually clears those checks. Requires a display (DISPLAY or WAYLAND_DISPLAY). This is a LAUNCH param: it only applies on the call that starts the browser, so action=close first if the browser is already running."
+        },
+        "args": {
+          "type": "string",
+          "description": "Extra Chromium launch flags as a JSON array or comma-separated string, e.g. '[\"--proxy-server=http://127.0.0.1:8080\"]'."
+        },
+        "proxy": {
+          "type": "object",
+          "description": "Playwright proxy object, e.g. {\"server\": \"http://127.0.0.1:8080\"}."
+        },
+        "viewport": {
+          "type": "object",
+          "description": "Viewport {width, height}. Default 1440x900."
+        },
+        "width": {
+          "type": "integer",
+          "description": "Viewport width shortcut (used when viewport is absent).",
+          "minimum": 200,
+          "maximum": 5000
+        },
+        "height": {
+          "type": "integer",
+          "description": "Viewport height shortcut.",
+          "minimum": 200,
+          "maximum": 5000
+        },
+        "user_agent": {
+          "type": "string",
+          "description": "Override the User-Agent string."
+        },
+        "interactive_only": {
+          "type": "boolean",
+          "description": "For snapshot: only interactive elements (buttons, links, inputs). Default true. Set false to include headings, images and landmarks."
+        },
+        "scope": {
+          "type": "string",
+          "description": "For snapshot: limit to a CSS selector subtree, e.g. '#main' or 'form'."
+        },
+        "max_depth": {
+          "type": "integer",
+          "description": "For snapshot: cap tree depth. Default 12.",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "annotate": {
+          "type": "boolean",
+          "description": "For action=screenshot ONLY: temporarily overlay numbered labels matching the @eN refs, capture, then remove them. Use when text alone is not enough (icon-only buttons, canvas, 3D scenes). For persistent labels you can see in a headed browser, use action=annotate instead."
+        },
+        "by": {
+          "type": "string",
+          "enum": [
+            "role",
+            "text",
+            "label",
+            "placeholder",
+            "testid",
+            "alt",
+            "title"
+          ],
+          "description": "For find: how to locate the element. role|text|label|placeholder|testid|alt|title."
+        },
+        "do": {
+          "type": "string",
+          "enum": [
+            "count",
+            "click",
+            "fill",
+            "type",
+            "text",
+            "html",
+            "value",
+            "attr",
+            "check",
+            "uncheck",
+            "hover",
+            "exists"
+          ],
+          "description": "For find: what to do with the match. Default count."
+        },
+        "name": {
+          "type": "string",
+          "description": "For find: accessible name filter (e.g. do=click, by=role, value=button, name='Submit'). Also the attribute name for do=attr."
+        },
+        "exact": {
+          "type": "boolean",
+          "description": "For find: require an exact match on text/role name."
+        },
+        "nth": {
+          "type": "integer",
+          "description": "For find: pick the Nth match (0-based).",
+          "minimum": 0
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "description": "For scroll. Default down."
+        },
+        "amount": {
+          "type": "integer",
+          "description": "For scroll: pixels. Default 500.",
+          "minimum": 1
+        },
+        "source": {
+          "type": "string",
+          "description": "For drag: source @ref or selector."
+        },
+        "target": {
+          "type": "string",
+          "description": "For drag: target @ref or selector."
+        },
+        "files": {
+          "type": "string",
+          "description": "For upload: JSON array or comma-separated absolute file paths."
+        },
+        "what": {
+          "type": "string",
+          "enum": [
+            "viewport",
+            "media",
+            "headers",
+            "offline",
+            "geolocation"
+          ],
+          "description": "For set: which browser setting to change."
+        },
+        "headers": {
+          "type": "string",
+          "description": "For set what=headers: JSON object of extra HTTP headers."
+        },
+        "color_scheme": {
+          "type": "string",
+          "enum": [
+            "dark",
+            "light",
+            "no-preference"
+          ],
+          "description": "For set what=media."
+        },
+        "reduced_motion": {
+          "type": "string",
+          "enum": [
+            "reduce",
+            "no-preference"
+          ],
+          "description": "For set what=media."
+        },
+        "offline": {
+          "type": "boolean",
+          "description": "For set what=offline. Default true."
+        },
+        "latitude": {
+          "type": "number",
+          "description": "For set what=geolocation."
+        },
+        "longitude": {
+          "type": "number",
+          "description": "For set what=geolocation."
+        },
+        "route_action": {
+          "type": "string",
+          "enum": [
+            "abort",
+            "mock",
+            "continue"
+          ],
+          "description": "For route: abort blocks the request, mock serves 'body', continue passes through."
+        },
+        "body": {
+          "type": "string",
+          "description": "For route route_action=mock: response body."
+        },
+        "status": {
+          "type": "integer",
+          "description": "For route mock: HTTP status. Default 200."
+        },
+        "content_type": {
+          "type": "string",
+          "description": "For route mock: response content type. Default application/json."
+        },
+        "har_path": {
+          "type": "string",
+          "description": "For har_replay: path to a recorded .har file to serve requests from."
+        },
+        "not_found": {
+          "type": "string",
+          "enum": [
+            "abort",
+            "fallback"
+          ],
+          "description": "For har_replay: what to do when a request is missing from the HAR. Default abort."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  }
+]

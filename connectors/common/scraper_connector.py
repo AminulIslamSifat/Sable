@@ -400,6 +400,22 @@ class BaseScraperConnector:
                             logger.warning("[%s] thinking toggle failed: %s", self.backend_name, exc)
 
                 if not _capture_only:
+                    # Warm the upstream chat BEFORE any attachment touches the
+                    # composer. The hello seed sends its own bare message, so
+                    # an upload that happens first rides out with that generic
+                    # 'hello' and the real turn arrives attachment-less.
+                    #
+                    # Gated on inject_instructions to match the engine's own
+                    # rule exactly: send_msg() only seeded when it was called
+                    # with raw=False, and raw is `not inject_instructions`.
+                    # Idempotent: a no-op once this chat is warmed.
+                    warm = getattr(engine, "ensure_warmup", None)
+                    if callable(warm) and inject_instructions:
+                        try:
+                            await warm()
+                        except Exception as exc:
+                            logger.warning("[%s] warmup failed: %s", self.backend_name, exc)
+
                     for path in (files or []):
                         try:
                             ok = await engine.upload_file(path, has_msg=False)

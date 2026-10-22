@@ -14,7 +14,7 @@ Handles ALL SSE event types:
   - skill_start, skill_output, skill_end
   - ask_user → inline keyboard with options
   - permission_request → approve/session/deny buttons
-  - approval_pending, sim_ready, chat_title
+  - approval_pending, chat_title
 """
 
 from __future__ import annotations
@@ -670,7 +670,7 @@ async def stream_chat_events(
                         return result
 
                     elif etype in ("meta", "user_message_id", "memory_used",
-                                   "chat_title", "sim_ready", "rate_limited",
+                                   "chat_title", "rate_limited",
                                    "waf_blocked", "account_switched"):
                         pass  # Informational
 

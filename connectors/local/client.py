@@ -14,11 +14,16 @@ from connectors.common.native_tools import (
     openai_to_openai_tools,
     format_openai_tool_result,
     native_call_to_tag_event,
+    native_preview_lines,
 )
 
 logger = logging.getLogger("sable.connectors.local")
 
-_DEFAULT_TIMEOUT = 120.0
+# Scalar timeout applies to connect/write/read/pool alike — a slow model
+# generating a large tool-call `arguments` string (big create_file body)
+# blows the 120s read clock and surfaces a bogus "model too large" error.
+# SSE needs no per-chunk deadline: the server closes the stream when done.
+_DEFAULT_TIMEOUT = httpx.Timeout(connect=15.0, read=None, write=120.0, pool=15.0)
 
 
 class LocalConnector:
@@ -157,6 +162,8 @@ class LocalConnector:
 
                         # Accumulate streaming tool call deltas
                         _tc_buffers: dict[int, dict] = {}
+                        _pending_tag = ""
+                        _last_progress = 0
                         # Provider-agnostic fallback: some llama-server builds
                         # emit reasoning as a native field, others embed it in
                         # content as <think>...</think>. Route content through
@@ -206,6 +213,31 @@ class LocalConnector:
                                         buf["name"] = fn["name"]
                                     if fn.get("arguments"):
                                         buf["args_str"] += fn["arguments"]
+
+                                    # Live card — mirrors the XML/text path so a
+                                    # native call renders while it streams instead
+                                    # of popping in fully formed at the end.
+                                    if buf["name"] and buf["name"] != _pending_tag:
+                                        _pending_tag = buf["name"]
+                                        _last_progress = 0
+                                        yield {"type": "tool_pending", "tag": buf["name"], "attrs": {}}
+
+                                    _nbytes = len(buf["args_str"].encode("utf-8"))
+                                    if _nbytes and _nbytes - _last_progress >= 32:
+                                        _last_progress = _nbytes
+                                        _partial_args = None
+                                        try:
+                                            _partial_args = json.loads(buf["args_str"])
+                                        except (ValueError, json.JSONDecodeError):
+                                            pass
+                                        yield {
+                                            "type": "tool_progress",
+                                            "tag": buf["name"],
+                                            "bytes": _nbytes,
+                                            "preview_lines": native_preview_lines(
+                                                _partial_args, buf["args_str"], _nbytes
+                                            ),
+                                        }
 
                         # Check if we got tool calls
                         if _tc_buffers:

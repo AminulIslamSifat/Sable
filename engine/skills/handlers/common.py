@@ -50,6 +50,21 @@ _EDITOR_OUTPUT_CAP = 64 * 1024
 _EDITOR_LINE_CAP = 500
 
 
+def spill_full_output(text: str, label: str = "tool") -> str | None:
+    """Save a full tool result to a tmp file so truncated output stays recoverable.
+
+    Returns the file path, or None if writing failed (never raises).
+    """
+    try:
+        from engine.platform_paths import tmp_path
+        p = tmp_path(f"sable_full_{label}_{uuid.uuid4().hex[:8]}.txt")
+        p.write_text(text, encoding="utf-8", errors="replace")
+        return str(p)
+    except Exception:
+        return None
+
+
+
 # --- Helpers ---
 
 def safe_under(base: Path, raw: str) -> Path:

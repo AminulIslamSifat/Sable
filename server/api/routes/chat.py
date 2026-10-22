@@ -1791,6 +1791,11 @@ async def chat(request: ChatRequest):
                 logger.warning("[fork-history] Failed to inject fork history: %s", _fh_err)
         round_index = 0
         saved_message_id: int | None = None
+        # Accumulate token usage across ALL tool-call rounds in this turn.
+        # Every round re-sends the full context, so the true cost is the SUM
+        # of per-round prompt tokens, not the last round's snapshot.
+        _turn_prompt_tokens_total: int = 0
+        _turn_completion_tokens_total: int = 0
         _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
         _guard = MainChatGuard(provider=_backend)
         _loop_detector = LoopDetector()  # Error-aware loop detection + no-progress + stubbing
@@ -2030,14 +2035,7 @@ async def chat(request: ChatRequest):
                                 if ev.get("type") == "cwd_warning":
                                     _halt_dispatch = True  # Stop processing remaining tools in this round
                                     yield sse({"type": "cwd_warning_pending", "text": "⚠️ File operation outside project folder detected."})
-                                # Detect simulacra completion → emit sim_ready card
-                                if (ev.get("type") == "skill_end"
-                                        and ev.get("name") == "run_simulacra"
-                                        and ev.get("ok")):
-                                    _fname = item.get("attrs", {}).get("filename", "simulation.html")
-                                    if not _fname.endswith(".html"):
-                                        _fname += ".html"
-                                    yield sse({"type": "sim_ready", "filename": _fname})
+
                         elif itype == "parse_error":
                             # Parser couldn't parse the tool_call JSON — feed back to model
                             _pe_reason = item.get("reason", "Malformed tool_call block")
@@ -3422,18 +3420,22 @@ async def chat(request: ChatRequest):
                     _log_conversation(active_chat_id, request.model, "assistant", stored)
                 # --- Token counting: completion side ---
                 _round_completion_tokens = count_completion_tokens(stored, round_thinking)
+                # Accumulate across rounds — each round resends the full context,
+                # so total prompt tokens = sum of every round's prompt count.
+                _turn_prompt_tokens_total += _round_prompt_tokens
+                _turn_completion_tokens_total += _round_completion_tokens
                 if saved_message_id is None:
                     saved_message_id = add_message(
                         active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events,
                         memory_used=_all_tool_mem_used or None,
-                        prompt_tokens=_round_prompt_tokens,
-                        completion_tokens=_round_completion_tokens,
+                        prompt_tokens=_turn_prompt_tokens_total,
+                        completion_tokens=_turn_completion_tokens_total,
                     )
                 else:
                     update_message(saved_message_id, stored, round_thinking, final_parent, skill_events,
                                    memory_used=_all_tool_mem_used or None,
-                                   prompt_tokens=_round_prompt_tokens,
-                                   completion_tokens=_round_completion_tokens)
+                                   prompt_tokens=_turn_prompt_tokens_total,
+                                   completion_tokens=_turn_completion_tokens_total)
                 # --- Collect mode: await agents spawned with collect="true" ---
                 _collect_ids: list[str] = []
                 for _sev in round_skill_events:
@@ -3657,7 +3659,15 @@ async def chat(request: ChatRequest):
                 from engine.skills.events import middle_truncate
                 _tool_cap = _get_max_tool_output_chars()
                 if feedback and len(feedback) > _tool_cap:
+                    from engine.skills.handlers.common import spill_full_output as _spill_full_output
+                    _orig_len = len(feedback)
+                    _spill_p = _spill_full_output(feedback, "feedback")
                     feedback = middle_truncate(feedback, _tool_cap)
+                    if _spill_p:
+                        feedback += (
+                            f"\n\n[Full tool output ({_orig_len:,} chars) saved to: {_spill_p} "
+                            "- view_file/grep it if you need the omitted part]"
+                        )
                 # If no tool feedback but guard warnings exist, use warnings as feedback
                 # so the model sees them and self-corrects (auto-continue, no break)
                 if not feedback and _guard_warnings:
@@ -3929,6 +3939,8 @@ async def chat(request: ChatRequest):
                     saved_message_id = add_message(
                         active_chat_id, "assistant", _stop_content, _stop_thinking,
                         final_parent, skill_events, memory_used=_all_tool_mem_used or None,
+                        prompt_tokens=_turn_prompt_tokens_total or _round_prompt_tokens,
+                        completion_tokens=_turn_completion_tokens_total or _round_completion_tokens,
                     )
                     logger.info("[event_stream] STOP: persisted partial assistant msg id=%s for chat %s", saved_message_id, active_chat_id)
             except Exception as _persist_err:
@@ -4030,7 +4042,11 @@ async def chat(request: ChatRequest):
                 update_message(saved_message_id, stored_content, thinking, final_parent, skill_events)
                 _tail_msg_id = saved_message_id
             else:
-                _tail_msg_id = add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
+                _tail_msg_id = add_message(
+                    active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events,
+                    prompt_tokens=_turn_prompt_tokens_total or None,
+                    completion_tokens=_turn_completion_tokens_total or None,
+                )
             # Tail pointer: on a clean finish the upstream token (final_parent) is a
             # valid Qwen node, so advance to it. When the user STOPS mid-tool-loop,
             # no "done" ever fired and final_parent is a stale/partial token — the

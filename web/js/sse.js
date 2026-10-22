@@ -3200,22 +3200,6 @@
               evt.cwd_ids || [],
               streamChatId,
             );
-          } else if (evt.type === "sim_ready") {
-            const fname = evt.filename || "simulation.html";
-            const url = "/assets/" + encodeURIComponent(fname);
-            const pane = streamPane;
-            if (pane) {
-              const stack = pane.querySelector(".turn:last-child .skill-stack:last-of-type");
-              const target = stack || pane.querySelector(".turn:last-child") || pane;
-              const card = document.createElement("div");
-              card.className = "skill-card sim-ready-card";
-              card.style.cursor = "pointer";
-              card.innerHTML = '<div class="skill-header"><div class="skill-header-left"><span class="skill-arrow"><i data-lucide="play-circle"></i></span><span class="skill-name">simulation · ' + fname + '</span></div><div class="skill-header-right"><span class="skill-status" style="color:var(--ok)">ready · click to open</span></div></div>';
-              card.onclick = () => window.open(url, "_blank");
-              target.appendChild(card);
-              activateLucideIcons(card);
-              scrollBottom();
-            }
           } else if (evt.type === "critique_start") {
             // Create inline critique box in the chat
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }

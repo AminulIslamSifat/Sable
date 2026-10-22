@@ -181,6 +181,28 @@ def handle_execute_command(
     emitted_chars = 0
     output_truncated = False
     output_cap = RESULT_PREVIEW_CHARS
+    # Spill: once the cap is hit, the full output is mirrored to a tmp file so
+    # the model can view_file/grep what the preview dropped.
+    _emitted_parts: list[str] = []
+    _spill: dict[str, Any] = {"fh": None, "path": None, "notified": False}
+
+    def _spill_start(extra: str) -> None:
+        if _spill["path"] == "":
+            return  # opening failed earlier, don't retry per line
+        if _spill["fh"] is None:
+            try:
+                from engine.platform_paths import tmp_path
+                p = tmp_path(f"sable_full_exec_{uuid.uuid4().hex[:8]}.log")
+                fh = p.open("w", encoding="utf-8", errors="replace")
+                fh.write("".join(_emitted_parts))
+                _spill["fh"], _spill["path"] = fh, str(p)
+            except Exception:
+                _spill["path"] = ""
+                return
+        try:
+            _spill["fh"].write(extra)
+        except Exception:
+            pass
     _BATCH_SIZE = 4096
     _batch_buf: list[str] = []
     _batch_len = 0
@@ -212,25 +234,36 @@ def handle_execute_command(
                         editor_chars += min(len(line), remaining_editor)
 
                 if output_truncated:
+                    if _spill["fh"] is not None:
+                        try:
+                            _spill["fh"].write(line)
+                        except Exception:
+                            pass
                     continue
 
                 # Cap total emitted characters
                 remaining_cap = output_cap - emitted_chars
                 if remaining_cap <= 0:
                     yield from _flush_batch()
+                    _spill_start(line)
                     _trunc_msg = (
                         f"\n[… output truncated after {output_cap:,} chars; "
                         "command is still running, further output is hidden …]\n"
                     )
                     yield _output_event(tag_id, _trunc_msg, "stderr")
+                    if _spill["path"]:
+                        yield _output_event(tag_id, f"[full output saved to {_spill['path']} - view_file/grep it if you need the hidden part]\n", "stderr")
+                        _spill["notified"] = True
                     output_truncated = True
                     continue
 
                 # Truncate line if it would exceed the cap
                 if len(line) > remaining_cap:
+                    _spill_start(line)  # keep the full line on disk
                     line = line[:remaining_cap]
 
                 _batch_buf.append(line)
+                _emitted_parts.append(line)
                 _batch_len += len(line)
                 emitted_chars += len(line)
 
@@ -241,9 +274,17 @@ def handle_execute_command(
         # Flush any remaining buffered output
         if not output_truncated:
             yield from _flush_batch()
+        if _spill["path"] and not _spill["notified"]:
+            yield _output_event(tag_id, f"[output truncated, full output saved to {_spill['path']} - view_file/grep it if you need the hidden part]\n", "stderr")
+            _spill["notified"] = True
         proc.wait()
     finally:
         timer.cancel()
+        if _spill["fh"] is not None:
+            try:
+                _spill["fh"].close()
+            except Exception:
+                pass
 
         # The timer is NOT the only thing that must stop here. This finally
         # runs on EVERY exit path — normal completion, an exception, and
@@ -291,7 +332,7 @@ def handle_execute_command(
         )
         if file_event is not None:
             yield file_event
-    yield _end_event(tag_id, name, ok, started, {"exit_code": code, "timeout": timeout}, error)
+    yield _end_event(tag_id, name, ok, started, {"exit_code": code, "timeout": timeout, "full_output": _spill["path"] or None}, error)
 
 
 def handle_execute_background_command(

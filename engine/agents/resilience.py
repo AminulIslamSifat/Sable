@@ -694,9 +694,9 @@ class MainChatGuard:
                     return self._get_malformed_warning("no_close")
 
         # Check for JSON tool calls outside tool_call blocks
-        from engine.skills.parser import KNOWN_TAGS
+        from engine.skills.parser import get_known_tags
         tool_json_pat = _re.compile(
-            r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')"',
+            r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in get_known_tags()) + r')"',
             _re.I
         )
 
@@ -765,15 +765,16 @@ class MainChatGuard:
             r"<\s*/?\s*tool_call\s*>", _stripped, _re.I
         ))
         # Check for JSON tool call patterns with known tool names
-        from engine.skills.parser import KNOWN_TAGS
+        from engine.skills.parser import get_known_tags
+        _live_tags = get_known_tags()
         tool_json_pat = _re.compile(
-            r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')"',
+            r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in _live_tags) + r')"',
             _re.I
         )
         has_tool_json = bool(tool_json_pat.search(_stripped))
         # Check for MiMo-style XML function calls: <function=tool_name>
         has_mimo_xml = bool(_re.search(
-            r'<\s*function\s*=\s*(?:' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')\b',
+            r'<\s*function\s*=\s*(?:' + '|'.join(_re.escape(t) for t in _live_tags) + r')\b',
             _stripped, _re.I
         ))
 

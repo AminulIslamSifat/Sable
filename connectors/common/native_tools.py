@@ -193,6 +193,118 @@ def format_openai_tool_result(name: str, result: str, ok: bool, tool_call_id: st
 # Utility: convert native function call to Sable tag_found event shape
 # ---------------------------------------------------------------------------
 
+def _partial_string_value(args_str: str, key: str) -> str | None:
+    """Extract a (possibly still-open) string value from partial JSON.
+
+    Native tool-call arguments stream as raw JSON fragments, so mid-stream the
+    buffer is not parseable. This pulls one string field out anyway, tolerating
+    an unterminated value, and decodes JSON escapes so newlines in a file body
+    stay real newlines in the card preview.
+    """
+    q = chr(34)
+    bs = chr(92)
+    ws = set(chr(c) for c in (32, 9, 13, 10))
+    esc_map = {
+        "n": chr(10),
+        "t": chr(9),
+        "r": chr(13),
+        "b": chr(8),
+        "f": chr(12),
+        "/": "/",
+        q: q,
+        bs: bs,
+    }
+
+    i = args_str.find(q + key + q)
+    if i < 0:
+        return None
+    i += len(key) + 2
+
+    while i < len(args_str) and args_str[i] in ws:
+        i += 1
+    if i >= len(args_str) or args_str[i] != ":":
+        return None
+    i += 1
+    while i < len(args_str) and args_str[i] in ws:
+        i += 1
+    if i >= len(args_str) or args_str[i] != q:
+        return None
+    i += 1
+
+    out = []
+    n = len(args_str)
+    while i < n:
+        c = args_str[i]
+        if c == bs:
+            i += 1
+            if i >= n:
+                break
+            e = args_str[i]
+            if e == "u":
+                hexs = args_str[i + 1:i + 5]
+                try:
+                    out.append(chr(int(hexs, 16)))
+                    i += 5
+                    continue
+                except ValueError:
+                    pass
+            out.append(esc_map.get(e, e))
+            i += 1
+            continue
+        if c == q:
+            break
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def native_preview_lines(
+    args: dict | None, args_str: str, nbytes: int
+) -> list[str]:
+    """Build the live card preview for a native (still-streaming) tool call.
+
+    Mirrors SkillParser._xml_preview_lines so a native call renders the same
+    card the XML/JSON text paths do: path, then command, then the trailing
+    lines of the body being written.
+    """
+
+    def _get(*keys: str) -> str | None:
+        if isinstance(args, dict):
+            for k in keys:
+                v = args.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v
+        for k in keys:
+            v = _partial_string_value(args_str, k)
+            if v:
+                return v
+        return None
+
+    lines: list[str] = []
+
+    path = _get("path", "filename")
+    if path and path.strip():
+        lines.append(path.strip()[:200])
+
+    cmd = _get("command")
+    if cmd is not None:
+        for ln in cmd.splitlines():
+            if ln.strip():
+                lines.append(ln.strip()[:150])
+                break
+
+    body = _get("content", "body", "lines")
+    if body is not None:
+        body_lines = [ln for ln in body.splitlines() if ln.strip()]
+        for ln in body_lines[-3:]:
+            lines.append(ln[:150])
+
+    if not lines:
+        size = f"{nbytes} B" if nbytes < 1024 else f"{nbytes / 1024:.1f} KB"
+        lines.append(f"streaming\u2026 {size}")
+    return lines
+
+
 def native_call_to_tag_event(call: dict[str, Any]) -> dict[str, Any]:
     """Convert a parsed native function call to Sable's tag_found event shape.
 

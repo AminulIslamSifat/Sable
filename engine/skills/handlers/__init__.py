@@ -19,7 +19,9 @@ from engine.skills.handlers.io import (
     handle_create_note,
     handle_get_file,
 )
+from engine.skills.handlers.browser import handle_browser
 from engine.skills.handlers.web import (
+    handle_fetch_docs,
     handle_online_search,
     handle_openweb,
 )
@@ -35,7 +37,7 @@ from engine.skills.handlers.grep_search import (
     handle_glob,
     handle_list_dir,
 )
-from engine.skills.handlers.simulacra import handle_run_simulacra
+
 from engine.skills.handlers.tracknote import handle_tracknote
 from engine.skills.handlers.memory_manager import handle_memory
 from engine.skills.handlers.image_generator import handle_generate_image
@@ -53,6 +55,7 @@ from engine.skills.handlers.study import (
 
 HANDLER_MAP: dict[str, object] = {
     "critique": handle_critique,
+    "browser": handle_browser,
     "execute_command": handle_execute_command,
     "get_file": handle_get_file,
     "read_file": handle_get_file,
@@ -62,6 +65,7 @@ HANDLER_MAP: dict[str, object] = {
     "openweb": handle_openweb,
     "web_search": handle_online_search,
     "web_fetch": handle_online_search,
+    "fetch_docs": handle_fetch_docs,
     "online_search": handle_online_search,
     "create_note": handle_create_note,
 
@@ -79,7 +83,7 @@ HANDLER_MAP: dict[str, object] = {
     "grep": handle_grep,
     "glob": handle_glob,
     "list_dir": handle_list_dir,
-    "run_simulacra": handle_run_simulacra,
+
     "tracknote": handle_tracknote,
     "memory": handle_memory,
     "memory_manager": handle_memory,
@@ -108,6 +112,8 @@ __all__ = [
     "handle_insert_file",
     "handle_online_search",
     "handle_openweb",
+    "handle_fetch_docs",
+    "handle_browser",
 
 
     "handle_view_file",
@@ -119,7 +125,7 @@ __all__ = [
     "handle_grep",
     "handle_glob",
     "handle_list_dir",
-    "handle_run_simulacra",
+
     "handle_tracknote",
     "handle_memory",
     "handle_generate_image",

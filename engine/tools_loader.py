@@ -59,47 +59,43 @@ class ToolMeta:
 
 # ─── Manifest parsing ────────────────────────────────────────────────────────
 
-def _read_tier(tool_dir: Path) -> str:
-    """Read tier from manifest.json. Missing/invalid -> 'outer' (the cheap, safe default)."""
+def _read_manifest(tool_dir: Path) -> tuple[str, tuple[str, ...]]:
+    """Read ``(tier, modes)`` from manifest.json in a single pass.
+
+    One read + one parse per tool — this used to be two separate helpers each
+    re-reading and re-parsing the same file, doubling cold-cache I/O across
+    the whole tools/ tree.
+
+    Missing / invalid file -> ``(_DEFAULT_TIER, ())``. "outer" is the cheap,
+    safe tier default so a forgotten manifest costs a lazy load rather than
+    permanent context bloat; an empty modes tuple means "every mode", the
+    permissive default so a shared tool needs no manifest change.
+    """
     manifest = tool_dir / "manifest.json"
     if not manifest.exists():
         logger.warning("No manifest.json in %s — defaulting to '%s'", tool_dir, _DEFAULT_TIER)
-        return _DEFAULT_TIER
+        return _DEFAULT_TIER, ()
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Invalid manifest.json at %s: %s", manifest, exc)
-        return _DEFAULT_TIER
+        return _DEFAULT_TIER, ()
     if not isinstance(data, dict):
         logger.warning("manifest.json is not an object: %s", manifest)
-        return _DEFAULT_TIER
+        return _DEFAULT_TIER, ()
+
     tier = str(data.get("tier", _DEFAULT_TIER)).lower()
     if tier not in _TIERS:
         logger.warning("Unknown tier '%s' in %s, defaulting to '%s'", tier, manifest, _DEFAULT_TIER)
-        return _DEFAULT_TIER
-    return tier
+        tier = _DEFAULT_TIER
 
-
-def _read_modes(tool_dir: Path) -> tuple[str, ...]:
-    """Read the optional ``modes`` list from manifest.json.
-
-    Absent / invalid -> empty tuple, which means "every mode". This is the
-    permissive default so an ordinary shared tool needs no manifest change;
-    only a tool that must be hidden from other modes opts in by listing them.
-    """
-    manifest = tool_dir / "manifest.json"
-    if not manifest.exists():
-        return ()
-    try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return ()
-    if not isinstance(data, dict):
-        return ()
-    modes = data.get("modes")
-    if not isinstance(modes, list):
-        return ()
-    return tuple(str(m).strip().lower() for m in modes if str(m).strip())
+    raw_modes = data.get("modes")
+    modes = (
+        tuple(str(m).strip().lower() for m in raw_modes if str(m).strip())
+        if isinstance(raw_modes, list)
+        else ()
+    )
+    return tier, modes
 
 
 def _validate_function(fn: Any, manifest_path: Path) -> dict | None:
@@ -160,7 +156,7 @@ def _discover_cached(tools_dir_str: str) -> tuple[ToolMeta, ...]:
             continue
 
         key = manifest_path.parent.name
-        tier = _read_tier(manifest_path.parent)
+        tier, modes = _read_manifest(manifest_path.parent)
         if key in _ALWAYS_CORE:
             tier = "core"
 
@@ -169,7 +165,7 @@ def _discover_cached(tools_dir_str: str) -> tuple[ToolMeta, ...]:
             functions=functions,
             dir_path=manifest_path.parent,
             tier=tier,
-            modes=_read_modes(manifest_path.parent),
+            modes=modes,
         ))
 
     total_fns = sum(len(t.functions) for t in tools)
@@ -186,6 +182,14 @@ def discover_tools(tools_dir: Path | None = None) -> list[ToolMeta]:
 def reload_tools() -> None:
     """Invalidate the discovery cache. Call after adding/removing a tool at runtime."""
     _discover_cached.cache_clear()
+    # parser caches the derived name set separately — clear both or a newly
+    # added tool stays invisible to the parser and the resilience repair regex.
+    try:
+        from engine.skills.parser import get_known_tags
+
+        get_known_tags.cache_clear()
+    except Exception:  # pragma: no cover - parser is optional here
+        pass
 
 
 # ─── Public schema helpers ───────────────────────────────────────────────────
@@ -291,7 +295,6 @@ def get_outer_tool_stubs(disabled: list[str] | None = None) -> list[dict]:
 # route) so the schema gate and the study prompt can never disagree.
 STUDY_SHARED_TOOLS: tuple[str, ...] = (
     "online_search",
-    "simulacra",
     "image_generator",
     "code_editor",
     "file_uploader",

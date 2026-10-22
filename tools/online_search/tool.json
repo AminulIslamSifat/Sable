@@ -23,6 +23,34 @@
     }
   },
   {
+    "name": "fetch_docs",
+    "description": "Version-accurate library documentation via Context7. USE THIS instead of guessing an API from memory whenever you write code against a third-party library (React, Next.js, Supabase, Tailwind, Prisma, FastAPI, etc). Returns current docs and real code examples with source URLs, pinned to the version you name. Two modes: pass `library` to pull docs on a topic, or omit it to search the index and get candidate library IDs first.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "library": {
+          "type": "string",
+          "description": "Library name (e.g. 'next.js', 'supabase') or a full Context7 ID starting with '/' (e.g. '/vercel/next.js'). Omit to just search the index."
+        },
+        "topic": {
+          "type": "string",
+          "description": "What you need docs about, e.g. 'middleware auth redirect' or 'useForm defaultValues'. Ranked against the library's docs."
+        },
+        "version": {
+          "type": "string",
+          "description": "Pin docs to a version, e.g. 'v7.66.0' or '15'. Appended to the topic query."
+        },
+        "tokens": {
+          "type": "integer",
+          "description": "Max doc tokens to return (default 5000, max 20000).",
+          "minimum": 1000,
+          "maximum": 20000
+        }
+      },
+      "required": []
+    }
+  },
+  {
     "name": "web_fetch",
     "description": "Fetch and extract readable content from specific URLs. Use after web_search to read promising pages.",
     "parameters": {
