@@ -1333,6 +1333,7 @@
       let _thinkTimer = null;      // rAF handle
       let _thinkLast = 0;          // timestamp of previous tick
       let _thinkFrac = 0;          // fractional char carry — see _thinkTick
+      let _thinkLastPin = 0;       // last scroll-pin timestamp (throttled)
 
       function _thinkCancel() {
         if (_thinkTimer !== null) { cancelAnimationFrame(_thinkTimer); _thinkTimer = null; }
@@ -1376,12 +1377,27 @@
         }
         const chunk = _thinkQueue.slice(0, nChars);
         _thinkQueue = _thinkQueue.slice(nChars);
-        currentThinkBody.textContent += chunk;
-        // Pin synchronously in the same frame as the write, otherwise the rAF
-        // scroll lands a frame late and the block visibly bounces while growing.
-        pinScrollIfAtBottom();
-        scrollBottom();
+        _thinkAppend(chunk);
+        // Pin to the bottom at most ~10×/sec instead of every frame.
+        //
+        // `pinScrollIfAtBottom()` READS scrollHeight and WRITES scrollTop. The
+        // read forces a synchronous layout, and doing that on every one of 60
+        // frames/sec — right after mutating the text node — is a layout thrash
+        // that grows with the block. The animation does not need 60Hz pinning:
+        // the bottom is only visually stale for 100ms, and a final pin on the
+        // last frame guarantees we end up exactly at the bottom.
+        const _now = performance.now();
+        if (_now - _thinkLastPin > 100) {
+          _thinkLastPin = _now;
+          pinScrollIfAtBottom();
+          scrollBottom();
+        }
         _thinkTimer = _thinkQueue ? requestAnimationFrame(_thinkTick) : null;
+        if (!_thinkTimer) {
+          // Final pin once the queue drains, so we never stop mid-scroll.
+          pinScrollIfAtBottom();
+          scrollBottom();
+        }
       }
 
       function _enqueueThink(text) {
@@ -1389,11 +1405,36 @@
         _thinkStart();
       }
 
+      /**
+       * Append thinking text in O(chunk), not O(total).
+       *
+       * `currentThinkBody.textContent += chunk` re-serialises the ENTIRE
+       * accumulated string on every write — O(n) per frame, O(n²) over a long
+       * block. At 50k chars of reasoning that is ~3M character copies per
+       * second plus a full text-node rebuild each frame, which is exactly the
+       * "UI gets laggier and laggier" symptom (and why it looks wrong: the
+       * content is plain text and should be cheap).
+       *
+       * Keeping one live text node and using appendData makes each write
+       * O(chunk) and never touches the existing characters.
+       */
+      function _thinkAppend(text) {
+        if (!currentThinkBody || !text) return;
+        let tn = currentThinkBody._thinkTextNode;
+        if (!tn || tn.parentNode !== currentThinkBody) {
+          currentThinkBody.textContent = "";
+          tn = document.createTextNode("");
+          currentThinkBody.appendChild(tn);
+          currentThinkBody._thinkTextNode = tn;
+        }
+        tn.appendData(text);
+      }
+
       function _flushThinkQueue() {
         _thinkCancel();
         _thinkFrac = 0;
         if (_thinkQueue && currentThinkBody) {
-          currentThinkBody.textContent += _thinkQueue;
+          _thinkAppend(_thinkQueue);
           _thinkQueue = "";
         }
       }

@@ -369,11 +369,28 @@
     });
 
     // Outside click closes the panel (capture so it beats other handlers).
-    document.addEventListener('mousedown', (e) => {
+    // Kept on `v` so destroy() can remove it — a bare addEventListener here
+    // left one document-level capture handler per mount, each closing over a
+    // detached `wrap`, and all of them running on every mousedown in the app.
+    v._onDocDown = (e) => {
       if (!wrap.contains(e.target)) v.panel.classList.add('hidden');
-    }, true);
+    };
+    document.addEventListener('mousedown', v._onDocDown, true);
 
-    return { destroy: () => views.delete(v), el: wrap };
+    return {
+      destroy: () => {
+        views.delete(v);
+        if (v._onDocDown) {
+          document.removeEventListener('mousedown', v._onDocDown, true);
+          v._onDocDown = null;
+        }
+        try { wrap.remove(); } catch { /* already detached */ }
+        // Stop the shared ticker when nothing is mounted any more — otherwise
+        // it keeps firing every 250ms forever after the last reader closes.
+        if (views.size === 0 && ticker) { clearInterval(ticker); ticker = null; }
+      },
+      el: wrap,
+    };
   }
 
   window.studyTimer = { mount: mount };

@@ -1,0 +1,33 @@
+<!doctype html>
+<html><body><pre id="out">running…</pre>
+<script src="vendor/purify.min.js"></script>
+<script src="js/purify-guard.js"></script>
+<script>
+const cases = {
+  styleBody: '<style>body{display:none!important}</style><p>hi</p>',
+  styleScoped: '<div><style>.main{display:none}</style>x</div>',
+  idClobber: '<div id="chat">CLOBBERED</div>',
+  idOverlay: '<div id="fsOverlay">X</div>',
+  inlineStyle: '<p style="position:fixed;inset:0;z-index:99999;background:red">cover</p>',
+  classPoison: '<div class="hidden">x</div>',
+  svgStyle: '<svg><style>*{display:none}</style><rect/></svg>',
+  formTag: '<form><input name="a"></form>',
+  baseTag: '<base href="http://evil/">',
+  metaTag: '<meta http-equiv="refresh" content="0;url=http://evil">',
+  // MUST survive — renderer-owned, real features depend on them
+  taskList: '<ul class="contains-task-list"><li class="task-list-item"><input type="checkbox" checked disabled> done</li></ul>',
+  codeLang: '<pre><code class="language-python hljs">x=1</code></pre>',
+  footnote: '<sup id="fnref1"><a href="#fn1" class="footnote-ref">1</a></sup>',
+  katex: '<span class="katex math">E=mc2</span>',
+  safeStyle: '<p style="color:red;text-align:center;font-weight:bold">ok</p>',
+  mermaid: '<div class="mermaid">graph LR</div>',
+  callout: '<div class="callout" data-callout="note"><p>x</p></div>',
+  svgChart: '<svg viewBox="0 0 10 10"><rect x="1" y="1" width="5" height="5" fill="red"/></svg>'
+};
+const res = {};
+for (const [k, v] of Object.entries(cases)) {
+  res[k] = DOMPurify.sanitize(v, { ADD_ATTR: ['target','data-lucide'] });
+}
+document.getElementById('out').textContent = JSON.stringify(res, null, 2);
+</script>
+</body></html>

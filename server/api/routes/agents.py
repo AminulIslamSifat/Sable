@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ from fastapi.responses import StreamingResponse
 
 from engine.config import AGENT_CONFIG_PATH
 from engine.agents.registry import get_role_config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 

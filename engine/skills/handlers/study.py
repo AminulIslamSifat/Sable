@@ -76,6 +76,27 @@ def _resolve_doc_id(attrs: dict[str, str], content: str = "") -> str:
     return ""
 
 
+def _attr_bool(attrs: dict[str, str], key: str, default: bool = False) -> bool:
+    """Parse a boolean attribute the way a model actually sends it.
+
+    `bool("false")` is True, so the naive `bool(_attr_json(...))` turned the
+    string "false" INTO a pin. Models stringify booleans constantly, so this
+    accepts the real spellings and falls back to the default for anything it
+    does not recognise — including an absent key.
+    """
+    raw = attrs.get(key)
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off", ""):
+        return False
+    return default
+
+
 def _current_page(attrs: dict[str, str], default: int = 1) -> int:
     page = _attr_int(attrs, "page", 0)
     if page > 0:
@@ -335,7 +356,7 @@ def handle_study_note(
                 "content": content or _attr(attrs, "content"),
                 "refs": refs if isinstance(refs, list) else [],
                 "tags": _attr_json(attrs, "tags") or [],
-                "pinned": bool(_attr_json(attrs, "pinned")),
+                "pinned": _attr_bool(attrs, "pinned"),
             })
             yield _output_event(tag_id, f"Created note [{result['id']}] {result['title']}.\n")
             if ctx:

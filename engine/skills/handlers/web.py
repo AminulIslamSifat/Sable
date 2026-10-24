@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import time
 from collections.abc import Generator
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -288,6 +291,45 @@ def handle_fetch_docs(
     )
 
 
+def _assert_public_url(url: str) -> None:
+    """Reject URLs that point at the host itself or a private network.
+
+    `handle_openweb` fetches whatever URL the model supplies, with
+    `follow_redirects=True` and no restriction. That made it a second SSRF
+    entry point — independent of `online_search._normalize_url` — reaching
+    `http://127.0.0.1:8080/admin`, `http://169.254.169.254/latest/meta-data/`
+    and every RFC1918 host on the LAN.
+
+    Resolution happens here so a hostname like `localtest.me` (which resolves
+    to 127.0.0.1) is caught too. Raises ValueError with a caller-safe message.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"refusing non-http(s) URL scheme: {parsed.scheme or '(none)'}")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL has no host")
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"cannot resolve host {host!r}: {exc}") from exc
+
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        # Block loopback, private, link-local (cloud metadata), reserved,
+        # multicast and unspecified. `is_global` covers all of them in one
+        # check and is the strictest available predicate.
+        if not ip.is_global:
+            raise ValueError(
+                f"refusing to fetch non-public address {addr} for host {host!r}"
+            )
+
+
 def handle_openweb(
     tag_id: str, name: str, attrs: dict[str, str], content: str
 ) -> Generator[dict[str, Any], None, None]:
@@ -337,6 +379,16 @@ def handle_openweb(
         return
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
+    # Block SSRF before the request leaves the process. Without this,
+    # handle_openweb would fetch 127.0.0.1 / RFC1918 / cloud metadata for any
+    # URL the model supplies — a second entry point that #81 never covered.
+    try:
+        _assert_public_url(url)
+    except ValueError as exc:
+        yield _output_event(tag_id, f"Blocked: {exc}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
 
     try:
         res = httpx.get(

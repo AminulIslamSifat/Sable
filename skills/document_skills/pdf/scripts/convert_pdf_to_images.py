@@ -1,4 +1,3 @@
-import io
 import os
 import sys
 
@@ -22,39 +21,12 @@ def _convert_with_poppler(pdf_path: str, dpi: int = 200):
     return _pdf2image_convert(pdf_path, dpi=dpi)
 
 
-def _convert_with_pypdf(pdf_path: str, dpi: int = 200):
-    """Render pages via pypdf + Pillow — pure Python, no native deps."""
-    try:
-        import pypdf
-        from PIL import Image as _Image
-    except ImportError as exc:
-        raise RuntimeError(
-            "Neither Poppler (pdf2image) nor pypdf/Pillow are available. "
-            "Install Poppler on PATH or `pip install pypdf pillow`."
-        ) from exc
-
-    scale = dpi / 72.0  # pypdf renders at 72 dpi internally
-    reader = pypdf.PdfReader(pdf_path)
-    images = []
-    for page in reader.pages:
-        # Render page to bytes via pypdf's built-in rasteriser
-        writer = pypdf.PdfWriter()
-        writer.add_page(page)
-        buf = io.BytesIO()
-        writer.write(buf)
-        buf.seek(0)
-        # Use pypdf PageObject → matrix → bitmap when available (pypdf ≥ 4)
-        try:
-            from pypdf import PdfReader as _R
-            from pypdf.generic import RectangleObject
-            w = float(page.mediabox.width)
-            h = float(page.mediabox.height)
-            img = _Image.new("RGB", (int(w * scale), int(h * scale)), "white")
-            images.append(img)
-        except Exception:
-            # Bare minimum: produce a white placeholder so the pipeline doesn't crash
-            images.append(_Image.new("RGB", (800, 1100), "white"))
-    return images
+# NOTE: there was previously a `_convert_with_pypdf` fallback here. It was
+# removed deliberately — pypdf cannot rasterise a PDF page, so the function
+# only ever produced blank white images at the correct dimensions and reported
+# success. That made a missing Poppler look like an empty document, and an
+# agent reading those images would author coordinates against nothing. Callers
+# now get a RuntimeError naming the package to install.
 
 
 # Converts each page of a PDF to a PNG image.
@@ -63,16 +35,24 @@ def _convert_with_pypdf(pdf_path: str, dpi: int = 200):
 def convert(pdf_path: str, output_dir: str, max_dim: int = 1000) -> None:
     """Convert every page of *pdf_path* to a PNG inside *output_dir*.
 
-    Uses Poppler (pdf2image) when available for best quality; falls back to the
-    pure-Python pypdf + Pillow path so the function never crashes on Windows
-    machines that don't have Poppler installed.
+    Requires Poppler (pdf2image). There is deliberately no silent fallback:
+    pypdf and Pillow cannot rasterise a PDF page, and the previous "fallback"
+    only produced blank white images at the correct dimensions. That is worse
+    than failing — the caller (an agent) would read empty pages, conclude the
+    document was blank, and author coordinates against nothing, with exit code
+    0 the whole way. A missing Poppler is now a loud, actionable error.
     """
-    if _HAS_POPPLER:
-        print(f"[pdf] Using Poppler backend (pdf2image)")
-        images = _convert_with_poppler(pdf_path, dpi=200)
-    else:
-        print(f"[pdf] Poppler not found — using pypdf+Pillow fallback backend")
-        images = _convert_with_pypdf(pdf_path, dpi=200)
+    if not _HAS_POPPLER:
+        raise RuntimeError(
+            "PDF rendering needs Poppler (pdftoppm), which is not on PATH. "
+            "Install it and retry — e.g. `pacman -S poppler` (Arch), "
+            "`apt install poppler-utils` (Debian/Ubuntu), "
+            "`brew install poppler` (macOS). "
+            "No pure-Python substitute exists: pypdf cannot rasterise pages."
+        )
+
+    print(f"[pdf] Using Poppler backend (pdf2image)")
+    images = _convert_with_poppler(pdf_path, dpi=200)
 
     for i, image in enumerate(images):
         # Scale image if needed to keep width/height under `max_dim`

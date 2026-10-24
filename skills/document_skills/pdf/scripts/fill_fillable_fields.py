@@ -103,11 +103,22 @@ def monkeypatch_pydpf_method():
     DictionaryObject.get_inherited = patched_get_inherited
 
 
+# Apply on IMPORT, not only under __main__.
+#
+# The pypdf bug this works around (a `<select>` field's `get_inherited(FA.Opt)`
+# returning `[[value, text], ...]`, which the writer then `"\n".join()`s and
+# blows up on) fires for any caller, but the patch used to run inside
+# `if __name__ == "__main__"` — so a library caller importing
+# `fill_pdf_fields` got the unpatched bug and a TypeError on every choice
+# field. Import-time application is safe and idempotent: it re-reads the
+# current method as `original` each call, so calling it twice does not stack.
+monkeypatch_pydpf_method()
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print("Usage: fill_fillable_fields.py [input pdf] [field_values.json] [output pdf]")
         sys.exit(1)
-    monkeypatch_pydpf_method()
     input_pdf = sys.argv[1]
     fields_json = sys.argv[2]
     output_pdf = sys.argv[3]

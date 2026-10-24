@@ -404,7 +404,7 @@ def _system_cpu_percent() -> float:
     d_total = total - prev_total
     d_idle = idle - prev_idle
     if d_total <= 0:
-        return round(prev["pct"], 1)
+        return round(_SYS_CPU["pct"], 1)
 
     pct = (1.0 - d_idle / d_total) * 100.0
     _SYS_CPU["pct"] = pct

@@ -382,7 +382,12 @@ def handle_generate_image(
             result = _try_cloudflare(full_prompt, model, shape, neg, seed)
             tried.append("cloudflare" + (" ✅" if result else " ❌"))
         elif provider_pref == "pollinations":
-            poll_model = attrs.get("model", "flux")
+            # Use the VALIDATED `model`, not attrs.get("model") again — the
+            # guard above rewrites a foreign ID (e.g. a Cloudflare @cf/... id)
+            # to this provider's default and warns the user. Re-reading the raw
+            # attribute threw that correction away and sent the Cloudflare ID
+            # to Pollinations anyway.
+            poll_model = "flux" if "flux" in model.lower() else "turbo"
             result = _try_pollinations(full_prompt, poll_model, shape, seed)
             tried.append("pollinations" + (" ✅" if result else " ❌"))
         elif provider_pref == "puter":
@@ -417,7 +422,9 @@ def handle_generate_image(
                 result = {"ok": True, "images": all_images, "count": len(all_images), "provider": "cloudflare"}
             tried.append("cloudflare" + (" ✅" if all_images else " ❌"))
         elif provider_pref == "pollinations":
-            poll_model = attrs.get("model", "flux")
+            # Same reason as the single-image branch: the guard's correction in
+            # `model` must be honoured, not discarded by re-reading the attr.
+            poll_model = "flux" if "flux" in model.lower() else "turbo"
             all_images = []
             for i in range(num_images):
                 img_seed = seed if (i == 0 and seed >= 0) else -1

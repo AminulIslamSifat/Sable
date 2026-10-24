@@ -710,6 +710,10 @@ async def _run_personality_assessment(conv_text: str, model: str, browser_profil
             "contradictions": "claimed",
             "blind_spots": "pattern",
         }
+        # This function never receives a prior personality (see docstring:
+        # "model assesses from conversation only"), so the merge below always
+        # starts from an empty base. Kept as a seam for a future incremental mode.
+        previous = None
         if previous:
             try:
                 prev_data = json.loads(previous)

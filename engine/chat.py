@@ -11,7 +11,7 @@ from pathlib import Path
 from curl_cffi.requests import AsyncSession
 
 from engine.config import MODEL, MODELS, URL, get_model_config
-from engine.inpage import qwen_ghost_enabled
+from engine.inpage import GhostError, qwen_ghost_enabled
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
@@ -78,7 +78,7 @@ async def stream_chat(
     # Gated by the `qwen_use_ghost` setting (Settings → Account → Qwen).
     if not is_retry and not files and qwen_ghost_enabled():
         try:
-            from engine.inpage import GhostError, ghost_stream_chat
+            from engine.inpage import ghost_stream_chat
             return await ghost_stream_chat(message, chat_id=chat_id, parent_id=parent_id,
                                            model=model, thinking_mode=thinking_mode)
         except GhostError as e:

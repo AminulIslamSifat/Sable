@@ -254,6 +254,30 @@ function addAgentBatchCard(agents) {
 // --------------------------------------------------------------------------
 // Agent Panel (slide-in chat view)
 // --------------------------------------------------------------------------
+/**
+ * Append text to an element in O(chunk) instead of O(total).
+ *
+ * `el.textContent += s` re-serialises the ENTIRE accumulated string on every
+ * call, so a long streaming answer or a long thinking block costs O(n²) over
+ * the turn — and the agent panel streams both continuously. Keeping one live
+ * text node and using appendData makes each write proportional to the chunk.
+ *
+ * Same fix as sse.js `_thinkAppend`; that helper is closure-local to the chat
+ * stream, so the agent panel needs its own.
+ */
+function appendTextFast(el, text) {
+  if (!el || !text) return;
+  let tn = el._fastTextNode;
+  if (!tn || tn.parentNode !== el) {
+    // First write, or the element was re-rendered underneath us.
+    el.textContent = "";
+    tn = document.createTextNode("");
+    el.appendChild(tn);
+    el._fastTextNode = tn;
+  }
+  tn.appendData(text);
+}
+
 function stripToolJson(text) {
   // Backend parser already strips <tool_call> tags from the answer stream.
   // This function now only collapses excessive blank lines.
@@ -550,7 +574,13 @@ const AgentPanel = {
     const FORBID_TAGS = ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"];
     const renderMd = (text) => {
       const raw = typeof marked !== "undefined" ? marked.parse(text || "") : escHtml(text || "");
-      return typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS }) : raw;
+      // Fail CLOSED, matching _renderHistory above. Returning `raw` here meant a
+      // DOMPurify load failure turned every streamed agent answer into live
+      // HTML — the one path where the content is arriving continuously and a
+      // clobbered node would take the app down mid-turn.
+      return typeof DOMPurify !== "undefined"
+        ? DOMPurify.sanitize(raw, { FORBID_TAGS })
+        : escHtml(raw);
     };
 
     while (true) {
@@ -576,7 +606,7 @@ const AgentPanel = {
             this.bodyEl.appendChild(currentAnswerEl);
           }
           const rawSpan = currentAnswerEl.querySelector(".ap-raw");
-          if (rawSpan) rawSpan.textContent += evt.text;
+          appendTextFast(rawSpan, evt.text);
           this._scrollBottom();
         } else if (evt.type === "answer") {
           // Final answer — replace raw streaming with rendered markdown
@@ -638,7 +668,10 @@ const AgentPanel = {
               body.appendChild(out);
             }
             const newText = (evt.text || "").slice(0, 3000);
-            out.textContent += newText;
+            // The slice caps this chunk, not the accumulated block — a long
+            // running tool (a build, a test suite) still grows `out` without
+            // bound, so the += was O(n²) over the skill's lifetime.
+            appendTextFast(out, newText);
             this._scrollBottom();
           }
         } else if (evt.type === "skill_end") {
@@ -732,7 +765,7 @@ const AgentPanel = {
       this.bodyEl.appendChild(el);
     }
     const raw = el.querySelector(".ap-raw");
-    if (raw) raw.textContent += text;
+    appendTextFast(raw, text);
     this._scrollBottom();
   },
 
@@ -747,7 +780,7 @@ const AgentPanel = {
       if (typeof activateLucideIcons === "function") activateLucideIcons(wrap);
     }
     const body = wrap.querySelector(".thinking-body");
-    if (body) body.textContent += text;
+    appendTextFast(body, text);
     this._scrollBottom();
   },
 

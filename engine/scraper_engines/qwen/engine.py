@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import socket
@@ -26,6 +27,8 @@ import time
 import urllib.request
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from config import (
     ASSETS_DIR,

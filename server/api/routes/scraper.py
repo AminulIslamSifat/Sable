@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from engine.scraper import scraper as scraper_service
+from connectors import get_connector
 
 router = APIRouter()
+
+
+def _resolve_connector(backend: str):
+    """Resolve a browser connector backend by name.
+
+    Thin wrapper over connectors.get_connector so the route module has a
+    single seam to stub in tests.
+    """
+    return get_connector(backend)
 
 @router.get("/api/scraper/sessions")
 async def get_scraper_sessions() -> dict[str, Any]:

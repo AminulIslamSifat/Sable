@@ -2,7 +2,7 @@
   "enabled": false,
   "engine_type": "qwen",
   "port": 9333,
-  "headless": true,
+  "headless": false,
   "show_thoughts": true,
   "chatgpt_headless": false
 }

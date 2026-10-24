@@ -229,21 +229,32 @@
     override[docId] = null;
     if (host) host.querySelectorAll('.empty').forEach((e) => e.remove());
     emitBusy(docId, true);
-    await window.studyChat.send({
-      docId,
-      docMapId: docMapIdFor(ctx, docId),
-      threadId: threadIdFor(docId) || window.studyChat.ensureThread(docId),
-      text,
-      context,
-      pane: host,
-    });
-    emitBusy(docId, false);
+    // try/finally is load-bearing, not defensive noise. `emitBusy(docId, true)`
+    // sets docBusy[docId], and `runTurn`'s own first guard is
+    // `if (!docId || isBusy(docId)) return;` — so if `send` threw without
+    // clearing it, this document's Study AI would be permanently un-sendable
+    // and renderThread would bail forever on its `isBusy` check.
+    //
+    // `sendCurrent` (the composer path, ~350 lines below) already wraps the
+    // identical call this way. This path did not.
+    try {
+      await window.studyChat.send({
+        docId,
+        docMapId: docMapIdFor(ctx, docId),
+        threadId: threadIdFor(docId) || window.studyChat.ensureThread(docId),
+        text,
+        context,
+        pane: host,
+      });
+    } finally {
+      emitBusy(docId, false);
+    }
     // The live DOM already holds this turn — user bubble, streamed answer and
     // any tool cards. Mark it authoritative so the emitView below (and the
     // reader's subscription it drives) do NOT repaint from the DB, which is
     // what made every finished turn flash back in as a reloaded dump.
     if (host) liveDirty[docId] = { tid: threadIdFor(docId), host };
-    await refreshCache(docId);
+    try { await refreshCache(docId); } catch { /* cache is best-effort */ }
     emitView(docId);
   }
 

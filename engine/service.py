@@ -25,7 +25,7 @@ from engine.config import (
     save_qwen_tokens_for_account,
     mark_account_exhausted,
 )
-from engine.inpage import qwen_ghost_enabled
+from engine.inpage import GhostError, qwen_ghost_enabled
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
@@ -1063,7 +1063,7 @@ class ChatService:
         # account dir is pinned (ghost uses the active profile), or disabled.
         if (not files and not bdd and qwen_ghost_enabled()):
             try:
-                from engine.inpage import GhostError, ghost_stream_events
+                from engine.inpage import ghost_stream_events
                 async for _ev in ghost_stream_events(
                     message=message,
                     chat_id=chat_id,
@@ -1292,6 +1292,11 @@ class ChatService:
             status_code = 0
             needs_refresh = False
             _chunk_timeout_triggered = False
+            # Per-attempt SSE buffer. Initialized here (not inside the HTTP-200
+            # branch) because the leftover-JSON check below reads it on paths
+            # that never entered the streaming block — non-200 responses and
+            # connection failures would otherwise raise NameError.
+            buffer = ""
 
             # ── Live header refresh before every request ─────────────────────
             # If the browser is already running, grab fresh bx-ua/bx-umidtoken

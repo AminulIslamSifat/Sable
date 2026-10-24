@@ -2,6 +2,7 @@
 Validator for Word document XML files against XSD schemas.
 """
 
+import os
 import re
 import tempfile
 import zipfile

@@ -607,7 +607,7 @@ class MainChatGuard:
             )
         # invalid_json (and any unknown kind)
         return (
-            _GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
+            self._GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
             f"Fix the JSON syntax inside {wrapper} and try again."
         )
 
