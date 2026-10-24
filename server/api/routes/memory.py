@@ -10,6 +10,15 @@ from engine.config import get_model_config
 from engine.memory_search import get_searcher, list_available_models
 from connectors.deepseek.client import get_client as get_deepseek_client
 from connectors import get_connector
+
+# Consolidation logging is best-effort: it writes a debug trail and must never
+# break a consolidation run. Imported once here rather than inside each of the
+# several try-blocks that call it, so the name is always bound.
+try:
+    from engine.agents.memory_trigger import _log_consolidation
+except Exception:  # pragma: no cover - defensive
+    def _log_consolidation(label: str, body: str) -> None:  # type: ignore[misc]
+        return None
 from instruction.mem_cmd import (
     _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY,
     _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE,
@@ -1056,7 +1065,6 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
 
     # ── Log initial consolidation prompt ──
     try:
-        from engine.agents.memory_trigger import _log_consolidation
         _log_consolidation("STEP 1 — MAIN CONSOLIDATION PROMPT", prompt)
     except Exception:
         pass
@@ -1184,7 +1192,6 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Parse LLM response (lightweight) ──
     raw_answer = "".join(answer_parts)
     try:
-        from engine.agents.memory_trigger import _log_consolidation
         _log_consolidation("STEP 1 — SCRAPER CONSOLIDATION PROMPT", prep.get("prompt", ""))
         _log_consolidation("STEP 1 — SCRAPER CONSOLIDATION LLM OUTPUT", raw_answer)
     except Exception:

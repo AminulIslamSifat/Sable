@@ -14,10 +14,19 @@ from typing import IO, Iterator, Union
 
 _IS_WINDOWS = sys.platform == "win32"
 
-if _IS_WINDOWS:
-    import msvcrt
-else:
-    import fcntl
+# Import both backends under a guard so the module-level names always exist.
+# Only one is importable per platform; the other stays None, and every call
+# site is already gated on _IS_WINDOWS. Importing conditionally instead makes
+# the name "possibly unbound" to a static checker on both branches.
+try:
+    import msvcrt  # type: ignore[import-not-found]
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
+
+try:
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 
 _PathLike = Union[str, os.PathLike]
 

@@ -466,6 +466,9 @@ async def send_code(req: SignInRequest):
 
     last_err: Exception | None = None
     for attempt in range(3):
+        # Initialized per-attempt: the except block below calls c.disconnect(),
+        # and the constructor itself can raise on bad credentials.
+        c = None
         try:
             c = TelegramClient(
                 session_path,
@@ -483,10 +486,11 @@ async def send_code(req: SignInRequest):
             return {"phone_code_hash": result.phone_code_hash}
         except Exception as e:
             last_err = e
-            try:
-                await c.disconnect()
-            except Exception:
-                pass
+            if c is not None:
+                try:
+                    await c.disconnect()
+                except Exception:
+                    pass
             # A dead auth key can never be retried — purge it and stop.
             if is_dead_session_error(e):
                 purge_session(session_path)

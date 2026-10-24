@@ -398,6 +398,10 @@ class DeepResearcher:
         cmd = [sys.executable, str(SEARCH_SCRIPT)] + args
         logger.info("running search script | timeout=%d args=%s", timeout, args)
         await self._trace("search_script_start", timeout=timeout, args=" ".join(args[:10]))
+        # Initialized before the try: if create_subprocess_exec itself raises
+        # (ENOENT, fd exhaustion), the TimeoutError handler below still runs
+        # and must not touch an unbound name.
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -415,10 +419,11 @@ class DeepResearcher:
         except asyncio.TimeoutError:
             logger.error("search script timed out after %ds", timeout)
             await self._trace("search_script_timeout", timeout=timeout)
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             return False, "search timed-out"
         except Exception as e:
             logger.error("search script exception: %s", e)

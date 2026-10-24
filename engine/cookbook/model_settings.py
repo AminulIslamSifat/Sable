@@ -110,8 +110,7 @@ def build_system_prompt(model_id: str) -> str | None:
         _disabled: list = []
         if _pcfg_path.exists():
             try:
-                import json as _json
-                _pc = _json.loads(_pcfg_path.read_text(encoding="utf-8"))
+                _pc = json.loads(_pcfg_path.read_text(encoding="utf-8"))
                 _active = _pc.get("active") or "Maria"
                 _disabled = _pc.get("disabled", [])
             except Exception:
@@ -125,7 +124,7 @@ def build_system_prompt(model_id: str) -> str | None:
     _of_enabled = settings.get("use_output_format", True)
     if _pcfg_path.exists():
         try:
-            _pc2 = _json.loads(_pcfg_path.read_text(encoding="utf-8"))
+            _pc2 = json.loads(_pcfg_path.read_text(encoding="utf-8"))
             _of_enabled = _pc2.get("output_format_enabled", _of_enabled)
         except Exception:
             pass
@@ -152,8 +151,7 @@ def build_system_prompt(model_id: str) -> str | None:
         tool_json_path = tools_dir / tool_key / "tool.json"
         if tool_json_path.is_file():
             try:
-                import json as _json
-                schema = _json.loads(tool_json_path.read_text(encoding="utf-8"))
+                schema = json.loads(tool_json_path.read_text(encoding="utf-8"))
                 func_names = [f.get("name", "?") for f in schema] if isinstance(schema, list) else []
                 parts.append(
                     f"## Tool: {tool_key}\n"

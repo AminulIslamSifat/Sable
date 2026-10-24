@@ -3669,6 +3669,7 @@ async def download_tts_models(request: Request) -> StreamingResponse:
                 continue
 
             yield json.dumps({"file": name, "status": "start", "total": meta["size"]}) + "\n"
+            tmp = None
             try:
                 tmp = path.with_suffix(".part")
                 req = urllib.request.Request(meta["url"], headers={"User-Agent": "Sable/1.0"})
@@ -3690,7 +3691,7 @@ async def download_tts_models(request: Request) -> StreamingResponse:
                 tmp.rename(path)
                 yield json.dumps({"file": name, "status": "done", "size": downloaded}) + "\n"
             except Exception as e:
-                if tmp.exists():
+                if tmp is not None and tmp.exists():
                     tmp.unlink()
                 yield json.dumps({"file": name, "status": "error", "error": str(e)}) + "\n"
 
@@ -4562,6 +4563,7 @@ async def download_stt_models(request: Request) -> StreamingResponse:
                 continue
 
             yield json.dumps({"file": name, "status": "start", "total": meta["size"]}) + "\n"
+            tmp = None
             try:
                 tmp = path.with_suffix(".part")
                 req = urllib.request.Request(meta["url"], headers={"User-Agent": "Sable/1.0"})
@@ -4583,7 +4585,7 @@ async def download_stt_models(request: Request) -> StreamingResponse:
                 tmp.rename(path)
                 yield json.dumps({"file": name, "status": "done", "size": downloaded}) + "\n"
             except Exception as e:
-                if tmp.exists():
+                if tmp is not None and tmp.exists():
                     tmp.unlink()
                 yield json.dumps({"file": name, "status": "error", "error": str(e)}) + "\n"
 

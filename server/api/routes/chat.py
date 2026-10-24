@@ -993,6 +993,7 @@ async def chat(request: ChatRequest):
     _allowed_mem_cats: set[str] | None = None  # None = all categories
     _proj_mem_enabled = False
     _proj_mem_path = None
+    _early_proj_id = None
     try:
         from server.database import get_chat_project_id, get_project as _get_proj
         _early_proj_id = get_chat_project_id(active_chat_id)

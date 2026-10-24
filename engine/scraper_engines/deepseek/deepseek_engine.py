@@ -10,6 +10,8 @@ import re
 import socket
 import urllib.request
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from config import console, PLATFORM, PLATFORMS_CONFIG, OUTPUT_ROOT, ASSETS_DIR, PROJECT_ROOT, INSTRUCTIONS_DIR
 from exceptions import ResponseCaptureError
@@ -17,6 +19,11 @@ from exceptions import ResponseCaptureError
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+# DeepSeek chat URLs look like /a/chat/s/<session_id>. Comparing by session id
+# (not raw URL) means a trailing query string, hash fragment, or host alias
+# doesn't trigger a pointless re-navigation in session_id_from_url().
+_SESSION_ID_RE = re.compile(r"/a/chat/s/([A-Za-z0-9_-]+)")
 
 _INPUT_SELECTORS = [
     PLATFORM["selectors"]["input"],

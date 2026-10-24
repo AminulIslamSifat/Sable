@@ -107,6 +107,9 @@ async def terminal_ws(ws: WebSocket) -> None:
     # On Windows, ConPTY doesn't expose an fd so we poll in a thread.
 
     _reader_running = True
+    # Created only on the Windows path; initialized here so the
+    # finally-block can cancel it even if setup raised earlier.
+    win_reader_task = None
 
     if not IS_WINDOWS:
         def _on_readable() -> None:
@@ -195,5 +198,6 @@ async def terminal_ws(ws: WebSocket) -> None:
             except Exception:
                 pass
         else:
-            win_reader_task.cancel()
+            if win_reader_task is not None:
+                win_reader_task.cancel()
         await session.stop()
