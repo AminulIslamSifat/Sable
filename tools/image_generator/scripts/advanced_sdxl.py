@@ -317,8 +317,8 @@ def generate(opts: AdvancedSdxlOptions) -> dict[str, Any]:
         # Key failure → refresh and retry once
         if status in ("invalid_key", "failed_verification"):
             print(f"[advanced-sdxl] Key invalid on attempt {i+1}, refreshing via browser...", file=sys.stderr)
-            from perchance_key import refresh_key_via_browser
-            new_key = refresh_key_via_browser(tag="advanced-sdxl")
+            from perchance_key import refresh_key_smart
+            new_key = refresh_key_smart(tag="advanced-sdxl")
             if new_key:
                 _save_key(new_key)
             if new_key:

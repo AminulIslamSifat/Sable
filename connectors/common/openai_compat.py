@@ -828,17 +828,47 @@ class OpenAICompatClient:
 
                                     result_text = ""
                                     ok = True
+                                    _end_result: dict = {}
                                     for evt in events:
                                         if evt.get("type") == "skill_output":
                                             result_text += evt.get("text", "")
                                         elif evt.get("type") == "skill_end":
                                             ok = evt.get("ok", True)
+                                            _end_result = evt.get("result") or {}
                                         yield evt
 
                                     tool_result = format_openai_tool_result(
                                         tag_event["name"], result_text, ok, fc.get("id", ""),
                                     )
                                     history.append(tool_result)
+
+                                    # A tool that produced an image must hand the
+                                    # model pixels, not a path it cannot fetch.
+                                    # Same shape as the direct-upload path.
+                                    if (
+                                        ok
+                                        and self.SUPPORTS_MULTIMODAL_CONTENT
+                                        and _end_result.get("kind") == "image"
+                                    ):
+                                        _copy = _end_result.get("local_copy")
+                                        _pf = prepare_inline_file(_copy) if _copy else None
+                                        if _pf and _pf.category == "image":
+                                            history.append({
+                                                "role": "user",
+                                                "content": [
+                                                    {"type": "text", "text": (
+                                                        "[Image from get_file: "
+                                                        f"{_end_result.get('path')}]"
+                                                    )},
+                                                    to_openai_image(_pf),
+                                                ],
+                                            })
+                                        elif _copy:
+                                            self.logger.warning(
+                                                "tool %s: could not inline image %s "
+                                                "(missing or over size limit)",
+                                                tag_event["name"], _copy,
+                                            )
                                     self.logger.info(
                                         "Native tool %s executed (ok=%s), continuing loop",
                                         tag_event["name"], ok,

@@ -337,20 +337,34 @@
             if (allBtn) allBtn.remove();
             if (delBtn) delBtn.remove();
           } else {
-            const allBtn = outputWrap.querySelector(".ig-download-all");
-            if (allBtn) allBtn.innerHTML = '<i data-lucide="download" class="icon-lucide"></i> Download all (' + remaining + ')';
-            const delBtn = outputWrap.querySelector(".ig-delete-all");
-            if (delBtn) delBtn.innerHTML = '<i data-lucide="trash-2" class="icon-lucide"></i> Delete all (' + remaining + ')';
-            if (window.lucide) lucide.createIcons({ nodes: [allBtn, delBtn].filter(Boolean) });
+            // querySelectorAll, not querySelector: a stale duplicate from an
+            // earlier render must not survive as a frozen "Delete all (1)".
+            const btns = outputWrap.querySelectorAll(".ig-download-all, .ig-delete-all");
+            const icons = [];
+            btns.forEach(function (el) {
+              if (el.classList.contains("ig-download-all")) {
+                el.innerHTML = '<i data-lucide="download" class="icon-lucide"></i> Download all (' + remaining + ')';
+              } else {
+                el.innerHTML = '<i data-lucide="trash-2" class="icon-lucide"></i> Delete all (' + remaining + ')';
+              }
+              Array.prototype.push.apply(icons, Array.prototype.slice.call(el.querySelectorAll('[data-lucide]')));
+            });
+            if (window.lucide && icons.length) lucide.createIcons({ nodes: icons });
           }
         });
         gallery.appendChild(cell);
       });
       if (window.lucide) lucide.createIcons({ nodes: gallery.querySelectorAll("[data-lucide]") });
-      // "Download all" sits next to the meta line so it persists until the
-      // next generation overwrites the gallery.
-      const existingAll = outputWrap.querySelector(".ig-download-all");
-      if (existingAll) existingAll.remove();
+      // "Download all" / "Delete all" sit next to the meta line so they persist
+      // until the next generation overwrites the gallery.
+      //
+      // This function now runs once per image during streaming, so it MUST be
+      // idempotent. querySelector() only ever returns the first match: using it
+      // to clear these left the older copies behind while appending a new one
+      // each render, which is why the buttons multiplied down the panel.
+      outputWrap.querySelectorAll(".ig-download-all, .ig-delete-all").forEach(function (el) {
+        el.remove();
+      });
       const dlAll = document.createElement("button");
       dlAll.className = "ig-download-all";
       dlAll.innerHTML = '<i data-lucide="download" class="icon-lucide"></i> Download all (' + n + ')';
@@ -498,6 +512,172 @@
     }
 
     // ── Start generation (detached from DOM lifecycle) ──
+    // ── Streaming image generation ──────────────────────────────────────
+    // The blocking route returned nothing until the whole batch finished, so
+    // there was no progress to show and nothing to abort. The streaming
+    // route emits log / image / done / error events, consumed here live.
+
+    const _IG_NL = String.fromCharCode(10);
+    const _IG_SSE_SEP = _IG_NL + _IG_NL;
+
+    // DreamForge and Advanced SDXL return through their own dedicated
+    // endpoints with a different option shape, so they never reach the
+    // dispatch below. Streaming covers Perchance only for now.
+    const _IG_STREAM_PROVIDERS = { perchance: 1 };
+
+    function _igLogReset(wrap) {
+      if (!wrap) return;
+      const logWrap = wrap.querySelector("#igLogWrap");
+      const logEl = wrap.querySelector("#igLog");
+      if (!logWrap || !logEl) return;
+      logWrap.style.display = "";
+      logEl.textContent = "";
+    }
+
+    function _igLogLine(wrap, line) {
+      if (!wrap) return;
+      const logEl = wrap.querySelector("#igLog");
+      if (!logEl) return;
+      const ts = new Date().toTimeString().slice(0, 8);
+      logEl.textContent += "[" + ts + "] " + line + _IG_NL;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function _igSetStopVisible(wrap, visible) {
+      if (!wrap) return;
+      const stop = wrap.querySelector("#igStopBtn");
+      const gen = wrap.querySelector("#igGenBtn");
+      if (stop) stop.style.display = visible ? "" : "none";
+      if (gen) { gen.disabled = visible; gen.textContent = visible ? "⏳ Generating…" : "🖼️ Generate"; }
+    }
+
+    function _igAuthHeaders(extra) {
+      const h = Object.assign({}, extra || {});
+      let tok = "";
+      try { tok = localStorage.getItem("sable_token") || ""; } catch (e) {}
+      if (tok) h["Authorization"] = "Bearer " + tok;
+      return h;
+    }
+
+    async function _igStartStreaming(attrs, uiRefs) {
+      _igState.generating = true;
+      _igState.params = attrs;
+      _igState.result = null;
+      _igState.error = null;
+      _igState.partial = { images: [] };
+
+      const wrap = uiRefs && uiRefs.genBtn ? uiRefs.genBtn.closest(".promptgen-launch") : null;
+      _igLogReset(wrap);
+      _igLogLine(wrap, "starting " + (attrs.provider || "image") + "...");
+      _igSetStopVisible(wrap, true);
+
+      const ctrl = new AbortController();
+      _igState.streamAbort = ctrl;
+      const started = Date.now();
+      let gotImages = 0;
+
+      const rerenderPartial = () => {
+        const live = _igGetLiveRefs();
+        if (!live) return;
+        const partial = { ok: true, images: _igState.partial.images.slice(), count: _igState.partial.images.length };
+        _igRenderResult(live.gallery, live.metaEl, live.outputWrap, partial, attrs);
+        live.outputWrap.style.display = "";
+      };
+
+      try {
+        const res = await fetch("/api/tool/generate_image_stream", {
+          method: "POST",
+          headers: _igAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(attrs),
+          signal: ctrl.signal,
+        });
+
+        if (!res.ok) {
+          if (res.status === 400) {
+            _igLogLine(wrap, "provider cannot stream, using blocking route");
+            _igState.streamAbort = null;
+            _igSetStopVisible(wrap, false);
+            return await _igStartGeneration(attrs, uiRefs);
+          }
+          throw new Error("HTTP " + res.status);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buf += decoder.decode(chunk.value, { stream: true });
+
+          let idx = buf.indexOf(_IG_SSE_SEP);
+          while (idx >= 0) {
+            const frame = buf.slice(0, idx);
+            buf = buf.slice(idx + _IG_SSE_SEP.length);
+            idx = buf.indexOf(_IG_SSE_SEP);
+
+            const parts = frame.split(_IG_NL);
+            let payload = null;
+            for (let k = 0; k < parts.length; k++) {
+              if (parts[k].indexOf("data: ") === 0) { payload = parts[k].slice(6); break; }
+            }
+            if (!payload) continue;
+
+            let ev = null;
+            try { ev = JSON.parse(payload); } catch (e) { continue; }
+            if (!ev || !ev.type) continue;
+
+            if (ev.type === "log") {
+              _igLogLine(wrap, ev.line || "");
+            } else if (ev.type === "image") {
+              gotImages += 1;
+              _igState.partial.images.push(ev.image);
+              _igLogLine(wrap, "image " + gotImages + " ready");
+              rerenderPartial();
+            } else if (ev.type === "error") {
+              throw new Error(ev.error || "generation failed");
+            } else if (ev.type === "done") {
+              const result = ev.result || {};
+              _igState.result = result;
+              if (window.genHistory && attrs && attrs.prompt) {
+                window.genHistory.update("image", attrs.prompt, { result: result, provider: attrs.provider });
+              }
+              const live = _igGetLiveRefs();
+              if (result.ok && result.images && result.images.length) {
+                if (live) _igRenderResult(live.gallery, live.metaEl, live.outputWrap, result, attrs);
+                _igLogLine(wrap, "done — " + result.images.length + " image(s) in " + ((Date.now() - started) / 1000).toFixed(1) + "s");
+                showToast("✅ " + result.images.length + " image(s) generated!", "success");
+              } else {
+                const errMsg = result.error || "Unknown error";
+                _igState.error = errMsg;
+                _igLogLine(wrap, "failed: " + errMsg);
+                if (live) _igRenderError(live.metaEl, live.outputWrap, errMsg);
+                showToast("❌ Generation failed", "error");
+              }
+            }
+          }
+        }
+      } catch (e) {
+        const aborted = e && (e.name === "AbortError" || ctrl.signal.aborted);
+        if (aborted) {
+          _igLogLine(wrap, "stopped by user");
+        } else {
+          _igState.error = e.message;
+          _igLogLine(wrap, "error: " + e.message);
+          showToast("❌ " + e.message, "error");
+          const live = _igGetLiveRefs();
+          if (live) _igRenderError(live.metaEl, live.outputWrap, e.message);
+        }
+      } finally {
+        _igState.streamAbort = null;
+        _igStopTimer();
+        _igState.generating = false;
+        _igState.promise = null;
+        _igSetStopVisible(wrap, false);
+      }
+    }
+
     async function _igStartGeneration(attrs, uiRefs) {
       _igState.generating = true;
       _igState.params = attrs;
@@ -726,6 +906,7 @@
           </select>
           <div class="promptgen-spacer"></div>
           <button id="igGenBtn" class="promptgen-start-btn">🖼️ Generate</button>
+          <button id="igStopBtn" class="promptgen-start-btn ig-stop-btn" style="display:none;">⏹ Stop</button>
         </div>
         <div id="igPuterUsage" style="display:none;margin-top:6px;font-size:11px;color:var(--text);opacity:0.7;"></div>
         <input id="igNegPrompt" class="promptgen-query" style="margin-top:8px;min-height:auto;padding:8px 12px;font-size:12px;" placeholder="Negative prompt (optional): things to avoid…">
@@ -938,6 +1119,10 @@
             </label>
           </div>
         </details>
+        <div id="igLogWrap" class="ig-log-wrap" style="display:none;">
+          <div class="ig-log-head"><span>Progress</span><button id="igLogToggle" class="ig-log-toggle" type="button">hide</button></div>
+          <pre id="igLog" class="ig-log"></pre>
+        </div>
         <div id="igOutputWrap" class="promptgen-output-wrap" style="display:none;">
           <div id="igGallery" class="library-gallery-grid" style="margin-bottom:10px;"></div>
           <div class="ig-meta-row">
@@ -1107,6 +1292,25 @@
       // Current UI refs object for the detached generator
       const uiRefs = { genBtn, promptEl, outputWrap, gallery, metaEl, providerSel, modelSel, styleSel, wrap };
 
+      const stopBtn = wrap.querySelector("#igStopBtn");
+      if (stopBtn) {
+        stopBtn.addEventListener("click", () => {
+          if (_igState.streamAbort) {
+            try { _igState.streamAbort.abort(); } catch (e) {}
+          }
+        });
+      }
+      const logToggle = wrap.querySelector("#igLogToggle");
+      if (logToggle) {
+        logToggle.addEventListener("click", () => {
+          const body = wrap.querySelector("#igLog");
+          if (!body) return;
+          const hidden = body.style.display === "none";
+          body.style.display = hidden ? "" : "none";
+          logToggle.textContent = hidden ? "hide" : "show";
+        });
+      }
+
       genBtn.addEventListener("click", async () => {
         const prompt = promptEl.value.trim();
         if (!prompt) { showToast("⚠️ Enter a prompt first", "error"); return; }
@@ -1175,7 +1379,11 @@
         }
         if (neg) attrs.negative_prompt = neg;
 
-        _igStartGeneration(attrs, uiRefs);
+        if (_IG_STREAM_PROVIDERS[provider]) {
+          _igStartStreaming(attrs, uiRefs);
+        } else {
+          _igStartGeneration(attrs, uiRefs);
+        }
       });
 
       // ── Restore state from previous session ──
@@ -1223,13 +1431,28 @@
     // overlay), so a global getElementById("igSavedList") grabbed whichever copy
     // came first in the DOM — usually the hidden one — leaving the visible panel
     // stuck on "Loading…" forever.
+    // Guards against two concurrent gallery loads writing into the same
+    // list. Without this, two calls can both await, both clear, then both
+    // append -- leaving two grids in one panel, which renders as duplicated
+    // images.
+    let _igGallerySeq = 0;
+
     async function _igLoadGallery(container) {
       const scope = container || document;
-      const list = scope.querySelector("#igSavedList") || document.getElementById("igSavedList");
+      // Deliberately NOT falling back to document.getElementById: the panel
+      // is rendered in two places (#imageView and #tab-lib-imagegen), and a
+      // cross-panel fallback made both writes land in whichever copy came
+      // first in the DOM.
+      const list = scope.querySelector("#igSavedList");
       if (!list) return;
+
+      const seq = ++_igGallerySeq;
       try {
         const res = await fetch("/api/library/gallery");
         const items = await res.json();
+        // A newer load started while this one was in flight -- drop this
+        // result rather than clobbering the fresher render.
+        if (seq !== _igGallerySeq) return;
         if (!items || !items.length) {
           list.innerHTML = '<div class="library-empty">No images yet. Generate one above.</div>';
           return;

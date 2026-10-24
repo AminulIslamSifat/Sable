@@ -28,6 +28,13 @@ from .providers import (
     tavily_search,
     serper_search,
 )
+from .sable_provider import (
+    sable_available,
+    sable_multi_search,
+    sable_multi_search_traced,
+    sable_image_search,
+    sable_image_search_traced,
+)
 from .query import _cache_duration_for_query
 from .ranking import rank_search_results
 
@@ -51,7 +58,11 @@ def get_search_config() -> Dict[str, Any]:
     settings = _get_search_settings()
     provider = settings.get("search_provider", "searxng")
     config["active_provider"] = provider
-    config["has_api_key"] = bool(_get_provider_key(provider))
+    # sable needs no key; it needs the desktop shell's bridge.
+    if provider == "sable":
+        config["has_api_key"] = sable_available()
+    else:
+        config["has_api_key"] = bool(_get_provider_key(provider))
     config["result_count"] = _get_result_count()
     if provider == "searxng":
         from .config import _get_search_instance
@@ -84,7 +95,100 @@ def _call_provider(provider_name: str, query: str, count: int, time_filter: str 
         return tavily_search(query, count, time_filter)
     elif provider_name == "serper":
         return serper_search(query, count, time_filter)
+    elif provider_name == "sable":
+        # Real Chromium tabs in the desktop shell. Not available on the web
+        # build; the provider is filtered out of Settings there and this call
+        # raises NetworkError so the fallback chain takes over.
+        return sable_multi_search(query, count, time_filter)
     return []
+
+
+def image_search_for_provider_traced(
+    provider: str, query: str, count: int = 10
+) -> tuple[List[dict], List[dict]]:
+    """Image search through one provider, plus its per-engine report.
+
+    Only `sable` has a report — it fuses five indexes. Every other provider is
+    a single API, so its report is empty.
+    """
+    if provider == "sable":
+        if not sable_available():
+            raise NetworkError("sable search bridge is not running (desktop shell not active)")
+        return sable_image_search_traced(query, count)
+
+    return image_search_for_provider(provider, query, count), []
+
+
+def image_search_for_provider(provider: str, query: str, count: int = 10) -> List[dict]:
+    """Image search through ONE named provider.
+
+    Empty list means that provider has no image index or returned nothing —
+    never an exception for a merely-unavailable provider, so callers can chain.
+    """
+    if provider == "sable":
+        if not sable_available():
+            raise NetworkError("sable search bridge is not running (desktop shell not active)")
+        return sable_image_search(query, count)
+
+    if provider == "searxng":
+        from .providers import searxng_image_results
+
+        return searxng_image_results(query, count=count)
+
+    from .image_providers import image_search_for
+
+    return image_search_for(provider, query, count)
+
+
+def image_search_traced(
+    query: str, count: int = 10
+) -> tuple[List[dict], str, List[dict]]:
+    """Image search through the chain, reporting which provider answered.
+
+    Returns ``(results, provider, engines)``. ``provider`` is the one that
+    actually served the results — or the configured one when every link
+    failed, so a caller can say "configured X, got nothing" instead of
+    misreporting X as the source of results that came from elsewhere.
+    ``engines`` is the per-engine report when the answering provider was
+    `sable`, empty otherwise.
+    """
+    settings = _get_search_settings()
+    provider = settings.get("search_provider", "searxng")
+
+    chain: List[str] = [provider]
+    for p in settings.get("search_fallback_chain", []) or []:
+        if isinstance(p, str) and p and p not in chain:
+            chain.append(p)
+    if sable_available() and "sable" not in chain:
+        chain.append("sable")
+    if "searxng" not in chain:
+        chain.append("searxng")
+
+    for candidate in chain:
+        try:
+            results, engines = image_search_for_provider_traced(candidate, query, count)
+            if results:
+                logger.info("image search %r served by %s (%d)", query, candidate, len(results))
+                return results, candidate, engines
+        except Exception as exc:  # noqa: BLE001 - try the next link in the chain
+            logger.warning("image search via %s failed: %s", candidate, exc)
+
+    logger.warning("image search %r exhausted its chain with no results", query)
+    return [], provider, []
+
+
+def image_search_results(query: str, count: int = 10) -> List[dict]:
+    """Image search through the configured provider, then its fallback chain.
+
+    The configured provider is tried first when it has an image endpoint
+    (serper, brave, tavily, google_pse, sable, searxng). Anything after that
+    comes from `search_fallback_chain`, then `sable` if the desktop shell is
+    up, then SearXNG's image category as the floor.
+
+    Returns ``[{title, image, thumbnail, url}]``; empty when nothing answered.
+    """
+    results, _provider = image_search_traced(query, count)
+    return results
 
 # ----------------------------------------------------------------------
 # Unified search with caching and retry

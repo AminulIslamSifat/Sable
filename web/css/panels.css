@@ -5067,3 +5067,53 @@ body.ocr-open #inputArea { display: none !important; }
    restores the menu exactly as before, and only affects the closed state. */
 .status-dropdown-menu { display: none; }
 .status-dropdown.open .status-dropdown-menu { display: block; }
+
+/* ── Image generator: streaming progress + stop button ─────────────────── */
+.ig-stop-btn {
+  background: color-mix(in srgb, #ef4444 18%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 45%, transparent);
+  color: #fca5a5;
+}
+.ig-stop-btn:hover { background: color-mix(in srgb, #ef4444 30%, transparent); }
+
+.ig-log-wrap {
+  margin-top: 10px;
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.ig-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, rgba(255,255,255,0.5));
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+}
+.ig-log-toggle {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
+.ig-log-toggle:hover { opacity: 1; }
+.ig-log {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text, #ddd);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

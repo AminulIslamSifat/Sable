@@ -581,6 +581,16 @@ body.pp-open .main { min-width: 0; }
 .pp-blocked .pp-dim { max-width: 320px; line-height: 1.6; }
 .pp-face { position: relative; }
 
+/* Electron only: the region a native WebContentsView is parked over.
+   It covers exactly where the iframe sits, so the toolbar above and the
+   Preview/Code toggle keep working. Hidden on the web build. */
+.pp-native-host {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+}
+.pp-native-host[hidden] { display: none; }
+
 /* Monaco host inside a card */
 .pp-card-body .pp-diff-body {
   height: 380px;

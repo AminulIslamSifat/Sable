@@ -766,6 +766,51 @@ def search_only(query: str, *, max_results: int = 15, time_filter: str | None = 
     }
 
 
+def image_search_only(query: str, *, max_results: int = 12) -> dict[str, Any]:
+    """Search for images on a topic. Returns direct image URLs, not pages.
+
+    Each result carries ``image`` (the media URL to embed), ``thumbnail`` (a
+    lighter preview), and ``url`` (the page the image came from).
+    """
+    from engine.search import image_search_results
+
+    settings = load_settings()
+    provider_name = settings.get("search_provider", "searxng")
+    raw = image_search_results(query, count=max_results)
+
+    if not raw:
+        return {
+            "query": query,
+            "provider": provider_name,
+            "type": "image",
+            "ok": False,
+            "error": "no image results",
+            "results": [],
+        }
+
+    results = [
+        {
+            "index": idx,
+            "title": (r.get("title") or "").strip(),
+            "image": r.get("image", ""),
+            "thumbnail": r.get("thumbnail") or r.get("image", ""),
+            "url": r.get("url", ""),
+        }
+        for idx, r in enumerate(raw[:max_results], 1)
+        if r.get("image")
+    ]
+
+    return {
+        "query": query,
+        "provider": provider_name,
+        "type": "image",
+        "ok": bool(results),
+        "count": len(results),
+        "results": results,
+        "error": None if results else "no usable image URLs",
+    }
+
+
 def fetch_specific_urls(urls: list[str], *, max_chars: int = 10000) -> dict[str, Any]:
     """Phase 2: fetch content from specific URLs chosen by the model."""
     # Dedupe while preserving order — the model sometimes repeats a URL.
@@ -884,6 +929,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--time-filter", choices=["day", "week", "month", "year"], help="Force a freshness filter")
     p.add_argument("--json", action="store_true", help="Print JSON instead of text")
     p.add_argument("--search-only", action="store_true", help="Only return search results (titles/URLs), skip fetching")
+    p.add_argument("--type", choices=["web", "image"], default="web", help="What to search: web pages (default) or images for a topic")
     p.add_argument("--fetch-urls", nargs="+", metavar="URL", help="Fetch specific URLs directly (phase 2)")
     p.add_argument("--max-chars", type=int, default=10000, help="Max characters per fetched page (default 10000)")
     p.add_argument("--research-log", metavar="PATH", help="Path to a deep-research state JSON file, used to track sub-topic progress across search rounds")
@@ -950,6 +996,27 @@ def main(argv: list[str] | None = None) -> int:
     if not queries:
         sys.stderr.write("error: provide queries as arguments, --queries-file, or stdin\n")
         return 1
+
+    # Image mode — returns image URLs, never page content.
+    if args.type == "image":
+        items = [image_search_only(query, max_results=args.max_results) for query in queries]
+        if args.json:
+            json.dump({"count": len(items), "items": items}, sys.stdout, indent=2, ensure_ascii=False)
+            sys.stdout.write("\n")
+        else:
+            for item in items:
+                if not item.get("ok"):
+                    sys.stdout.write(f"Error: {item.get('error', 'unknown')}\n")
+                    continue
+                sys.stdout.write(f"=== Images: {item['query']} ===\n")
+                sys.stdout.write(f"Provider: {item.get('provider', '')}\n\n")
+                for r in item["results"]:
+                    sys.stdout.write(f"[{r['index']}] {r['title']}\n")
+                    sys.stdout.write(f"    image: {r['image']}\n")
+                    if r.get("url"):
+                        sys.stdout.write(f"    page:  {r['url']}\n")
+                    sys.stdout.write("\n")
+        return 0
 
     # Phase 1: search-only mode
     if args.search_only:

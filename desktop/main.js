@@ -1,10 +1,11 @@
 "use strict"
 
-const { app, BrowserWindow, Menu, ipcMain, shell } = require("electron")
+const { app, BrowserWindow, Menu, ipcMain, shell, WebContentsView } = require("electron")
 const { spawn } = require("node:child_process")
 const fs = require("node:fs")
 const http = require("node:http")
 const path = require("node:path")
+const os = require("node:os")
 
 // ── Constants ───────────────────────────────────────────────────────────────
 // SABLE_ROOT lets you point the shell at any Sable tree (e.g. the non-exp copy).
@@ -43,6 +44,9 @@ let logPath = null
 let pendingStatus = null // status sent before the splash finished loading
 let childExit = null // { code, signal } once the spawned server exits
 let lastLogSent = ""
+let browserView = null // WebContentsView for the in-app browser pane
+let browserViewAttached = false
+let browserBounds = null // last rect the renderer measured, replayed on attach
 
 app.setName("Sable")
 
@@ -285,6 +289,12 @@ function createWindow() {
 
   win.once("ready-to-show", () => win.show())
 
+  // Hide any attached browser pane while the renderer itself reloads;
+  // the web UI re-opens and re-measures its panel on its own.
+  win.webContents.on("did-start-loading", () => {
+    if (browserView && !browserView.webContents.isDestroyed()) browserView.setVisible(false)
+  })
+
   win.webContents.on("did-finish-load", () => {
     splashLoaded = win.webContents.getURL().startsWith("file://")
     if (splashLoaded && pendingStatus) {
@@ -322,7 +332,12 @@ function createWindow() {
     if (/^https?:/i.test(url)) shell.openExternal(url)
   })
 
-  win.on("closed", () => { win = null })
+  win.on("closed", () => {
+    browserView = null
+    browserViewAttached = false
+    browserBounds = null
+    win = null
+  })
 
   win.loadFile(LOADER)
   void boot()
@@ -367,11 +382,464 @@ ipcMain.on("sable:open-external", (_e, url) => {
 
 ipcMain.handle("sable:info", () => ({ port: PORT, url: SERVER_URL, root: ROOT, log: logPath }))
 
+// ── Native browser pane (WebContentsView) ──────────────────────────────────
+// An in-app browser is a WebContentsView layered above the renderer. The
+// renderer measures a placeholder and sends its rect here; we round to DIPs,
+// apply zoom, and setVisible once the rect is real. Same shape as opencode's
+// browser pane (packages/gui-extensions/src/browser/chromium.ts).
+
+function ensureBrowserView() {
+  if (browserView && !browserView.webContents.isDestroyed()) return browserView
+  browserView = new WebContentsView({
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webviewTag: false,
+      partition: "persist:sable-browser",
+    },
+  })
+  const wc = browserView.webContents
+  const push = (patch) => {
+    if (win && !win.isDestroyed()) win.webContents.send("sable:browser-state", patch)
+  }
+  // Links opened from inside the pane stay inside the pane, not the OS browser.
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) wc.loadURL(url)
+    return { action: "deny" }
+  })
+  wc.on("did-navigate", (_e, url) => push({ url }))
+  wc.on("did-navigate-in-page", (_e, url) => push({ url }))
+  wc.on("page-title-updated", (_e, title) => push({ title }))
+  wc.on("did-start-loading", () => push({ loading: true }))
+  wc.on("did-stop-loading", () => {
+    push({ loading: false })
+    try {
+      const nav = wc.navigationHistory
+      push({ canBack: nav.canGoBack(), canForward: nav.canGoForward() })
+    } catch (_) {
+      push({ canBack: wc.canGoBack(), canForward: wc.canGoForward() })
+    }
+  })
+  return browserView
+}
+
+function applyBrowserBounds(rect) {
+  if (!win || !browserView || browserView.webContents.isDestroyed()) return
+  if (!rect || typeof rect.x !== "number" || rect.width <= 0 || rect.height <= 0) {
+    browserView.setVisible(false)
+    return
+  }
+  // getBoundingClientRect is CSS px; WebContentsView wants DIPs. At
+  // webContents zoom z, 1 CSS px = z DIPs, so multiply by z.
+  const zoom = win.webContents.getZoomFactor() || 1
+  browserView.setBounds({
+    x: Math.round(rect.x * zoom),
+    y: Math.round(rect.y * zoom),
+    width: Math.round(rect.width * zoom),
+    height: Math.round(rect.height * zoom),
+  })
+  browserView.setVisible(true)
+}
+
+function attachBrowserView() {
+  if (!win || !browserView || browserViewAttached) return
+  win.contentView.addChildView(browserView)
+  browserViewAttached = true
+  browserView.setVisible(false)
+  // A bounds message that raced the view's creation is replayed here.
+  if (browserBounds) applyBrowserBounds(browserBounds)
+}
+
+ipcMain.handle("sable:browser-open", (_e, url) => {
+  if (!win || typeof url !== "string" || !/^https?:/i.test(url)) return false
+  const view = ensureBrowserView()
+  attachBrowserView()
+  view.webContents.loadURL(url)
+  return true
+})
+
+ipcMain.on("sable:browser-bounds", (_e, rect) => {
+  if (!win) return
+  if (!rect || typeof rect.x !== "number") return
+  browserBounds = rect
+  applyBrowserBounds(rect)
+})
+
+ipcMain.on("sable:browser-close", () => {
+  if (browserView) browserView.setVisible(false)
+})
+
+ipcMain.on("sable:browser-back", () => {
+  if (!browserView) return
+  try {
+    const nav = browserView.webContents.navigationHistory
+    if (nav.canGoBack()) nav.goBack()
+  } catch (_) {
+    if (browserView.webContents.canGoBack()) browserView.webContents.goBack()
+  }
+})
+
+ipcMain.on("sable:browser-forward", () => {
+  if (!browserView) return
+  try {
+    const nav = browserView.webContents.navigationHistory
+    if (nav.canGoForward()) nav.goForward()
+  } catch (_) {
+    if (browserView.webContents.canGoForward()) browserView.webContents.goForward()
+  }
+})
+
+ipcMain.on("sable:browser-reload", () => {
+  if (browserView) browserView.webContents.reload()
+})
+
+ipcMain.on("sable:browser-system-open", (_e, url) => {
+  if (typeof url === "string" && /^https?:/i.test(url)) shell.openExternal(url)
+})
+
+// ── Search bridge ───────────────────────────────────────────────────────────
+// A tiny localhost HTTP server the Python backend can call to run a multi-engine
+// search through real Chromium tabs. Existence of the marker file is how the
+// backend knows the desktop shell is the one serving this app: on the plain web
+// build the file is never written, so `sable` never appears as a provider.
+//
+// Bound to 127.0.0.1 and guarded by a per-run token, so nothing else on the
+// machine can drive it.
+
+const SEARCH_PORT = Number(process.env.SABLE_SEARCH_PORT || 61772)
+const SEARCH_TOKEN = require("node:crypto").randomBytes(24).toString("hex")
+const SEARCH_MARKER = path.join(os.homedir(), ".cache", "sable", "search-bridge.json")
+
+function writeSearchMarker() {
+  try {
+    fs.mkdirSync(path.dirname(SEARCH_MARKER), { recursive: true })
+    fs.writeFileSync(
+      SEARCH_MARKER,
+      JSON.stringify(
+        { url: `http://127.0.0.1:${SEARCH_PORT}`, token: SEARCH_TOKEN, pid: process.pid, at: Date.now() },
+        null,
+        2
+      ) + "\n",
+      { mode: 0o600 }
+    )
+  } catch (exc) {
+    console.error("[search-bridge] could not write marker:", exc.message)
+  }
+}
+
+function removeSearchMarker() {
+  try { fs.unlinkSync(SEARCH_MARKER) } catch (_) {}
+}
+
+// ── Perchance key capture ───────────────────────────────────────────────────
+// The image generator needs a 64-char Perchance userKey, which is only issued
+// once Cloudflare's Turnstile challenge passes. The Python backend used to
+// spawn a separate Chrome with a CDP port for this — which means an unrelated
+// browser window appears on top of the app, and the backend has to find a
+// browser binary and a free port to do it.
+//
+// Inside the shell we can do it properly: a child window runs the real page,
+// and the key is read straight out of that window's network layer. Same
+// marker + token handshake the search bridge already uses, so the backend
+// only has to know one thing: is the shell running?
+
+const PERCHANCE_URL = "https://perchance.org/ai-text-to-image-generator"
+const PERCHANCE_PARTITION = "persist:sable-perchance-key"
+const PERCHANCE_TIMEOUT_MS = 120_000
+const PERCHANCE_UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+let perchanceInFlight = null
+
+/**
+ * Open Perchance in a child window and capture the userKey it requests.
+ * Resolves { key, error } and never rejects. Concurrent callers share one run.
+ */
+// Runs INSIDE the generator iframe. Perchance only asks for a userKey once a
+// generation is actually started, so loading the page and waiting is not
+// enough — this types a prompt and clicks Generate.
+//
+// The frame's markup (verified against the live page): the prompt box is
+// `textarea.paragraph-input` and the submit control reads "✨ generate".
+const PERCHANCE_TRIGGER = `(() => {
+  var ta = null;
+  var tas = document.querySelectorAll('textarea.paragraph-input');
+  for (var i = 0; i < tas.length; i++) {
+    if (tas[i].offsetParent !== null) { ta = tas[i]; break; }
+  }
+  if (!ta) ta = document.querySelector('textarea');
+  if (!ta) return JSON.stringify({ error: 'no-textarea' });
+
+  ta.focus();
+  ta.value = 'test';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  ta.dispatchEvent(new Event('change', { bubbles: true }));
+  try {
+    document.execCommand('selectAll', false, null);
+    document.execCommand('insertText', false, 'test');
+  } catch (e) {}
+
+  var btns = document.querySelectorAll('button, input[type=submit], [onclick]');
+  var clicked = false;
+  for (var j = 0; j < btns.length; j++) {
+    var b = btns[j];
+    if (/generate/i.test(b.textContent || b.value || '')) {
+      b.click();
+      clicked = true;
+      break;
+    }
+  }
+  return JSON.stringify({ typed: true, clicked: clicked });
+})()`
+
+function capturePerchanceKey() {
+  if (perchanceInFlight) return perchanceInFlight
+
+  const run = new Promise((resolve) => {
+    let settled = false
+    let keyWin = null
+    let ses = null
+    let timer = null
+    let triggerTimer = null
+
+    const finish = (key, error) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (triggerTimer) clearInterval(triggerTimer)
+      try {
+        if (ses) ses.webRequest.onBeforeRequest(null)
+      } catch (_) {}
+      try {
+        if (keyWin && !keyWin.isDestroyed()) keyWin.destroy()
+      } catch (_) {}
+      resolve({ key: key || null, error: error || null })
+    }
+
+    try {
+      keyWin = new BrowserWindow({
+        show: false,
+        width: 1120,
+        height: 840,
+        title: "Perchance verification",
+        parent: win && !win.isDestroyed() ? win : undefined,
+        autoHideMenuBar: true,
+        webPreferences: {
+          partition: PERCHANCE_PARTITION,
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+          backgroundThrottling: false,
+        },
+      })
+    } catch (exc) {
+      return finish(null, "could not open window: " + String(exc.message || exc))
+    }
+
+    const wc = keyWin.webContents
+    wc.setAudioMuted(true)
+    wc.setUserAgent(PERCHANCE_UA)
+    wc.setWindowOpenHandler(() => ({ action: "deny" }))
+
+    ses = wc.session
+
+    // Every frame's requests pass through here, including the nested
+    // generator iframe that actually carries the key.
+    ses.webRequest.onBeforeRequest({ urls: ["*://*.perchance.org/*"] }, (details, callback) => {
+      callback({})
+      if (settled) return
+      const m = /[?&]userKey=([^&]+)/.exec(details.url)
+      if (!m) return
+      let key = ""
+      try {
+        key = decodeURIComponent(m[1])
+      } catch (_) {
+        return
+      }
+      if (key.length === 64) finish(key)
+    })
+
+    timer = setTimeout(
+      () => finish(null, "timed out waiting for userKey (" + PERCHANCE_TIMEOUT_MS + "ms)"),
+      PERCHANCE_TIMEOUT_MS
+    )
+
+    wc.on("did-fail-load", (_e, code, desc) => {
+      // -3 is ERR_ABORTED, which fires on ordinary redirects — ignore it.
+      if (code === -3) return
+      if (!settled) console.error("[perchance] load failed:", code, desc)
+    })
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+    // The generator is served from a per-generator subdomain frame
+    // (cd2824...perchance.org/ai-text-to-image-generator), NOT the top-level
+    // perchance.org page. Re-resolved on every use because a reload replaces
+    // the frame object.
+    const findGeneratorFrame = () => {
+      let frames = []
+      try {
+        frames = wc.mainFrame.framesInSubtree
+      } catch (_) {
+        return null
+      }
+      for (const f of frames) {
+        if (f === wc.mainFrame) continue
+        const u = f.url || ""
+        if (u.includes("perchance.org") && u.includes("ai-text-to-image")) return f
+      }
+      return null
+    }
+
+    const flow = async () => {
+      try {
+        await wc.loadURL(PERCHANCE_URL)
+      } catch (_) {}
+      if (settled) return
+
+      let frame = null
+      for (let i = 0; i < 40 && !settled; i++) {
+        frame = findGeneratorFrame()
+        if (frame) break
+        await sleep(250)
+      }
+      if (settled) return
+      if (!frame) return finish(null, "generator frame never appeared")
+      console.log("[perchance] generator frame:", (frame.url || "").slice(0, 90))
+
+      // Wipe any stored key, then reload so Perchance has to issue a new one.
+      try {
+        await frame.executeJavaScript('localStorage.clear(); "ok"', true)
+      } catch (_) {}
+      if (settled) return
+      try {
+        await frame.executeJavaScript('location.reload(); "ok"', true)
+      } catch (_) {}
+      await sleep(4000)
+      if (settled) return
+
+      // A Turnstile wall may still be up, so keep nudging the generator until
+      // the key arrives or the outer timeout fires.
+      const attempt = async () => {
+        if (settled) return
+        const f = findGeneratorFrame()
+        if (!f) return
+        try {
+          const out = await f.executeJavaScript(PERCHANCE_TRIGGER, true)
+          console.log("[perchance] trigger:", out)
+        } catch (exc) {
+          console.log("[perchance] trigger failed:", String(exc.message || exc).slice(0, 120))
+        }
+      }
+
+      await attempt()
+      triggerTimer = setInterval(attempt, 6000)
+    }
+
+    flow().catch((exc) => finish(null, String(exc.message || exc)))
+  })
+
+  perchanceInFlight = run
+  run.finally(() => {
+    if (perchanceInFlight === run) perchanceInFlight = null
+  })
+  return run
+}
+
+function startSearchBridge() {
+  const server = http.createServer((req, res) => {
+    const send = (code, body) => {
+      const json = JSON.stringify(body)
+      res.writeHead(code, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(json),
+      })
+      res.end(json)
+    }
+
+    if (req.headers["x-sable-token"] !== SEARCH_TOKEN) return send(403, { error: "forbidden" })
+
+    if (req.method === "GET" && req.url === "/health") {
+      return send(200, { ok: true, pid: process.pid })
+    }
+
+    if (req.method === "POST" && req.url === "/perchance-key") {
+      // Body is unused; drain it so the socket closes cleanly.
+      req.on("data", () => {})
+      req.on("end", async () => {
+        try {
+          const out = await capturePerchanceKey()
+          if (out.key) return send(200, { userKey: out.key })
+          return send(504, { error: out.error || "no userKey captured" })
+        } catch (exc) {
+          send(500, { error: String(exc.message || exc) })
+        }
+      })
+      return
+    }
+
+    if (req.method === "POST" && (req.url === "/search" || req.url === "/images")) {
+      const isImages = req.url === "/images"
+      let raw = ""
+      req.on("data", (c) => {
+        raw += c
+        if (raw.length > 64_000) req.destroy()
+      })
+      req.on("end", async () => {
+        let body = {}
+        try { body = JSON.parse(raw || "{}") } catch (_) { return send(400, { error: "bad json" }) }
+        const query = String(body.query || "").trim()
+        if (!query) return send(400, { error: "query required" })
+        try {
+          const mod = require("./search-engines")
+          const out = isImages
+            ? await mod.imageSearch(query, { count: body.count, engines: body.engines })
+            : await mod.multiSearch(query, {
+                count: body.count,
+                engines: body.engines,
+                timeFilter: body.time_filter,
+              })
+          send(200, out)
+        } catch (exc) {
+          send(500, { error: String(exc.message || exc), results: [], engines: [] })
+        }
+      })
+      return
+    }
+
+    send(404, { error: "not found" })
+  })
+
+  server.on("error", (exc) => {
+    console.error("[search-bridge] listen failed:", exc.message)
+    removeSearchMarker()
+  })
+
+  server.listen(SEARCH_PORT, "127.0.0.1", () => {
+    writeSearchMarker()
+    console.log(`[search-bridge] listening on 127.0.0.1:${SEARCH_PORT}`)
+  })
+
+  return server
+}
+
+let searchServer = null
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   buildMenu()
   createWindow()
+  searchServer = startSearchBridge()
   app.on("activate", () => { if (!win) createWindow() })
+})
+
+app.on("will-quit", () => {
+  removeSearchMarker()
+  if (searchServer) {
+    try { searchServer.close() } catch (_) {}
+    searchServer = null
+  }
 })
 
 app.on("window-all-closed", () => app.quit())

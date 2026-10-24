@@ -149,10 +149,23 @@ async def library_asset_delete(request: Request) -> dict[str, Any]:
     if Path(name).suffix.lower() not in _IMAGE_EXTS:
         return {"error": "Not an image file"}
 
-    target = (ASSETS_DIR / name).resolve()
-    if target.parent != ASSETS_DIR.resolve():
+    # The gallery lists images from BOTH ASSETS_DIR (generated) and UPLOAD_DIR
+    # (uploads). This route used to search only ASSETS_DIR, so deleting any
+    # uploaded image answered "Not found" even though it was on screen.
+    candidates = []
+    for base in (ASSETS_DIR, UPLOAD_DIR):
+        target = (base / name).resolve()
+        # Path.name stripped any directory part above, so a parent mismatch
+        # here can only mean a symlink escape -- refuse it.
+        if target.parent != base.resolve():
+            continue
+        candidates.append(target)
+
+    if not candidates:
         return {"error": "Access denied"}
-    if not target.exists():
+
+    target = next((c for c in candidates if c.exists()), None)
+    if target is None:
         return {"error": "Not found"}
 
     try:

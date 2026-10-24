@@ -37,6 +37,7 @@ from .routes.upload import router as upload_router
 from .routes.deepseek import router as deepseek_router
 from .routes.chat import router as chat_router
 from .routes.misc import router as misc_router
+from .routes.image_stream import router as image_stream_router
 from .routes.agents import router as agents_router
 from .routes.library import router as library_router
 from .routes.study import router as study_router
@@ -443,6 +444,7 @@ app.include_router(scraper_router)
 app.include_router(upload_router)
 app.include_router(deepseek_router)
 app.include_router(chat_router)
+app.include_router(image_stream_router)
 app.include_router(misc_router)
 app.include_router(agents_router)
 app.include_router(library_router)

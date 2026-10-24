@@ -17,6 +17,11 @@
           "type": "string",
           "enum": ["day", "week", "month"],
           "description": "Restrict results to recent content"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["web", "image"],
+          "description": "What to search. 'web' (default) returns pages with titles/URLs/snippets. 'image' returns image URLs for a topic — each result carries the direct image URL, a thumbnail, and the page it came from."
         }
       },
       "required": ["query"]

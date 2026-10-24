@@ -38,6 +38,7 @@ from __future__ import annotations
 import ast
 import base64
 import json
+import logging
 import mimetypes
 import re
 import threading
@@ -45,6 +46,8 @@ import time
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_TYPES = frozenset({
     "image", "card", "table", "callout", "chart", "flow", "keyvalue",
@@ -639,11 +642,40 @@ _IMG_CACHE: dict[tuple[str, int], tuple[float, list[dict[str, str]]]] = {}
 _IMG_CACHE_LOCK = threading.Lock()
 
 
+def _image_rows_for(query: str, want: int) -> list[dict]:
+    """Pick the image index to use, based on whether the desktop shell is up.
+
+    ``sable`` is only usable from the Electron app - it drives real Chromium
+    tabs through a localhost bridge, and the marker file that proves the
+    bridge is listening (``~/.cache/sable/search-bridge.json``) exists only
+    while that shell runs. Its presence IS the "am I in the desktop app?"
+    signal, so no extra configuration or user setting is needed.
+
+    Desktop app  -> sable (fused Google/Bing/Brave/DDG/Yandex, ~3s warm)
+    Plain web UI -> SearXNG (the only index reachable from a bare server)
+
+    A sable miss still falls through to SearXNG rather than rendering a
+    placeholder: a gated engine should degrade, not blank the card.
+    """
+    from engine.search import searxng_image_results
+
+    try:
+        from engine.search.sable_provider import sable_available, sable_image_search
+        if sable_available():
+            rows = sable_image_search(query, count=want)
+            if rows:
+                return rows
+            logger.info("sable image search empty for %r, falling back to SearXNG", query)
+    except Exception as exc:  # bridge vanished mid-flight, or provider error
+        logger.debug("sable image search unavailable for %r: %s", query, exc)
+
+    return searxng_image_results(query, count=want)
+
+
 def _fetch_image_candidates(query: str, want: int) -> list[dict[str, str]]:
     """Run one image search and normalise the rows. Never raises."""
     try:
-        from engine.search import searxng_image_results
-        rows = searxng_image_results(query, count=want)
+        rows = _image_rows_for(query, want)
     except Exception:
         return []
     out: list[dict[str, str]] = []

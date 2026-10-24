@@ -1047,6 +1047,7 @@
       testQuery: () => document.getElementById("searchTestQuery"),
       testCount: () => document.getElementById("searchTestCount"),
       testProvider: () => document.getElementById("searchTestProvider"),
+      testType: () => document.getElementById("searchTestType"),
       testResults: () => document.getElementById("searchTestResults"),
       compareBtn: () => document.getElementById("searchCompareBtn"),
       compareControls: () => document.getElementById("searchCompareControls"),
@@ -1074,6 +1075,7 @@
         tavily: "Get your key at tavily.com",
         serper: "Get your key at serper.dev",
         disabled: "All web search disabled.",
+        sable: "Desktop shell only — opens Google, DuckDuckGo, Bing, Brave and Yandex in parallel tabs and fuses the results.",
       };
       const hintEl = _searchEls.hint();
       if (hintEl) hintEl.textContent = hints[provider] || "";
@@ -1304,6 +1306,55 @@
         .join("");
     }
 
+    // Per-engine breakdown for fan-out providers. This is the part that answers
+    // "which engine failed, and why" — a gated engine and a slow one look
+    // identical in a result count and completely different here.
+    function _renderEngineReport(engines) {
+      if (!engines || !engines.length) return "";
+      const rows = engines
+        .map((e) => {
+          const ok = !!e.ok;
+          const mark = ok ? "✅" : e.gated ? "🚫" : "⚠️";
+          const color = ok ? "var(--text)" : "var(--muted, #888)";
+          const detail = ok ? `${e.count} result${e.count === 1 ? "" : "s"}` : (e.error || "no results");
+          const ms = e.ms != null ? `${e.ms}ms` : "";
+          return `<tr style="color:${color};">
+            <td style="padding:3px 10px 3px 0;white-space:nowrap;">${mark} ${_escHtml(e.id || "?")}</td>
+            <td style="padding:3px 10px 3px 0;white-space:nowrap;text-align:right;">${ok ? e.count : "—"}</td>
+            <td style="padding:3px 10px 3px 0;white-space:nowrap;text-align:right;">${ms}</td>
+            <td style="padding:3px 0;font-size:10.5px;">${_escHtml(detail)}</td>
+          </tr>`;
+        })
+        .join("");
+      const okCount = engines.filter((e) => e.ok).length;
+      return `<div style="margin-bottom:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--panel) 70%, transparent);">
+        <div class="muted" style="font-size:11px;margin-bottom:5px;"><b>Engines</b> — ${okCount}/${engines.length} answered</div>
+        <table style="border-collapse:collapse;font-size:11px;width:100%;">${rows}</table>
+      </div>`;
+    }
+
+    // Image results are judged by whether the bytes load, so the test grid shows
+    // the actual picture. onerror hides the tile rather than leaving a broken
+    // icon — a provider returning dead URLs is a real failure worth seeing.
+    function _renderImageResultList(results) {
+      if (!results || results.length === 0) return '<div class="muted" style="font-size:11px;padding:6px 0;">No images.</div>';
+      const tiles = results
+        .map((r, i) => {
+          const src = r.thumbnail || r.image || "";
+          if (!src) return "";
+          return `
+          <a href="${_escHtml(r.image || src)}" target="_blank" rel="noopener" title="${_escHtml(r.image || src)}"
+             style="display:block;position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#000;">
+            <img src="${_escHtml(src)}" alt="${_escHtml(r.title || "")}" loading="lazy"
+                 style="display:block;width:100%;height:110px;object-fit:cover;"
+                 onerror="this.style.display='none';this.parentElement.style.display='none';">
+            <span style="position:absolute;left:4px;top:4px;font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.65);color:#fff;">${i + 1}</span>
+          </a>`;
+        })
+        .join("");
+      return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px;">${tiles}</div>`;
+    }
+
     async function _loadSearchProviders() {
       try {
         const res = await fetch("/api/settings/search/providers");
@@ -1339,11 +1390,33 @@
       }
     }
 
+    // `sable` is a desktop-only provider: the backend adds it to the provider
+    // list (and reports sable_available) only while the Electron search bridge
+    // is running. Keep the dropdown honest — add the option when it appears,
+    // remove it when the shell goes away, so a web session never shows it.
+    function _syncSableOption(available) {
+      const sel = _searchEls.provider();
+      if (!sel) return;
+      const existing = sel.querySelector('option[value=sable]');
+      if (available && !existing) {
+        const o = document.createElement('option');
+        o.value = 'sable';
+        o.textContent = 'Sable Search (multi-engine, desktop)';
+        const anchor = sel.querySelector('option[value=searxng]');
+        if (anchor && anchor.nextSibling) sel.insertBefore(o, anchor.nextSibling);
+        else sel.appendChild(o);
+      } else if (!available && existing) {
+        if (sel.value === 'sable') sel.value = 'searxng';
+        existing.remove();
+      }
+    }
+
     async function loadSearchSettings() {
       try {
         const res = await fetch("/api/settings/search");
         if (!res.ok) return;
         const data = await res.json();
+        _syncSableOption(!!data.sable_available);
         const p = _searchEls.provider();
         if (p && data.search_provider) p.value = data.search_provider;
         const u = _searchEls.searxngUrl();
@@ -1414,6 +1487,7 @@
             query: _searchEls.testQuery()?.value?.trim() || "",
             count: parseInt(_searchEls.testCount()?.value || "5", 10),
             provider: _searchEls.testProvider()?.value || "",
+            type: _searchEls.testType()?.value || "web",
           }),
         });
         let data;
@@ -1423,9 +1497,22 @@
           return;
         }
         if (data.success) {
-          if (statusEl) statusEl.textContent = `✅ ${data.provider_used}: ${data.result_count} results in ${data.elapsed_s}s`;
+          const isImage = (data.type || "web") === "image";
+          if (statusEl) {
+            if (data.result_count) {
+              statusEl.textContent = `✅ ${data.provider_used}: ${data.result_count} ${isImage ? "images" : "results"} in ${data.elapsed_s}s`;
+            } else {
+              // "no results" alone hides the actual cause (missing key, no cx),
+              // which is the one thing this panel exists to diagnose.
+              const why = data.error ? ` — ${data.error}` : "";
+              statusEl.textContent = `⚠️ ${data.provider_used}: no ${isImage ? "images" : "results"} returned (${data.elapsed_s}s)${why}`;
+            }
+          }
           if (resultsEl) {
-            resultsEl.innerHTML = `<div class="muted" style="font-size:11px;margin-bottom:6px;">Results for <b>${_escHtml(data.query)}</b> via ${_escHtml(data.provider_used)}:</div>` + _renderSearchResultList(data.results);
+            const body = isImage ? _renderImageResultList(data.results) : _renderSearchResultList(data.results);
+            const header =
+              `<div class="muted" style="font-size:11px;margin-bottom:6px;">${isImage ? "Images" : "Results"} for <b>${_escHtml(data.query)}</b> via ${_escHtml(data.provider_used)}:</div>`;
+            resultsEl.innerHTML = _renderEngineReport(data.engines) + header + body;
             resultsEl.style.display = "block";
           }
         } else {

@@ -511,7 +511,17 @@
   // host-action contract: openUrl, copy, issueNewTurn, openEntityDetail.
   if (typeof window !== "undefined" && !window.GenUI) {
     window.GenUI = {
-      openUrl: function (url) { if (url) window.open(String(url), "_blank", "noopener"); },
+      openUrl: function (url) {
+        if (!url) return;
+        var u = String(url);
+        // In the Electron shell, route through the preview pane's native
+        // browser so the link lands in-app instead of the OS browser.
+        if (window.SablePreview && typeof window.SablePreview.open === "function") {
+          window.SablePreview.open({ url: u, title: u.replace(/^https?:\/\//i, "").split("/")[0] });
+        } else {
+          window.open(u, "_blank", "noopener");
+        }
+      },
       copy: function (text) {
         text = String(text == null ? "" : text);
         if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);

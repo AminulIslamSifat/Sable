@@ -79,6 +79,9 @@ def handle_get_file(
         dest = UPLOAD_DIR / f"{uuid.uuid4().hex}{ext or '.img'}"
         shutil.copy2(path, dest)
         result["url"] = f"/system/uploads/{dest.name}"
+        # Keep the real on-disk copy so the connector can inline it as an
+        # actual image block — the model cannot fetch /system/uploads/.
+        result["local_copy"] = str(dest)
         yield _output_event(tag_id, f"image {path} ({size} bytes) copied to {result['url']}\n")
     elif kind == "text":
         try:

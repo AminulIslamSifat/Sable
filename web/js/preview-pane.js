@@ -199,6 +199,10 @@
       '</div>' +
       '<div class="pp-face" data-face-panel="web">' +
         '<iframe class="pp-frame" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-same-origin" referrerpolicy="no-referrer"></iframe>' +
+        // Electron only: a DOM placeholder the main process parks a real
+        // WebContentsView over. It sits exactly where the iframe would be,
+        // so every toolbar button, tab and toggle above keeps working.
+        '<div class="pp-native-host" hidden></div>' +
         '<div class="pp-blocked" hidden>' +
           '<p>This site refuses to be embedded.</p>' +
           '<p class="pp-dim">Google, GitHub and most banks send X-Frame-Options — the browser blocks them, not us.</p>' +
@@ -244,6 +248,8 @@
   function wire() {
     iframe = $(".pp-frame");
     codeEl = $(".pp-code code");
+    nativeHost = $(".pp-native-host");
+    bindNative();
 
     root.addEventListener("click", onClick);
     bindAddress();
@@ -525,7 +531,7 @@
     renderTabs();
     closePopovers();
 
-    if (isChanges) { loadChanges(); return; }
+    if (isChanges) { hideNative(); loadChanges(); return; }
     if (page) activatePage(page);
   }
 
@@ -548,6 +554,105 @@
     applyZoom();
   }
 
+  /* ---------------------------------------------------- native browser */
+  // In the Electron shell a real WebContentsView is layered over the DOM
+  // where the iframe would be. That is the only way to show sites that send
+  // X-Frame-Options / frame-ancestors — and the point of this pane.
+  // Everything else (toolbar, tabs, Preview/Code toggle, open-in, zoom) is
+  // unchanged and stays above the view.
+
+  var nativeHost = null;
+  var nativeRaf = null;
+  var nativeOpen = false;
+
+  function nativeAvailable() {
+    return !!(window.sableDesktop && window.sableDesktop.hasNativeBrowser);
+  }
+
+  function measureNative() {
+    if (!nativeHost) return null;
+    var r = nativeHost.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: r.left, y: r.top, width: r.width, height: r.height };
+  }
+
+  function scheduleNativeBounds() {
+    if (!nativeAvailable() || !nativeHost || nativeHost.hidden) return;
+    if (nativeRaf) cancelAnimationFrame(nativeRaf);
+    nativeRaf = requestAnimationFrame(function () {
+      nativeRaf = null;
+      var r = measureNative();
+      if (!window.sableDesktop) return;
+      if (!r) { window.sableDesktop.closeBrowser(); return; }
+      window.sableDesktop.setBrowserBounds(r);
+    });
+  }
+
+  function showNative() {
+    if (!nativeAvailable() || !nativeHost) return;
+    nativeHost.hidden = false;
+    if (iframe) iframe.style.visibility = "hidden";
+    nativeOpen = true;
+    scheduleNativeBounds();
+  }
+
+  function hideNative() {
+    if (!nativeAvailable()) return;
+    if (iframe) iframe.style.visibility = "";
+    if (nativeHost) nativeHost.hidden = true;
+    nativeOpen = false;
+    if (nativeRaf) { cancelAnimationFrame(nativeRaf); nativeRaf = null; }
+    if (window.sableDesktop && window.sableDesktop.closeBrowser) window.sableDesktop.closeBrowser();
+  }
+
+  function openNative(url) {
+    if (!nativeAvailable() || !nativeHost) return;
+    showNative();
+    // openBrowser is an async ipcRenderer.invoke — the view does not exist in
+    // main until it resolves, so bounds sent earlier are dropped. Await it,
+    // then measure, with a couple of retries for the laying-out frame.
+    var p = window.sableDesktop.openBrowser(url);
+    var done = function () {
+      requestAnimationFrame(function () {
+        scheduleNativeBounds();
+        setTimeout(scheduleNativeBounds, 80);
+        setTimeout(scheduleNativeBounds, 240);
+      });
+    };
+    if (p && typeof p.then === "function") p.then(done, done);
+    else done();
+  }
+
+  function bindNative() {
+    if (!nativeAvailable()) return;
+
+    if (nativeHost && typeof ResizeObserver === "function") {
+      try {
+        new ResizeObserver(function () { scheduleNativeBounds(); }).observe(nativeHost);
+      } catch (e) {}
+    }
+
+    window.addEventListener("resize", scheduleNativeBounds);
+    // The pane scrolls with the chat column; a scrolled ancestor moves the
+    // host without resizing it, so bounds must follow that too.
+    document.addEventListener("scroll", scheduleNativeBounds, true);
+
+    if (window.sableDesktop.onBrowserState) {
+      window.sableDesktop.onBrowserState(function (patch) {
+        if (!patch) return;
+        var page = activePage();
+        if (!page) return;
+        if (typeof patch.url === "string" && patch.url) {
+          page.url = patch.url;
+          page.title = patch.title || patch.url.replace(/^https?:\/\//i, "").split("/")[0];
+          var addr = $("[data-address]");
+          if (addr && document.activeElement !== addr) addr.value = patch.url;
+          renderTabs();
+        }
+      });
+    }
+  }
+
   var loadGuard = null;
 
   function showBlocked(on) {
@@ -563,8 +668,13 @@
     if (loadGuard) { clearTimeout(loadGuard); loadGuard = null; }
     showBlocked(false);
 
-    // Real URL → load it directly.
+    // Real URL → real Chromium view in the Electron shell, iframe on the web.
     if (page.url) {
+      if (nativeAvailable()) {
+        openNative(page.url);
+        return;
+      }
+      hideNative();
       iframe.src = page.url;
 
       // A frame that stays cross-origin is unreadable, so we cannot ask it why
@@ -580,6 +690,9 @@
       }, 2500);
       return;
     }
+
+    // Not a URL — a local file or inline HTML stays in the iframe.
+    hideNative();
 
     if (!page.html) {
       iframe.srcdoc = '<body style="background:#0d0c0a;color:#85858c;font:13px system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">Type a URL or a file path above</body>';
@@ -606,6 +719,9 @@
     for (i = 0; i < panels.length; i++) {
       panels[i].hidden = panels[i].getAttribute("data-face-panel") !== face;
     }
+    // Code face hides the page; the native view must not float over it.
+    if (face !== "web") hideNative();
+    else scheduleNativeBounds();
   }
 
   function reload() {
@@ -991,6 +1107,7 @@
     document.body.classList.add("pp-open");
     state.open = true;
     icons();
+    scheduleNativeBounds();
   }
 
   function open(opts) {
@@ -1041,6 +1158,7 @@
 
   function close() {
     if (!root) return;
+    hideNative();
     state.open = false;
     root.classList.remove("open");
     root.setAttribute("aria-hidden", "true");

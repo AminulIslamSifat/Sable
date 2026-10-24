@@ -373,8 +373,8 @@ def generate(opts: DreamForgeOptions) -> dict[str, Any]:
         status = result.get("status", "")
         if status in ("invalid_key", "failed_verification"):
             print(f"[dreamforge] Key invalid on attempt {i+1}, refreshing via browser...", file=sys.stderr)
-            from perchance_key import refresh_key_via_browser
-            new_key = refresh_key_via_browser(tag="dreamforge")
+            from perchance_key import refresh_key_smart
+            new_key = refresh_key_smart(tag="dreamforge")
             if new_key:
                 _save_key(new_key)
             if new_key:

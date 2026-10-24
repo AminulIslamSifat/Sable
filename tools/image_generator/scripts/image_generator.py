@@ -287,9 +287,14 @@ def generate_image(
     for i in range(count):
         # Use provided seed for first image, random for rest
         img_seed = seed if (i == 0 and seed != -1) else -1
+        print(f"[perchance] generating image {i+1}/{count}...", file=sys.stderr, flush=True)
         result = _generate_single(full_prompt, neg, resolution, img_seed, user_key)
         if result.get("ok"):
             images.append(result)
+            # Machine-readable progress line. The streaming endpoint reads this
+            # off stderr and forwards it to the browser so each image appears as
+            # soon as it lands instead of after the whole batch.
+            print("PROGRESS " + json.dumps({"index": i, "image": result}), file=sys.stderr, flush=True)
         else:
             errors.append(f"Image {i+1}: {result.get('error', 'unknown')}")
 

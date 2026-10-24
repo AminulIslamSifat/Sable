@@ -109,6 +109,87 @@ def _refresh_key_via_http(tag: str = "perchance") -> str | None:
 
 # ─── Browser-based key refresh ──────────────────────────────────────────────
 
+def _bridge_marker() -> dict | None:
+    """The desktop shell's bridge descriptor, or None when it is not running.
+
+    Presence of this file IS the "am I inside the Electron app?" signal — the
+    shell writes it on listen and deletes it on quit, exactly like the search
+    bridge. A stale marker from a crashed shell is rejected by the pid check.
+    """
+    marker = Path.home() / ".cache" / "sable" / "search-bridge.json"
+    if not marker.is_file():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("url") or not data.get("token"):
+        return None
+    pid = data.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return None
+    return data
+
+
+def refresh_key_via_bridge(tag: str = "perchance") -> str | None:
+    """Ask the desktop shell to capture a userKey in an in-app window.
+
+    The shell opens a child BrowserWindow on the real Perchance page and reads
+    the key out of its own network layer — no external browser, no CDP port,
+    no ``--no-sandbox`` Chrome spawned from the backend. Returns None when the
+    shell is not running so the caller can fall through to the old path.
+    """
+    marker = _bridge_marker()
+    if not marker:
+        print(f"[{tag}][bridge] desktop shell not running, skipping in-app capture", file=sys.stderr)
+        return None
+
+    import urllib.request
+
+    print(f"[{tag}][bridge] asking desktop shell for a userKey...", file=sys.stderr)
+    body = b"{}"
+    req = urllib.request.Request(
+        marker["url"].rstrip("/") + "/perchance-key",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            "X-Sable-Token": marker["token"],
+        },
+        method="POST",
+    )
+
+    try:
+        # The user may have to solve a Turnstile challenge by hand, so this is
+        # a slow call by nature. The shell enforces its own 120s cap.
+        with urllib.request.urlopen(req, timeout=150) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        print(f"[{tag}][bridge] request failed: {exc}", file=sys.stderr)
+        return None
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        print(f"[{tag}][bridge] non-JSON reply: {raw[:200]}", file=sys.stderr)
+        return None
+
+    if data.get("error"):
+        print(f"[{tag}][bridge] shell reported: {data['error']}", file=sys.stderr)
+        return None
+
+    key = str(data.get("userKey") or "")
+    if len(key) == 64:
+        print(f"[{tag}][bridge] key captured in-app: {key[:16]}...", file=sys.stderr)
+        return key
+
+    print(f"[{tag}][bridge] reply had no usable key", file=sys.stderr)
+    return None
+
+
 def refresh_key_via_browser(tag: str = "perchance") -> str | None:
     """Launch a stealth Chrome instance, let Perchance solve Turnstile, and
     capture the resulting ``userKey`` from network traffic.
@@ -354,6 +435,21 @@ async def _async_capture_key(cdp_port: int, tag: str = "perchance") -> str | Non
 
 # ─── Public API ──────────────────────────────────────────────────────────────
 
+def refresh_key_smart(tag: str = "perchance") -> str | None:
+    """Refresh a userKey by whichever route this environment allows.
+
+    Inside the desktop shell this captures the key in an in-app hidden window;
+    anywhere else it falls back to the external Chrome + CDP path. Callers that
+    need a mid-generation refresh (advanced-sdxl, dreamforge) must use this
+    rather than calling ``refresh_key_via_browser`` directly, or they will pop
+    an unrelated external browser while the user is in the app.
+    """
+    key = refresh_key_via_bridge(tag)
+    if key and len(key) == 64:
+        return key
+    return refresh_key_via_browser(tag)
+
+
 def get_valid_key(
     cache_file: Path,
     *,
@@ -391,7 +487,15 @@ def get_valid_key(
         save_key(new_key, cache_file)
         return new_key
 
-    print(f"[{tag}][key] httpx fast-path failed, falling back to browser...", file=sys.stderr)
+    # In the desktop app, capture the key in an in-app window instead of
+    # spawning an unrelated external Chrome with its own CDP port.
+    print(f"[{tag}][key] httpx fast-path failed, trying in-app capture...", file=sys.stderr)
+    new_key = refresh_key_via_bridge(tag)
+    if new_key and len(new_key) == 64:
+        save_key(new_key, cache_file)
+        return new_key
+
+    print(f"[{tag}][key] in-app capture unavailable, falling back to external browser...", file=sys.stderr)
     new_key = refresh_key_via_browser(tag)
     if new_key and len(new_key) == 64:
         save_key(new_key, cache_file)

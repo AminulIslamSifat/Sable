@@ -3904,6 +3904,24 @@ async def tts_voices(provider: str = "kokoro") -> dict[str, Any]:
 _ALLOWED_SEARCH_PROVIDERS = {
     "searxng", "brave", "duckduckgo", "google_pse", "tavily", "serper", "disabled",
 }
+# `sable` is the desktop-shell multi-engine provider. It only exists while the
+# Electron search bridge is running, so it is added to the allow-list lazily.
+_SABLE_PROVIDER = "sable"
+
+
+def _sable_available() -> bool:
+    try:
+        from engine.search.sable_provider import sable_available
+        return sable_available()
+    except Exception:  # noqa: BLE001 - absence of the module means no provider
+        return False
+
+
+def _allowed_search_providers() -> set[str]:
+    allowed = set(_ALLOWED_SEARCH_PROVIDERS)
+    if _sable_available():
+        allowed.add(_SABLE_PROVIDER)
+    return allowed
 _ALLOWED_SAFESEARCH = {"strict", "moderate", "off"}
 _SEARCH_KEY_FIELDS = ("brave_api_key", "google_pse_key", "google_pse_cx", "tavily_api_key", "serper_api_key")
 
@@ -3938,8 +3956,14 @@ async def get_search_settings() -> dict[str, Any]:
     settings = _read_system_settings()
 
     provider = cfg.get("active_provider", settings.get("search_provider", "searxng"))
+    # A saved `sable` selection means nothing without the desktop shell; report
+    # searxng so the UI never shows a provider that cannot run.
+    sable_ok = _sable_available()
+    if provider == _SABLE_PROVIDER and not sable_ok:
+        provider = "searxng"
     return {
         "search_provider": provider,
+        "sable_available": sable_ok,
         "search_url": cfg.get("search_url", settings.get("search_url", "")),
         "search_result_count": cfg.get("result_count", int(settings.get("search_result_count", 5))),
         "search_safesearch": settings.get("search_safesearch", "strict"),
@@ -3957,7 +3981,7 @@ async def get_search_settings() -> dict[str, Any]:
 async def update_search_settings(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate and persist search configuration. Empty API keys are ignored."""
     provider = payload.get("search_provider")
-    if provider is not None and provider not in _ALLOWED_SEARCH_PROVIDERS:
+    if provider is not None and provider not in _allowed_search_providers():
         raise HTTPException(
             status_code=400,
             detail=f"Invalid search_provider '{provider}'. Allowed: {sorted(_ALLOWED_SEARCH_PROVIDERS)}",
@@ -4022,8 +4046,15 @@ _ALL_SEARCH_PROVIDERS = ["searxng", "duckduckgo", "brave", "google_pse", "tavily
 
 @router.get("/api/settings/search/providers")
 async def list_search_providers() -> dict[str, Any]:
-    """Return all available search provider names."""
-    return {"providers": _ALL_SEARCH_PROVIDERS}
+    """Return the search providers available in this runtime.
+
+    `sable` is appended only when the desktop shell's search bridge is live, so
+    the web build never offers a provider it cannot honour.
+    """
+    providers = list(_ALL_SEARCH_PROVIDERS)
+    if _sable_available():
+        providers.append(_SABLE_PROVIDER)
+    return {"providers": providers}
 
 
 @router.post("/api/settings/search/test")
@@ -4037,35 +4068,105 @@ async def test_search(request: Request) -> dict[str, Any]:
     query = (body.get("query") or "").strip() or "SearXNG test query"
     count = min(int(body.get("count") or 5), 30)
     provider_override = (body.get("provider") or "").strip()
+    kind = (body.get("type") or "web").strip().lower()
+    if kind not in ("web", "image"):
+        kind = "web"
 
     settings = _get_search_settings()
     provider = provider_override or settings.get("search_provider", "searxng")
 
     start = _time.monotonic()
     loop = asyncio.get_running_loop()
+    engines_report: list = []
     try:
-        if provider_override:
+        if kind == "image":
+            from engine.search.core import image_search_for_provider
+
+            # No provider override means "whatever is configured" — but for
+            # images the configured provider may have no image index, so fall
+            # through the chain rather than reporting a bare empty result.
+            from engine.search.core import (
+                image_search_for_provider_traced,
+                image_search_traced,
+            )
+
+            if provider_override:
+                # Traced even for an explicit provider: sable fans out to five
+                # indexes, and the report is the whole point of testing it.
+                results, engines_report = await loop.run_in_executor(
+                    None, image_search_for_provider_traced, provider_override, query, count
+                )
+            else:
+                # Report the provider that actually answered, not the one that
+                # was configured — the chain may have fallen through.
+                results, provider, engines_report = await loop.run_in_executor(
+                    None, image_search_traced, query, count
+                )
+        elif provider == "sable":
+            # sable is a fan-out: five engines, one fused list. Keep the
+            # per-engine report so the panel can show who failed and why.
+            from engine.search.sable_provider import sable_multi_search_traced
+
+            results, engines_report = await loop.run_in_executor(
+                None, sable_multi_search_traced, query, count
+            )
+        elif provider_override:
             results = await loop.run_in_executor(None, _call_provider, provider, query, count)
         else:
             results = await loop.run_in_executor(
                 None, lambda: searxng_search_results(query, count=count)
             )
         elapsed = round(_time.monotonic() - start, 3)
+
+        if kind == "image":
+            shaped = [
+                {
+                    "title": r.get("title", ""),
+                    "image": r.get("image", ""),
+                    "thumbnail": r.get("thumbnail") or r.get("image", ""),
+                    "url": r.get("url", ""),
+                }
+                for r in results[:count]
+                if r.get("image")
+            ]
+        else:
+            shaped = [
+                {
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("content", r.get("snippet", ""))[:200],
+                }
+                for r in results[:count]
+            ]
+
+        # An explicit provider returning nothing is usually a configuration
+        # problem, and the test button exists to diagnose exactly that.
+        note = None
+        if kind == "image" and provider_override and not shaped:
+            from engine.search.image_providers import image_provider_unavailable_reason
+
+            note = image_provider_unavailable_reason(provider_override) or None
+
         return {
             "success": True,
             "query": query,
+            "type": kind,
             "provider_used": provider,
-            "result_count": len(results),
+            "result_count": len(shaped),
             "elapsed_s": elapsed,
-            "results": [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", r.get("snippet", ""))[:200]} for r in results[:count]],
-            "error": None,
+            "results": shaped,
+            # Per-engine breakdown when the answering provider was a fan-out
+            # (sable). Empty for single-API providers, which have one source.
+            "engines": engines_report,
+            "error": note,
         }
     except Exception as exc:
         elapsed = round(_time.monotonic() - start, 3)
-        logger.error("Search test failed (%s): %s", provider, exc)
+        logger.error("Search test failed (%s, %s): %s", kind, provider, exc)
         return {
             "success": False,
             "query": query,
+            "type": kind,
             "provider_used": provider,
             "result_count": 0,
             "elapsed_s": elapsed,
