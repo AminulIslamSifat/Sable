@@ -169,7 +169,7 @@ def format_gemini_tool_result(name: str, result: str, ok: bool) -> dict:
             "functionResponse": {
                 "name": name,
                 "response": {
-                    "result": result[:8000],  # Cap size
+                    "result": result[:75000],  # Cap size
                     "ok": ok,
                 },
             }
@@ -179,7 +179,7 @@ def format_gemini_tool_result(name: str, result: str, ok: bool) -> dict:
 
 def format_openai_tool_result(name: str, result: str, ok: bool, tool_call_id: str) -> dict:
     """Format a tool execution result as an OpenAI-compatible tool message."""
-    content = result[:8000]
+    content = result[:75000]
     if not ok:
         content = f"ERROR: {content}"
     return {

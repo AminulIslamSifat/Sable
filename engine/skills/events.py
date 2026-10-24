@@ -101,8 +101,8 @@ def cwd_warning_event(
 
 def build_tool_feedback(
     skill_events: list[dict[str, Any]],
-    max_output_per_skill: int = 12000,
-    max_total: int = 32000,
+    max_output_per_skill: int = 75000,
+    max_total: int = 75000,
 ) -> str | None:
     """Build a compact text summary of skill events for model feedback.
 

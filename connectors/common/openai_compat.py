@@ -652,7 +652,30 @@ class OpenAICompatClient:
                         json=payload,
                     ) as response:
                         if response.status_code in (401, 403, 429):
-                            await response.aread()
+                            body = await response.aread()
+                            # Single-key connectors (e.g. OpenCode's anonymous
+                            # free tier) have nothing to rotate to. Rotating a
+                            # one-element pool is a no-op, so the old code fell
+                            # through to "all API keys exhausted or failed" and
+                            # threw the real upstream error (429 quota body)
+                            # away. Surface + log it instead.
+                            if len(self._keys) <= 1:
+                                self.ctx.model = model_id
+                                err_text = body.decode("utf-8", "replace")[:400]
+                                self.logger.warning(
+                                    "%s hard error HTTP %d (no fallback key): %s",
+                                    self.NAME, response.status_code, err_text,
+                                )
+                                yield self.ctx.error(
+                                    f"API error {response.status_code}: {err_text}",
+                                    status_code=response.status_code,
+                                )
+                                return
+                            self.logger.warning(
+                                "%s HTTP %d — rotating key %d/%d",
+                                self.NAME, response.status_code,
+                                self._key_index % len(self._keys) + 1, len(self._keys),
+                            )
                             self._rotate_key()
                             continue
                         if response.status_code != 200:
@@ -918,6 +941,7 @@ class OpenAICompatClient:
                     self._rotate_key()
                     continue
 
+        self.logger.error("%s: all %d API keys exhausted or failed (model=%s)", self.NAME, len(self._keys), self.ctx.model)
         yield self.ctx.error("all API keys exhausted or failed.")
 
     async def chat(

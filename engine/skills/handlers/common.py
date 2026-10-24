@@ -36,8 +36,8 @@ SUDO_PASSWORD = os.environ.get("SABLE_SUDO_PASSWORD", "")
 DEFAULT_TIMEOUT = 15
 MAX_TIMEOUT = 180
 MAX_TEXT_BYTES = 2 * 1024 * 1024
-PREVIEW_BYTES = 64 * 1024
-RESULT_PREVIEW_CHARS = 20_000
+PREVIEW_BYTES = 96 * 1024
+RESULT_PREVIEW_CHARS = 75_000
 
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml",

@@ -17,8 +17,13 @@
  *                         per result). CAPTCHA-gated on some IPs → reported.
  *   duckduckgo  browser   html.duckduckgo.com serves results without the JS app.
  *                         Links are //duckduckgo.com/l/?uddg=<encoded> → unwrapped.
- *   bing        rss       HTML search serves an empty shell to headless
- *                         Chromium; the RSS feed has real results. Over HTTP.
+ *   bing        browser   li.b_algo blocks. Hrefs are /ck/a?…&u=a1<base64>
+ *                         click-trackers → base64-decoded to the real URL.
+ *                         &mkt/&setlang are mandatory: from a BD IP without
+ *                         them Bing resolves the Bengali locale and returns a
+ *                         near-empty SERP (measured 0 → 10 results). Under
+ *                         rapid-request rate limiting Bing also serves wholly
+ *                         unrelated "poisoned" results — see looksPoisoned.
  *   brave       browser   full results in the DOM.
  *   yandex      browser   CAPTCHA (/showcaptcha) on datacenter/VPN IPs.
  *
@@ -102,8 +107,16 @@ const ENGINES = [
   {
     id: "bing",
     weight: 0.8,
-    kind: "rss",
-    rssUrl: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}&format=rss&count=20`,
+    kind: "browser",
+    // &mkt/&setlang are load-bearing, not cosmetic. Without them a BD IP
+    // resolves to the Bengali locale, whose SERP comes back near-empty.
+    url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}&mkt=en-US&setlang=en`,
+    ready: "li.b_algo, #b_results",
+    extractor: "generic",
+    unwrap: "bing",
+    selectors: [
+      { container: "li.b_algo", link: "h2 a", title: "h2", snippet: ".b_caption p, .b_lineclamp2, .b_lineclamp3, .b_algoSlug" },
+    ],
   },
   {
     id: "brave",
@@ -191,6 +204,18 @@ function pageExtract(selectors, unwrapKind) {
       const m = h.match(/[?&]uddg=([^&]+)/)
       if (m) { try { h = decodeURIComponent(m[1]) } catch (e) {} }
     }
+    // Bing wraps every organic href in /ck/a?…&u=a1<urlsafe-base64>. Strip the
+    // a1 marker, pad to a 4-char boundary, and decode.
+    if (unwrapKind === "bing") {
+      const m = h.match(/[?&]u=a1([A-Za-z0-9_-]+)/)
+      if (m) {
+        try {
+          let b = m[1].replace(/-/g, "+").replace(/_/g, "/")
+          b += "=".repeat((4 - (b.length % 4)) % 4)
+          h = atob(b)
+        } catch (e) {}
+      }
+    }
     if (h.startsWith("//")) h = "https:" + h
     return h
   }
@@ -211,6 +236,8 @@ function pageExtract(selectors, unwrapKind) {
       try { s = sel.snippet ? n.querySelector(sel.snippet) : null } catch (e) {}
       if (!title || !url || !/^https?:/i.test(url)) continue
       if (/duckduckgo\.com\/l\//i.test(url)) continue
+      // A click-tracker we failed to decode is not a usable result.
+      if (/bing\.com\/ck\/a/i.test(url)) continue
       if (seen.has(url)) continue
       seen.add(url)
       out.push({ title, url, snippet: clean(s ? s.innerText : "").slice(0, 320) })
@@ -420,6 +447,36 @@ async function resolveGotos(items, session) {
 }
 
 /** One browser engine, one hidden window. Resolves to a bucket, never rejects. */
+const STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "for", "of", "to", "in", "on", "with", "how", "what",
+  "is", "are", "best", "vs", "my", "your", "from", "that", "this", "you", "can", "not",
+])
+
+/**
+ * Detect an anti-bot poisoned SERP: Bing occasionally answers a query with
+ * completely unrelated results (a "hyprland keybind" search returning pet-food
+ * and travel sites). Not a layout quirk — it is deliberate, and fusing those
+ * rows into the answer set poisons the whole response. The test is deliberately
+ * blunt: if NOT ONE result shares a meaningful term with the query, reject the
+ * bucket. A genuine zero-overlap answer is vanishingly rare, and a false
+ * rejection only costs one engine's contribution instead of corrupting all of
+ * them.
+ */
+function looksPoisoned(query, rows) {
+  if (!rows || !rows.length) return false
+  const terms = String(query || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t))
+  if (!terms.length) return false
+
+  for (const r of rows) {
+    const hay = `${r.title || ""} ${r.snippet || ""}`.toLowerCase()
+    if (terms.some((t) => hay.includes(t))) return false
+  }
+  return true
+}
+
 async function runBrowserEngine(engine, query) {
   const started = Date.now()
   const bucket = { id: engine.id, weight: engine.weight, results: [], error: null, gated: false, ms: 0 }
@@ -534,6 +591,11 @@ async function runBrowserEngine(engine, query) {
       rows = rows.filter((r) => r.url && /^https?:/i.test(r.url))
     }
 
+    if (rows.length && looksPoisoned(query, rows)) {
+      bucket.poisoned = true
+      rows = []
+    }
+
     if (rows.length) {
       bucket.results = rows
     } else {
@@ -549,7 +611,9 @@ async function runBrowserEngine(engine, query) {
       if (degenerate) bucket.degenerate = true
 
       bucket.error =
-        (degenerate
+        (bucket.poisoned
+          ? "results unrelated to query (anti-bot poisoned SERP)"
+          : degenerate
           ? "no organic results (degenerate SERP: AI Overview only)"
           : ready
             ? "no results parsed"

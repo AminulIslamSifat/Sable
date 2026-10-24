@@ -477,7 +477,7 @@ class BaseScraperEngine(ABC):
     async def _find_input_field(self) -> Any | None:
         """Find the chat input field using known selectors. Override for provider-specific selectors."""
         # Try provider-specific selector first
-        provider_sel = self.get_selector("input")
+        provider_selector = self.get_selector("input")
         if provider_selector:
             try:
                 await self.page.wait_for_selector(provider_selector, timeout=10_000)
