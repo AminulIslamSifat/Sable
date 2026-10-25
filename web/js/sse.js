@@ -126,12 +126,11 @@
         _attachBotToolbar(msgDiv);
       }
 
-      // --- 2. Render skill_events (embedded or lazy-loaded) ---
+      // --- 2. Wrap skill_events in one collapsed Process card ---
       if (events.length > 0) {
-        _renderSkillEvents(events, pane);
+        _buildProcessCard(message, events, pane);
       } else if (message.has_skill_events && message.id) {
-        // Lazy-load skill_events from the API
-        _lazyLoadSkillEvents(message.id, message.chat_id || activeChatId, pane);
+        _buildProcessCard(message, null, pane);
       }
     }
 
@@ -311,6 +310,21 @@
             delete _htmlHist[_hid];
           }
           lastWasUi = true;
+        } else if (evt.type === "queued_inline") {
+          // A message the user typed while tools were running, delivered WITH
+          // that tool result. It belongs inside this Process card — replay it
+          // inline so history matches what the live stream showed. Resetting
+          // lastTextBubble keeps any following text out of this note.
+          lastTextBubble = null;
+          lastWasUi = false;
+          const note = document.createElement("div");
+          note.className = "inline-user-note";
+          note.innerHTML =
+            '<span class="iun-icon"><i data-lucide="message-square"></i></span>' +
+            '<span class="iun-text"></span>';
+          note.querySelector(".iun-text").textContent = evt.text || "";
+          pane.appendChild(note);
+          _actIcons(note);
         } else if (evt.type === "skill_start") {
           lastTextBubble = null;
           lastWasUi = false;
@@ -486,6 +500,84 @@
       } catch (err) {
         console.error("Failed to lazy-load skill events:", err);
       }
+    }
+
+    // Wrap a completed turn's events in ONE collapsed card. Nothing is built
+    // until the user opens it (tier 1), which keeps 700-message chats cheap:
+    // no DOM, no markdown, no Mermaid/MathJax until a click. Events are passed
+    // in when the history payload carried them, otherwise fetched on expand.
+    function _buildProcessCard(message, events, pane) {
+      pane = pane || activePane;
+      const details = document.createElement("details");
+      details.className = "process";
+      details.open = false;   // explicit: never render a history card expanded
+      if (message && message.id) details.dataset.msgId = String(message.id);
+      const summary = document.createElement("summary");
+      summary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Process';
+      details.appendChild(summary);
+      const body = document.createElement("div");
+      body.className = "process-body";
+      details.appendChild(body);
+      // Wrap in the same `.turn` container the live stream uses. Without it the
+      // card is a direct child of the flex pane, so `width:100%` resolves to the
+      // FULL pane width instead of the chat column, and its children (which carry
+      // `width: var(--chat-width)`) end up narrower than their own parent — the
+      // card looks full-bleed with content scattered inside it. `.turn` also owns
+      // the `.turn .msg.bot / .thinking-wrap / .skill-stack { width:100% }`
+      // overrides that keep the internals aligned.
+      const turn = document.createElement("div");
+      turn.className = "turn";
+      turn.appendChild(details);
+      pane.appendChild(turn);
+      if (!window._historyLoading) activateLucideIcons(details);
+
+      // Split ONCE, up front. Everything from the last non-empty round_text
+      // onward is the final answer, and it must render OUTSIDE the collapsed
+      // card — callers that skip main content (hasRoundText) rely on it.
+      let inside = null;
+      if (Array.isArray(events)) {
+        let cut = events.length;
+        for (let i = events.length - 1; i >= 0; i--) {
+          const e = events[i];
+          if (e && e.type === "round_text" && e.text && e.text.trim()) { cut = i; break; }
+        }
+        inside = events.slice(0, cut);
+        const outside = events.slice(cut);
+        if (outside.length) _renderOutside(outside, details);
+      }
+
+      let built = false;
+      details.addEventListener("toggle", async () => {
+        if (!details.open || built) return;
+        built = true;
+        let evs = inside;
+        if (evs === null) {
+          // Lazy path: events were not in the history payload. The answer is
+          // already on screen from message.content, so nothing is hoisted.
+          try {
+            const cid = (message && (message.chat_id || activeChatId)) || activeChatId;
+            const data = await fetch(`/api/chats/${cid}/messages/${message.id}/events`).then(r => r.json());
+            evs = data.skill_events || [];
+          } catch (err) {
+            console.error("Failed to lazy-load skill events:", err);
+            evs = [];
+          }
+        }
+        if (evs && evs.length) _renderSkillEvents(evs, body);
+      });
+      return details;
+    }
+
+    // Render the final answer segment directly into the pane, after the card,
+    // then unwrap the temporary host so no extra nesting level survives.
+    function _renderOutside(outside, details) {
+      if (!details || !details.parentNode) return;
+      const host = document.createElement("div");
+      details.parentNode.insertBefore(host, details.nextSibling);
+      _renderSkillEvents(outside, host);
+      const parent = host.parentNode;
+      while (host.firstChild) parent.insertBefore(host.firstChild, host);
+      host.remove();
     }
 
     // ── Ask User MCQ Card ──
@@ -1241,6 +1333,23 @@
       let turn = document.createElement("div");
       turn.className = "turn";
       pane.appendChild(turn);
+      // Everything the agent *did* (thinking, tool cards, backend status, mid-round
+      // text) appends into processBody. The final answer appends to `turn` itself,
+      // AFTER processBody. That ordering is what lets finalize() fold all of the
+      // work into one collapsed card and leave only the answer visible.
+      // The card exists from the first token, OPEN, with processBody already
+      // inside it. finalize() only flips it closed — nothing is reparented, so
+      // there is no "content outside then jumps inside" flash at the end.
+      let processCard = document.createElement("details");
+      processCard.className = "process";
+      processCard.open = true;
+      const _procSummary = document.createElement("summary");
+      _procSummary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Process';
+      processCard.appendChild(_procSummary);
+      turn.appendChild(processCard);
+      let processBody = document.createElement("div");
+      processBody.className = "process-body live";
+      processCard.appendChild(processBody);
       // Turns abandoned by a mid-stream user injection. finalize() has to sweep
       // these too — they hold a real, user-visible answer that still needs a
       // toolbar, a speed badge and a settled pending-card state.
@@ -1295,8 +1404,13 @@
           </div>
         </div>
         <div class="bs-steps"></div>`;
+      // Always start collapsed — the header alone is the status line. Clicking
+      // the header is the only way to open it. Code paths that un-collapse it
+      // (see the `status`/`done` branches) only ever ADD the class, never remove
+      // it, so this stays authoritative.
+      bsCard.classList.add("collapsed");
       bsCard.querySelector(".skill-header").onclick = () => bsCard.classList.toggle("collapsed");
-      turn.appendChild(bsCard);
+      processBody.appendChild(bsCard);
       if (typeof activateLucideIcons === "function") activateLucideIcons(bsCard);
 
       let pendingShown = true;
@@ -1418,8 +1532,39 @@
        * Keeping one live text node and using appendData makes each write
        * O(chunk) and never touches the existing characters.
        */
+      /** Wire the follow/break behaviour and the ↓ button on a capped body. */
+      function _attachThinkScroll(body) {
+        if (!body || body._thinkScrollBound) return;
+        body._thinkScrollBound = true;
+        body._thinkFollow = true;
+        const wrap = body.closest(".thinking-wrap");
+        if (wrap) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "think-jump";
+          btn.textContent = "\u2193";
+          btn.title = "Jump to latest";
+          btn.hidden = true;
+          btn.addEventListener("click", () => {
+            body._thinkFollow = true;
+            body.scrollTop = body.scrollHeight;
+            btn.hidden = true;
+          });
+          wrap.appendChild(btn);
+          body._thinkJumpBtn = btn;
+        }
+        // Scrolling up breaks the follow; returning to the bottom resumes it.
+        // Our own scrollTop writes land at gap ~0, so they never break it.
+        body.addEventListener("scroll", () => {
+          const gap = body.scrollHeight - body.scrollTop - body.clientHeight;
+          body._thinkFollow = gap < 40;
+          if (body._thinkJumpBtn) body._thinkJumpBtn.hidden = body._thinkFollow;
+        }, { passive: true });
+      }
+
       function _thinkAppend(text) {
         if (!currentThinkBody || !text) return;
+        _attachThinkScroll(currentThinkBody);
         let tn = currentThinkBody._thinkTextNode;
         if (!tn || tn.parentNode !== currentThinkBody) {
           currentThinkBody.textContent = "";
@@ -1428,12 +1573,10 @@
           currentThinkBody._thinkTextNode = tn;
         }
         tn.appendData(text);
-        // The body is now height-capped (chat.css) and scrolls internally, so
-        // the newest reasoning would otherwise slide out of view. Follow it.
-        // Only when the user hasn't scrolled up inside the box to re-read.
+        // Follow only while the user is at the bottom. Scrolling up flips
+        // _thinkFollow off; the ↓ button brings them back.
         const el = currentThinkBody;
-        const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-        if (el._thinkFollow !== false || gap < 40) el.scrollTop = el.scrollHeight;
+        if (el._thinkFollow !== false) el.scrollTop = el.scrollHeight;
       }
 
       function _flushThinkQueue() {
@@ -1480,15 +1623,10 @@
           </details>`;
         currentThinkBody = currentThinkWrap.querySelector(".thinking-body");
         currentThinkSummary = currentThinkWrap.querySelector("summary");
-        // Place the thinking block ABOVE the answer segment it belongs to.
-        // appendThinking() calls hidePending() → ensureAnswer() BEFORE this,
-        // so answerEl may already be in the DOM; appendChild would then drop
-        // the thinking card BELOW the answer. Insert before it instead.
-        if (answerEl && answerEl.parentNode === turn) {
-          turn.insertBefore(currentThinkWrap, answerEl);
-        } else {
-          turn.appendChild(currentThinkWrap);
-        }
+        // Thinking always lives inside processBody. processBody itself sits
+        // before the answer on `turn`, so ordering is structural now — no
+        // insertBefore dance against answerEl needed.
+        processBody.appendChild(currentThinkWrap);
         activateLucideIcons(currentThinkWrap);
         // Remember it so a mid-round answer delta can reattach instead of fork.
         lastThinkWrap = currentThinkWrap;
@@ -1551,6 +1689,7 @@
         }
         answerEl = document.createElement("div");
         answerEl.className = "msg bot streaming msg-enter";
+        // Answer goes on `turn`, after processBody — never inside the card.
         turn.appendChild(answerEl);
         answerContent = null;
         _openAnswerSegment();
@@ -1784,12 +1923,41 @@
         _ansInFence = false;
       }
 
+      // Collapse the already-mounted Process card once the turn is over.
+      // Nothing is moved — processBody has lived inside processCard since the
+      // first token, so collapsing cannot produce a reflow flash.
+      function _wrapProcess(turnEl, bodyEl) {
+        if (!turnEl || !bodyEl) return;
+        // Resolve the card BEFORE the isConnected guard: if the turn was already
+        // detached by a chat switch, the card still needs to end up closed so a
+        // later reattach (or a saved DOM snapshot) doesn't show it wide open.
+        const details = bodyEl.closest("details.process");
+        if (!details) return;
+        details.open = false;
+        if (!bodyEl.isConnected) return;
+        if (!bodyEl.childElementCount) { details.remove(); return; }
+        // Live thinking blocks are created with the `open` attribute and stay
+        // open after closeCurrentThinking() reopens reused nodes. Collapse them
+        // all, so expanding Process shows a tidy list instead of full transcripts.
+        bodyEl.querySelectorAll("details.thinking").forEach((d) => { d.open = false; });
+        bodyEl.classList.remove("live");
+        details.open = false;
+      }
+
       function ensureCommandGroup() {
+        // A tool is starting, so the answer bubble open right now is MID-ROUND
+        // text, not the final response. Capture it before closeAnswer() nulls
+        // the reference, then move it inside Process — otherwise every
+        // pre-tool text segment stays on `turn` and leaks outside the card.
+        const _sealedMid = answerEl;
         closeAnswer();
+        if (_sealedMid && _sealedMid.isConnected && _sealedMid.parentNode === turn) {
+          processBody.appendChild(_sealedMid);
+        }
         if (!lastCommandGroup || !turn.contains(lastCommandGroup)) {
           lastCommandGroup = document.createElement("div");
           lastCommandGroup.className = "skill-stack";
-          turn.appendChild(lastCommandGroup);
+          processBody.appendChild(lastCommandGroup);
         }
         return lastCommandGroup;
       }
@@ -1834,9 +2002,25 @@
         const _oldStatus = bsCard.querySelector(".bs-status");
         if (_oldStatus) _oldStatus.textContent = "done";
 
+        // Fold the sealed turn's work into its own collapsed card before
+        // rolling over, so the pre-injection tool cards stay with their own
+        // answer instead of piling under the new user bubble.
+        _wrapProcess(turn, processBody);
         turn = document.createElement("div");
         turn.className = "turn";
         pane.appendChild(turn);
+        // processBody is per-turn: reassign alongside `turn` or every later
+        // append lands in the sealed turn, above the user message.
+        processCard = document.createElement("details");
+        processCard.className = "process";
+        processCard.open = true;
+        const _procSummary2 = document.createElement("summary");
+        _procSummary2.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Process';
+        processCard.appendChild(_procSummary2);
+        turn.appendChild(processCard);
+        processBody = document.createElement("div");
+        processBody.className = "process-body live";
+        processCard.appendChild(processBody);
         // Fresh stats for the new turn: reusing _stats kept the pre-injection
         // t0, so the speed badge reported total seconds from the start of the
         // whole stream while bursts only covered post-injection segments.
@@ -1863,9 +2047,28 @@
         });
       }
 
+      // An interjection delivered WITH a tool result. It belongs to the card
+      // that is already streaming, so it renders as a small inline note inside
+      // processBody — no turn roll, no new Process card, no interruption of the
+      // live answer bubble.
+      function appendInlineUser(text) {
+        text = (text || "").trim();
+        if (!text) return;
+        const note = document.createElement("div");
+        note.className = "inline-user-note";
+        note.innerHTML =
+          '<span class="iun-icon"><i data-lucide="message-square"></i></span>' +
+          '<span class="iun-text"></span>';
+        note.querySelector(".iun-text").textContent = text;
+        processBody.appendChild(note);
+        activateLucideIcons(note);
+        pinScrollIfAtBottom();
+      }
+
       scrollBottom();
       return {
         injectUserMessage,
+        appendInlineUser,
         appendThinking(text) {
           hidePending();
           ensureThinkingBlock();
@@ -1898,11 +2101,7 @@
           currentThinkSummary = currentThinkWrap.querySelector("summary");
           // Same ordering fix as ensureThinkingBlock: keep the reasoning card
           // above the answer even if ensureAnswer() already ran this turn.
-          if (answerEl && answerEl.parentNode === turn) {
-            turn.insertBefore(currentThinkWrap, answerEl);
-          } else {
-            turn.appendChild(currentThinkWrap);
-          }
+          processBody.appendChild(currentThinkWrap);
           activateLucideIcons(currentThinkWrap);
           lastThinkWrap = currentThinkWrap;
           lastThinkBody = currentThinkBody;
@@ -1928,8 +2127,8 @@
           activateLucideIcons(card);
           trackSkillEvent(evt);
           // Keep activity card as last child so its exit never causes a layout jump
-          const tac = turn.querySelector(".tool-activity-card");
-          if (tac) turn.appendChild(tac);
+          const tac = processBody.querySelector(".tool-activity-card");
+          if (tac) processBody.appendChild(tac);
           scrollBottom();
         },
         appendSkillOutput(evt) {
@@ -2116,7 +2315,7 @@
             if (right) right.insertBefore(chip, right.firstChild);
             else target.querySelector(".skill-header")?.appendChild(chip);
           } else {
-            turn.appendChild(chip);
+            processBody.appendChild(chip);
           }
           scrollBottom();
         },
@@ -2385,10 +2584,10 @@
           const info = meta[tag] || { icon: "⚙️", label: tag, detail: "" };
           // Reuse existing card in-place to avoid layout shift
           if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
-          let card = turn.querySelector(".tool-activity-card");
+          let card = processBody.querySelector(".tool-activity-card");
           if (!card) {
             card = document.createElement("div");
-            turn.appendChild(card);
+            processBody.appendChild(card);
           }
           card.className = "tool-activity-card";
           const detailHtml = info.progress
@@ -2400,7 +2599,7 @@
             detailHtml +
             `</div><div class="tac-status">${info.progress ? `<div class="tac-pulse-dot"></div>` : `<div class="tac-spinner"></div>`}</div>`;
           // Always keep it as the last element
-          turn.appendChild(card);
+          processBody.appendChild(card);
           activateLucideIcons(card);
           scrollBottom();
         },
@@ -2433,6 +2632,9 @@
           _closeBurst();
           hidePending();
           closeCurrentThinking();
+          // Collapse synchronously — a deferred call can miss its window when
+          // the user switches chats, leaving the card open forever.
+          _wrapProcess(turn, processBody);
           // If auto-switch didn't recover, render the permanent error card now.
           // closeAnswer() will remove the transient switching-status card first.
           const _prl = this._pendingRateLimit;
@@ -2494,6 +2696,9 @@
           const _turnsToSweep = [..._sealedTurns, turn];
           _sealedTurns.forEach((t) => _settleTurn(t));
           _turnsToSweep.forEach((sweepTurn) => sweepTurn.querySelectorAll(".msg.bot").forEach(botEl => {
+            // Mid-round text now lives inside the Process card. It is not the
+            // answer: no Copy/TTS/Regenerate toolbar belongs on it.
+            if (botEl.closest("details.process")) return;
             if (botEl.querySelector(".msg-toolbar")) return;
             window.MsgActions.attach(botEl, "bot", {
               speedTurn: sweepTurn,
@@ -2532,7 +2737,7 @@
               retryBtn.addEventListener("click", () => retryLastCommand(lastRound, bar, retryBtn));
               bar.appendChild(retryBtn);
               if (stacks.length) stacks[stacks.length - 1].after(bar);
-              else turn.appendChild(bar);
+              else processBody.appendChild(bar);
             }
           }
         }
@@ -3036,12 +3241,21 @@
             // Backend delivered a message that was queued while the model was
             // working. Finalize the optimistic bubble(s) it corresponds to.
             if (typeof window._sableFinalizeQueued === "function") {
-              window._sableFinalizeQueued(evt.temp_ids || [], evt.ids || [], evt.text || "");
+              window._sableFinalizeQueued(
+                evt.temp_ids || [], evt.ids || [], evt.text || "", !!evt.inline,
+              );
             }
-            // Seal the in-flight answer above the user bubble. Everything the
-            // model streams from here on lands in a NEW turn beneath it, so the
-            // reply reads top-to-bottom instead of pinning itself to the bottom.
-            try { ui.injectUserMessage(); } catch (_) {}
+            if (evt.inline) {
+              // Rides WITH the tool result: same turn, same Process card. Do NOT
+              // call injectUserMessage() — that seals the card and rolls a new
+              // turn, which would split one logical step across two cards.
+              try { ui.appendInlineUser(evt.text || ""); } catch (_) {}
+            } else {
+              // Delivered as its own turn. Seal the in-flight answer above the
+              // user bubble so everything the model streams from here lands in a
+              // NEW turn beneath it.
+              try { ui.injectUserMessage(); } catch (_) {}
+            }
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
@@ -3557,6 +3771,8 @@ function handleBackendStatusEvent(evt, container) {
         </div>
       </div>
       <div class="bs-steps"></div>`;
+    // Same rule as addBotStreaming: collapsed until the user clicks the header.
+    card.classList.add("collapsed");
     card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
     container.appendChild(card);
     if (typeof activateLucideIcons === "function") activateLucideIcons(card);

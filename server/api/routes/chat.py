@@ -192,19 +192,21 @@ router = APIRouter()
 # RequestValidationError without it.
 _ACTIVE_RESPONSE_IDS: dict[str, str] = {}
 
+# The queue lives in engine.chat_queue so the CONNECTOR (which runs its own
+# agentic tool loop and never returns here mid-tools) can drain it too. See
+# that module's docstring — draining only at the round boundary below meant a
+# queued message was never injected while tools were running.
+from engine import chat_queue as _chat_queue
+
 # chat_ids with a live /api/chat stream in flight. Lets /api/chat/queue decide
 # whether to queue a user message or tell the frontend to send it normally.
-_ACTIVE_CHAT_STREAMS: set[str] = set()
-
-# chat_id -> user messages typed while the model was still responding.
-# Drained at each tool-loop round boundary: merged into the tool-result feedback
-# (or promoted to a fresh user turn when the round produced no tool calls).
-_USER_QUEUES: dict[str, list[dict[str, Any]]] = {}
+_ACTIVE_CHAT_STREAMS: set[str] = _chat_queue.ACTIVE_CHAT_STREAMS
+_USER_QUEUES: dict[str, list[dict[str, Any]]] = _chat_queue.USER_QUEUES
 
 
 def _drain_user_queue(chat_id: str) -> list[dict[str, Any]]:
     """Pop and return every user message queued for this chat (FIFO)."""
-    return _USER_QUEUES.pop(chat_id, [])
+    return _chat_queue.drain(chat_id)
 
 
 @router.post("/api/chat/queue")
@@ -225,9 +227,9 @@ async def queue_user_message(request: Request):
         return {"queued": False}
     if chat_id not in _ACTIVE_CHAT_STREAMS:
         return {"queued": False}
-    _USER_QUEUES.setdefault(chat_id, []).append({"text": message, "temp_id": temp_id})
-    logger.info("[chat-queue] queued message for %s (depth=%d)", chat_id, len(_USER_QUEUES[chat_id]))
-    return {"queued": True, "count": len(_USER_QUEUES[chat_id])}
+    depth = _chat_queue.enqueue(chat_id, message, temp_id)
+    logger.info("[chat-queue] queued message for %s (depth=%d)", chat_id, depth)
+    return {"queued": True, "count": depth}
 
 
 @router.post("/api/chat/stop")
@@ -1793,6 +1795,13 @@ async def chat(request: ChatRequest):
                 logger.warning("[fork-history] Failed to inject fork history: %s", _fh_err)
         round_index = 0
         saved_message_id: int | None = None
+        # Per-round token counters. Assigned mid-round (see the round body), but
+        # the CancelledError/GeneratorExit handler reads them when the user stops
+        # BEFORE the first round finishes — unbound there, the UnboundLocalError
+        # aborted the whole stop path (partial message never persisted, queued
+        # messages never delivered). Default them here.
+        _round_prompt_tokens: int = 0
+        _round_completion_tokens: int = 0
         # Accumulate token usage across ALL tool-call rounds in this turn.
         # Every round re-sends the full context, so the true cost is the SUM
         # of per-round prompt tokens, not the last round's snapshot.
@@ -1824,6 +1833,15 @@ async def chat(request: ChatRequest):
             _at_busy.mark_stream_busy(active_chat_id)
             # Mark this chat as streaming so /api/chat/queue accepts queued sends
             _ACTIVE_CHAT_STREAMS.add(active_chat_id)
+            # Let the connector persist a message it injects mid-tools, so the
+            # interjection survives history replay instead of vanishing.
+            try:
+                _chat_queue.set_persist(
+                    active_chat_id,
+                    lambda _txt: add_message(active_chat_id, "user", _txt, None, final_parent),
+                )
+            except Exception:
+                pass
             _agent_run = None
             _agent_killed = False  # Set True on CancelledError to prevent finally from marking completed
             _done_emitted = False  # Exactly one "done" per stream (see finally block)
@@ -3364,6 +3382,16 @@ async def chat(request: ChatRequest):
                             yield sse(event)
                             break  # Break inner while True — no point retrying same dead accounts
                     else:
+                        # Native function-calling backends (opencode, openai, gemini,
+                        # local) emit skill_start/skill_output/skill_end straight
+                        # from the connector. They never pass through
+                        # _dispatch_events(), so without recording them here the
+                        # tool cards stream to the UI but are never persisted —
+                        # they vanish on reload. This branch is the only place
+                        # those events land for the API-stream path.
+                        _ft_type = event.get("type")
+                        if _ft_type in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request", "queued_inline"):
+                            round_skill_events.append(event)
                         yield sse(event)
                 round_thinking_text = "".join(round_thinking_parts)
                 if round_thinking_text:
@@ -3548,6 +3576,75 @@ async def chat(request: ChatRequest):
                     round_skill_events.clear()
 
                 feedback = build_tool_feedback(round_skill_events)
+
+                # The connector already handed the model these tool results (and
+                # any interjection) inside its own tool loop. Re-feeding a text
+                # copy here would arrive AFTER the user's message, which reads to
+                # the model as "the user pasted the tool output back at me".
+                try:
+                    if _chat_queue.consume_connector_injected(active_chat_id):
+                        logger.info(
+                            "[chat-queue] suppressing duplicate tool feedback for %s "
+                            "(connector already delivered it, round=%d)",
+                            active_chat_id, round_index,
+                        )
+                        feedback = ""
+                except Exception:
+                    pass
+
+                # --- Queued user messages (typed while the model was still working) ---
+                # Injected HERE, immediately after the tool feedback exists and
+                # BEFORE teacher-escalation / critique / truncation / permission
+                # bookkeeping. Those later steps are not individually guarded: any
+                # raise unwinds the round, and the stream `finally` pops the queue
+                # — the user's message vanished with no `queued_injected` emitted.
+                # Doing it first means a queued message rides on the tool result
+                # as designed (or becomes the next turn when there was no tool).
+                _queued_msgs = _drain_user_queue(active_chat_id)
+                _q_hard_stop = stream_error or error_message or _ask_user_pause or _permission_pause or _cwd_pause
+                if _queued_msgs:
+                    logger.info(
+                        "[chat-queue] drained %d msg(s) for %s at round=%d hard_stop=%s feedback_len=%d",
+                        len(_queued_msgs), active_chat_id, round_index, _q_hard_stop, len(feedback or ""),
+                    )
+                    if _q_hard_stop:
+                        # Never silently eat it — put it back for the next boundary.
+                        _USER_QUEUES.setdefault(active_chat_id, []).extend(_queued_msgs)
+                        _queued_msgs = []
+                if _queued_msgs:
+                    _q_text = "\n\n".join(m["text"] for m in _queued_msgs if m.get("text"))
+                    # Rides WITH the tool result when there is feedback — that is
+                    # ONE logical step, so the UI must keep it inside the card
+                    # that is already streaming. With no feedback it becomes the
+                    # next user turn and gets its own Process card.
+                    _q_inline = bool(feedback)
+                    _q_ids: list[str] = []
+                    try:
+                        if _q_inline:
+                            skill_events.append({"type": "queued_inline", "text": _q_text})
+                        else:
+                            _q_msg_id = add_message(active_chat_id, "user", _q_text, None, final_parent)
+                            _q_ids.append(str(_q_msg_id))
+                    except Exception as _q_persist_err:
+                        logger.warning("[chat-queue] failed to persist queued user msg: %s", _q_persist_err)
+                    yield sse({
+                        "type": "queued_injected",
+                        "temp_ids": [m.get("temp_id") for m in _queued_msgs],
+                        "ids": _q_ids,
+                        "text": _q_text,
+                        "inline": _q_inline,
+                    })
+                    if _q_inline:
+                        feedback = (
+                            feedback
+                            + "\n\n──────────────────────────────\n"
+                            + "⚡ [USER MESSAGE — sent while you were working. "
+                            + "Treat this as the user's latest instruction and address it now:]\n"
+                            + _q_text
+                        )
+                    else:
+                        feedback = _q_text
+
 
                 # --- Teacher escalation for stuck subagents (async, after dispatch) ---
                 # _dispatch_events flagged a guardrail recovery; now we can await the
@@ -3745,43 +3842,6 @@ async def chat(request: ChatRequest):
                     except Exception:
                         pass
 
-                # --- Queued user messages (typed while the model was still working) ---
-                # Delivered here, at the round boundary, instead of aborting the
-                # stream. If the round produced tool results the message rides at
-                # the END of that feedback, clearly highlighted; if the round had
-                # no tool calls it becomes the next user turn outright.
-                _queued_msgs = _drain_user_queue(active_chat_id)
-                _q_hard_stop = stream_error or error_message or _ask_user_pause or _permission_pause or _cwd_pause
-                if _queued_msgs and not _q_hard_stop:
-                    _q_text = "\n\n".join(m["text"] for m in _queued_msgs if m.get("text"))
-                    # Persist as a real user row branching from the current tail so
-                    # history reconstruction and replay keep the interjection.
-                    _q_ids: list[str] = []
-                    try:
-                        _q_msg_id = add_message(active_chat_id, "user", _q_text, None, final_parent)
-                        _q_ids.append(str(_q_msg_id))
-                    except Exception as _q_persist_err:
-                        logger.warning("[chat-queue] failed to persist queued user msg: %s", _q_persist_err)
-                    yield sse({
-                        "type": "queued_injected",
-                        "temp_ids": [m.get("temp_id") for m in _queued_msgs],
-                        "ids": _q_ids,
-                        "text": _q_text,
-                    })
-                    if feedback:
-                        # Tool loop continues — append the user's words at the very
-                        # end of the tool result, visually fenced so the model reads
-                        # it as a fresh instruction, not part of the tool output.
-                        feedback = (
-                            feedback
-                            + "\n\n──────────────────────────────\n"
-                            + "⚡ [USER MESSAGE — sent while you were working. "
-                            + "Treat this as the user's latest instruction and address it now:]\n"
-                            + _q_text
-                        )
-                    else:
-                        # No tool calls → the queued message is the next turn.
-                        feedback = _q_text
                 if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
 
@@ -4003,9 +4063,11 @@ async def chat(request: ChatRequest):
             # so the frontend falls back to a normal send for anything it posts.
             _ACTIVE_CHAT_STREAMS.discard(active_chat_id)
             # Anything still queued was never injected (hard-stop / error / stop).
-            # Drop it here — the frontend re-sends un-acknowledged temp messages
-            # through the normal path once it sees the stream end.
-            _USER_QUEUES.pop(active_chat_id, None)
+            # Do NOT silently drop it — the frontend holds the optimistic bubble
+            # and needs to re-send it through the normal path. Clear the hooks
+            # but leave the queue for the connector/next turn to pick up; the
+            # client's endStream flush re-sends it as a real turn either way.
+            _chat_queue.set_persist(active_chat_id, None)
             # Signal stream completion to frontend so backend-status cards collapse.
             #
             # NEVER yield inside finally during generator close: a bare yield here

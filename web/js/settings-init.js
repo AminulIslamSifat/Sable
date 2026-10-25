@@ -311,6 +311,13 @@
       if (!isStreaming()) return;
 
       _stopInFlight = true;
+      // Mark this teardown as user-initiated. endStream() flushes unacked
+      // queued bubbles by re-sending them — correct when a stream dies on its
+      // own, wrong when the user deliberately stopped. Without this flag, stop
+      // spawned a phantom turn from the queued text while the aborted turn's
+      // tool results were still in the connector session, and the model read
+      // the two together as "the user pasted back tool results."
+      window._sableUserStopped = true;
       const ctrl = activeStreams.get(activeChatId);
       if (ctrl) ctrl.abort();
       // Nuclear stop: abort all active agent sub-streams for this chat
@@ -644,16 +651,55 @@
     const queueSendBtn = document.getElementById("queueSend");
     if (queueSendBtn) queueSendBtn.addEventListener("click", queueMessage);
 
+    // Flush queued bubbles the backend never acknowledged. Called from
+    // endStream() on EVERY termination (done, error, stop, disconnect). A
+    // message accepted by /api/chat/queue (queued:true) but never drained at a
+    // round boundary was dropped by the backend's finally block, so the bubble
+    // sat at .queued-msg forever and the message silently vanished.
+    window._sableFlushQueued = function (chatId) {
+      const _wasStop = window._sableUserStopped === true;
+      window._sableUserStopped = false;
+      if (chatId && activeChatId && chatId !== activeChatId) return;
+      if (!_pendingQueued.size) return;
+      const pending = Array.from(_pendingQueued.entries());
+      _pendingQueued.clear();
+      _updateQueueBadge();
+      const texts = [];
+      for (const [, entry] of pending) {
+        if (entry.bubble) entry.bubble.remove();
+        if (entry.text) texts.push(entry.text);
+      }
+      if (!texts.length) return;
+      if (_wasStop) {
+        // Deliberate stop: drop the bubbles, put the text back in the input so
+        // the user decides when (or whether) to send it. Auto-sending here
+        // created a phantom turn detached from the turn it was meant to join.
+        inputEl.value = texts.join("\n\n");
+        autoResize();
+        return;
+      }
+      inputEl.value = texts.join("\n\n");
+      autoResize();
+      setTimeout(() => { if (typeof sendMessage === "function") sendMessage(); }, 0);
+    };
+
     // Finalize a queued bubble when the backend confirms it was injected.
-    window._sableFinalizeQueued = function (tempIds, dbIds, text) {
+    window._sableFinalizeQueued = function (tempIds, dbIds, text, isInline) {
       (tempIds || []).forEach((tid, i) => {
         const entry = _pendingQueued.get(tid);
         if (!entry) return;
         _pendingQueued.delete(tid);
         if (entry.bubble) {
-          entry.bubble.classList.remove("queued-msg");
-          entry.bubble.classList.add("queued-delivered");
-          if (dbIds && dbIds[i]) entry.bubble.dataset.msgId = String(dbIds[i]);
+          if (isInline) {
+            // Delivered INSIDE the Process card as an inline note. Keeping the
+            // optimistic bubble too would show the same message twice — once
+            // in the card, once stranded outside it.
+            entry.bubble.remove();
+          } else {
+            entry.bubble.classList.remove("queued-msg");
+            entry.bubble.classList.add("queued-delivered");
+            if (dbIds && dbIds[i]) entry.bubble.dataset.msgId = String(dbIds[i]);
+          }
         }
       });
       _updateQueueBadge();

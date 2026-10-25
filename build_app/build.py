@@ -163,7 +163,14 @@ def build_appimage(targets: str) -> None:
         if RELEASE.exists():
             shutil.rmtree(RELEASE)
         eb = ELECTRON / "node_modules" / ".bin" / "electron-builder"
-        cmd = [str(eb), "--linux", targets, "--publish", "never"]
+        # electron-builder has no `all` target — expand it here. Passing the
+        # raw string through fails with "Unknown target: all" after the
+        # (expensive) server build has already succeeded.
+        if targets == "all":
+            target_list = ["AppImage", "deb"]
+        else:
+            target_list = [t for t in targets.replace(",", " ").split() if t]
+        cmd = [str(eb), "--linux", *target_list, "--publish", "never"]
         log = BUILD / "electron-builder.log"
         with log.open("w") as fh:
             proc = subprocess.run(cmd, cwd=str(ELECTRON), stdout=fh, stderr=subprocess.STDOUT)

@@ -475,8 +475,8 @@
     details.thinking {
       border: none;
       background: color-mix(in srgb, var(--panel) 50%, transparent);
-      padding: 9px 12px;
-      border-radius: 14px;
+      padding: 4px 10px;
+      border-radius: 10px;
       font-size: var(--font-size-system);
       color: var(--muted);
       transition: background 0.15s;
@@ -507,8 +507,8 @@
       gap: 6px;
       color: var(--muted);
       border-radius: calc(var(--radius) - 4px);
-      margin: -3px -4px;
-      padding: 3px 4px;
+      margin: -1px -2px;
+      padding: 2px 2px;
       transition: color 0.15s, background 0.15s;
     }
 
@@ -540,7 +540,141 @@
          limit, so there is nothing left to pin. */
       max-height: 40vh;
       overflow-y: auto;
+      /* overflow-y:auto silently forces overflow-x to auto. State it, or a
+         long unbroken token (URL, hash, minified code) adds a horizontal bar. */
+      overflow-x: hidden;
       overscroll-behavior: contain;
+      /* And wrap those tokens instead of letting them overflow at all. */
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    /* Jump-to-latest pill, shown only while the user is scrolled up. */
+    .thinking-wrap { position: relative; }
+    .think-jump {
+      position: absolute;
+      right: 12px;
+      bottom: 10px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      opacity: 0.9;
+      z-index: 2;
+    }
+    .think-jump:hover { opacity: 1; color: var(--text-dim); }
+    /* Author display:grid would otherwise beat the UA [hidden] rule. */
+    .think-jump[hidden] { display: none; }
+
+    /* One collapsed card per completed turn: thinking + tool cards + mid-round
+       text. Collapsed on history load; contents are only built when the user
+       opens it (see _buildProcessCard). */
+    details.process {
+      width: 100%;
+      max-width: 100%;
+      align-self: center;
+      border: none;
+      background: color-mix(in srgb, var(--panel) 50%, transparent);
+      padding: 9px 12px;
+      border-radius: 14px;
+      font-size: var(--font-size-system);
+      color: var(--muted);
+      transition: background 0.15s;
+      box-shadow:
+        inset 0 0 0 1px var(--shadow-inner-glow),
+        inset 1.5px 2.5px 0px -1.5px var(--shadow-inner-glow),
+        inset -1.5px -1.5px 0px -1.5px var(--shadow-inner-glow),
+        inset -2px -6px 1px -5px var(--shadow-inner-glow),
+        inset -0.3px -1px 3px 0px rgba(0, 0, 0, 0.15),
+        inset -1px 2px 3px -1px rgba(0, 0, 0, 0.2),
+        inset 0px 2px 3px -1px rgba(0, 0, 0, 0.2),
+        inset 1.5px -4px 1px -3px rgba(0, 0, 0, 0.1),
+        0px 1px 4px 0px var(--shadow-outer),
+        0px 4px 12px 0px rgba(0, 0, 0, 0.1);
+    }
+    details.process[open] {
+      background: color-mix(in srgb, var(--panel) 70%, transparent);
+    }
+    details.process > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      color: var(--muted);
+      user-select: none;
+      margin: -3px -4px;
+      padding: 3px 4px;
+      border-radius: calc(var(--radius) - 4px);
+      transition: color 0.15s, background 0.15s;
+    }
+    details.process > summary::-webkit-details-marker { display: none; }
+    details.process > summary:hover { color: var(--text-dim); background: var(--panel-2); }
+    details.process > summary .thinking-chevron {
+      width: 14px;
+      height: 14px;
+      color: var(--muted-2);
+      flex-shrink: 0;
+      transition: transform 0.15s;
+    }
+    details.process[open] > summary .thinking-chevron { transform: rotate(90deg); }
+    details.process .process-body {
+
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    /* Only for settled cards. A live turn keeps this off so the browser never
+       skips painting the block that is actively streaming into it. */
+    /* An interjection the user typed while tools were running, delivered WITH
+       the tool result. Stays inside the Process card so one logical step is
+       never split across two cards. */
+    .inline-user-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      margin: 2px 0 2px 2px;
+      padding: 6px 10px;
+      border-radius: 9px;
+      border-left: 2px solid var(--accent);
+      background: color-mix(in srgb, var(--accent) 9%, var(--panel-2));
+      color: var(--text-dim);
+      font-size: var(--font-size-system);
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .inline-user-note .iun-icon {
+      flex-shrink: 0;
+      display: inline-flex;
+      margin-top: 1px;
+      color: var(--accent);
+    }
+    .inline-user-note .iun-icon svg { width: 13px; height: 13px; }
+    .inline-user-note .iun-text { flex: 1; min-width: 0; }
+
+    details.process .process-body:not(.live) {
+      /* No contain-intrinsic-size: `auto 200px` reserves 200px of intrinsic
+         height for a card whose real content is usually far shorter, which
+         shows up as an oversized collapsed card. */
+      content-visibility: auto;
+    }
+    /* Live turn: same look, no collapsed card yet. */
+    .turn > .process-body.live {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
     }
 
     .event {
@@ -553,7 +687,7 @@
     .skill-stack {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 6px;
       width: var(--chat-width);
       max-width: var(--chat-width);
     }
@@ -585,8 +719,8 @@
       width: 100%;
       border: none;
       background: color-mix(in srgb, var(--panel) 50%, transparent);
-      border-radius: 14px;
-      padding: 10px 12px;
+      border-radius: 10px;
+      padding: 4px 10px;
       font-size: var(--font-size-system);
       flex-shrink: 0;
       box-shadow:
@@ -886,6 +1020,16 @@
     .turn > .backend-status-card,
     .turn > .account-switch-card,
     .turn > .token-rotation-card {
+      order: 999;
+    }
+    /* Live turn: these cards live INSIDE .process-body, not as direct children
+       of .turn, so the rule above never matched them and they sat at the top of
+       the Process card while the actual work streamed in underneath. Same
+       `order` pins them to the end of the card, which is where a status line
+       belongs — it summarises the work above it. */
+    .process-body > .backend-status-card,
+    .process-body > .account-switch-card,
+    .process-body > .token-rotation-card {
       order: 999;
     }
 

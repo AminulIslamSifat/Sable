@@ -424,6 +424,10 @@
       // event updated it during streaming.
       updateSendBtn();
       _toggleStreamIndicator(chatId, false);
+      // Any queued bubble the backend never acknowledged would otherwise sit
+      // at .queued-msg forever (see _sableFlushQueued). Re-send it now that the
+      // stream is genuinely over.
+      if (typeof window._sableFlushQueued === "function") window._sableFlushQueued(chatId);
       // Also clear indicator on migrated ID if different — but never touch the
       // parent's indicator on behalf of a sub-chat.
       if (!_isSubChat && activeChatId !== chatId) _toggleStreamIndicator(activeChatId, false);

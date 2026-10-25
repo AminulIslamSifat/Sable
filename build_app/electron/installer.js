@@ -77,7 +77,11 @@ function desktopEntryBody(execPath, iconPath) {
     "Icon=" + iconPath,
     "Terminal=false",
     "Categories=Development;",
-    "StartupWMClass=Sable",
+    // Must match the window's actual WM_CLASS, which Electron derives from the
+    // executable/product name in lowercase ('sable'). A capital 'S' here is a
+    // case-sensitive mismatch on Wayland/Hyprland: the running window never
+    // links to this launcher entry.
+    "StartupWMClass=sable",
     "StartupNotify=true",
     "",
   ].join("\n")

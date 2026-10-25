@@ -3,12 +3,17 @@
   "productName": "Sable",
   "version": "2.0.3",
   "description": "Sable — agentic chat platform",
+  "desktopName": "sable.desktop",
   "main": "main.js",
   "author": {
     "name": "Sifat",
     "email": "sifat@sable.local"
   },
-  "homepage": "https://github.com/sifat/sable",
+  "homepage": "https://github.com/AminulIslamSifat/Sable",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AminulIslamSifat/Sable.git"
+  },
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -45,6 +50,7 @@
       "target": ["AppImage", "deb"],
       "category": "Development",
       "icon": "build/icon.png",
+      "syncDesktopName": true,
       "maintainer": "Sifat <sifat@sable.local>",
       "synopsis": "Sable - agentic chat platform",
       "description": "Sable is an agentic chat platform with a bundled local server, native browser pane and multi-engine search.",
@@ -53,7 +59,7 @@
           "Name": "Sable",
           "Comment": "Sable - agentic chat platform",
           "Categories": "Development;Utility;",
-          "StartupWMClass": "Sable"
+          "StartupWMClass": "sable"
         }
       },
       "artifactName": "Sable-${version}-${arch}.${ext}"

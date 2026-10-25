@@ -900,6 +900,61 @@ class OpenAICompatClient:
 
                                 if chat_id:
                                     self._sessions[chat_id] = history
+                                    # A message the user typed while tools were
+                                    # running. THIS connector owns the tool loop,
+                                    # so the chat route's round boundary is never
+                                    # reached from here — draining there meant the
+                                    # queue sat untouched until the turn ended and
+                                    # was thrown away if the user stopped. Inject
+                                    # it as a real user turn and re-enter the API
+                                    # call so the model sees it immediately.
+                                    try:
+                                        from engine import chat_queue as _cq
+                                        # drain(), not take_queued_for(): an inline
+                                        # interjection is persisted as a
+                                        # `queued_inline` event INSIDE this turn.
+                                        # Writing a separate user row too would
+                                        # replay it twice (once in the card, once
+                                        # as a detached bubble).
+                                        _q_msgs = _cq.drain(chat_id)
+                                    except Exception as _q_exc:
+                                        self.logger.warning("chat-queue drain failed: %s", _q_exc)
+                                        _q_msgs = []
+                                    if _q_msgs:
+                                        _q_text = "\n\n".join(
+                                            m["text"] for m in _q_msgs if m.get("text")
+                                        )
+                                        if _q_text:
+                                            # inline=True: this rides WITH the tool
+                                            # result, so the UI must NOT seal the
+                                            # current turn / open a new Process
+                                            # card. The interjection belongs to the
+                                            # card that is already streaming.
+                                            yield {
+                                                "type": "queued_injected",
+                                                "temp_ids": [m.get("temp_id") for m in _q_msgs],
+                                                "ids": [m.get("db_id") for m in _q_msgs if m.get("db_id")],
+                                                "text": _q_text,
+                                                "inline": True,
+                                            }
+                                            # Record the interjection in the DB-bound
+                                            # event log so history replay renders it
+                                            # INSIDE this same Process card instead
+                                            # of as a detached user turn.
+                                            yield {
+                                                "type": "queued_inline",
+                                                "text": _q_text,
+                                            }
+                                            history.append({"role": "user", "content": _q_text})
+                                            self._sessions[chat_id] = history
+                                            # The model now has the tool results AND
+                                            # the interjection, in order. Tell the
+                                            # route not to re-send a text copy of
+                                            # those same tool results afterwards —
+                                            # that copy landed AFTER the user's
+                                            # message and read as "the user pasted
+                                            # the tool output back".
+                                            _cq.mark_connector_injected(chat_id)
                                 continue  # re-enter API call with tool results
 
                         # Normal completion
