@@ -1,34 +1,63 @@
-
 # ---------------------------------------------------------------------------
 # Shared building blocks — keeps both templates in sync
 # ---------------------------------------------------------------------------
 
 _CATEGORY_DEFS = (
+    "NECESSITY TEST (an entry must pass this, otherwise add nothing):\n"
+    "- Being true, technical, or detailed does NOT make something worth storing. Most of what\n"
+    "  happens in a conversation is not needed later.\n"
+    "- Needed means: without this entry, a future assistant in a DIFFERENT, unrelated\n"
+    "  conversation would make a mistake, ask a question the user already answered, or ignore\n"
+    "  a correction the user already gave.\n"
+    "- Only these kinds of content can ever be needed:\n"
+    "  (A) Who the user is: name, role, language, location, skill level.\n"
+    "  (B) The user's standing setup: OS, hardware, tools, and directories they consistently use.\n"
+    "  (C) How the user wants the assistant to behave: explicit preferences, rules, corrections.\n"
+    "  (D) Facts about a long-running project of the user's that will recur across sessions.\n"
+    "- Everything else is NOT needed, however interesting. When in doubt, add nothing.\n\n"
+    "DISCARD FIRST — DO NOT STORE any of the following, however technical or detailed:\n"
+    "- Work products and task content: code, scripts, renders, documents, designs, or any\n"
+    "  output the assistant generated for a one-off request.\n"
+    "- How a task was built or solved: mechanisms, implementation details, step-by-step\n"
+    "  explanations, debugging narratives.\n"
+    "- Where generated files were saved, and what they were named.\n"
+    "- Anything the assistant explained or stated. Only the USER's own statements,\n"
+    "  corrections, and standing preferences are valid sources of memory.\n"
+    "  Bad:  'Built a 3D American school bus render in Three.js; the door uses a hinge rig;\n"
+    "         saved to ~/bus.html' (task content, discard entirely).\n"
+    "  Test: 'Is this about the TASK, or about the USER and how they want things done?'\n"
+    "  If it is about the task, add nothing.\n\n"
     "CATEGORIES (assign each entry to exactly one):\n\n"
     "CLASSIFICATION DECISION TREE (apply in order, stop at first match):\n"
+    "  0. Does it fail the NECESSITY TEST or match DISCARD FIRST above? → add nothing\n"
     "  1. Is it a credential, API key, or security-sensitive config? → protected\n"
     "  2. Is it a temporary workaround with a known expiry? → ephemeral\n"
     "  3. Does it describe HOW to do something (a workflow, rule, behavioral pattern,\n"
     "     or user correction on approach)? Would it change the agent's FUTURE BEHAVIOR?\n"
     "     → procedural\n"
-    "  4. Is it a specific past event/debugging session whose exact sequence matters?\n"
-    "     → episodic\n"
-    "  5. Everything else (facts, configs, paths, preferences, architecture) → semantic\n\n"
+    "  4. Is it a specific past event/debugging session whose exact sequence matters\n"
+    "     for the USER's future work? → episodic\n"
+    "  5. Is it a durable fact about the USER or their standing environment (preferences,\n"
+    "     configs, paths, architecture of THEIR projects) that will matter across unrelated\n"
+    "     future tasks? → semantic. Otherwise → add nothing.\n\n"
     "CATEGORY DETAILS:\n"
-    "- semantic: WHAT is true. Durable facts — project architecture, tool configs,\n"
-    "  environment details, API behaviors, file paths, dependency relationships, user preferences.\n"
+    "- semantic: WHAT is true about the user or their standing environment. Durable facts —\n"
+    "  project architecture, tool configs, environment details, file paths, dependency\n"
+    "  relationships, user preferences. Not facts about what a one-off task produced.\n"
     "  Test: 'Is this a fact I could state in one sentence without describing steps?' → semantic.\n"
-    "  This is the DEFAULT category. When unsure between semantic and procedural, choose semantic.\n\n"
+    "  This is the DEFAULT category for entries that qualify. When unsure between semantic and\n"
+    "  procedural, choose semantic. When unsure whether it qualifies at all, add nothing.\n\n"
     "- episodic: WHAT happened. Event-specific records tied to a particular interaction.\n"
     "  Only save if the exact sequence/context matters for future recall.\n"
     "  Episodic memories decay over time — be VERY strict about what qualifies.\n"
     "  Test: 'Will knowing this specific event's details help solve a future problem?' → episodic.\n\n"
-    "- procedural: HOW to do it — a REUSABLE SKILL, not a story. Workflows, coding patterns,\n"
-    "  behavioral rules, communication formats, preferred approaches. MUST change future\n"
-    "  agent behavior, not just inform it.\n"
+    "- procedural: HOW the user wants things done — a REUSABLE SKILL, not a story. Workflows,\n"
+    "  coding patterns, behavioral rules, communication formats, preferred approaches. MUST\n"
+    "  change future agent behavior, not just inform it.\n"
     "  Test: 'Does this tell me to DO something differently next time?' → procedural.\n"
     "  NOT procedural: facts about how something works (that's semantic).\n"
     "  NOT procedural: a one-time fix description (that's episodic).\n"
+    "  NOT procedural: how a particular task was built (that's task content, discard it).\n"
     "  If the user corrected HOW something was done, that correction IS procedural.\n"
     "  If the user stated a FACT about the system, that is semantic, NOT procedural.\n\n"
     "  WRITE PROCEDURAL ENTRIES AS ACTIONABLE STEPS, NOT NARRATIVE:\n"
@@ -48,13 +77,18 @@ _CATEGORY_DEFS = (
     "- protected: Credentials, API keys, sudo configs, security-sensitive paths, identity info.\n"
     "  IMMUNE TO DELETION. Never include protected keys in the delete list.\n\n"
     "- ephemeral: Time-bound workarounds, version-specific hacks, active debugging notes.\n"
-    "  MUST include an expires_at field (ISO 8601). Auto-deleted after expiry.\n"
+    "  MUST include an expires_at field (ISO 8601, in the future relative to the dates shown in\n"
+    "  the conversation). If the current date cannot be determined, do not create an ephemeral\n"
+    "  entry. Auto-deleted after expiry.\n"
 )
 
 _SELECTIVITY_RULES = (
     "SELECTIVITY GATE (apply BEFORE adding any entry):\n"
-    "[!MOST IMPORTANT] BEFORE ADDING ANY ENTRY CHECK IF RELEVANT MEMORY HAS ANY DUPLICATE, SIMILAR OR CONTRADICTORY MEMORY CONTENT, IF THERE IS THEN MERGE (DELETE EXISTING ALL AND ADDING NEW MERGED ONE), DELETE OR UPDATE THEM."
-    "1. Would a future session actually search for this? If uncertain, skip it.\n"
+    "MOST IMPORTANT: before adding any entry, check the CURRENT MEMORY STORE for duplicate,\n"
+    "similar, or contradictory entries. If any exist, MERGE them (put ALL matching old keys in\n"
+    "'delete' and add ONE merged entry), or update or delete them as appropriate.\n\n"
+    "1. Would this still matter in a DIFFERENT, unrelated future task? Would a future session\n"
+    "   actually search for this? If uncertain, skip it.\n"
     "2. DEDUP CHECK (mandatory): Scan CURRENT MEMORY STORE keys. If ANY existing key\n"
     "   covers the same topic — even with different wording — do NOT add a new entry.\n"
     "   Instead: put the old key in 'delete' and add ONE updated/consolidated version.\n"
@@ -71,6 +105,14 @@ _SELECTIVITY_RULES = (
     "   but it's really just a fact about how something works, move it to semantic.\n"
     "   If you classified something as semantic but it tells the agent to DO something\n"
     "   differently, move it to procedural.\n"
+    "8. TASK-CONTENT CHECK: Re-read DISCARD FIRST. If the entry describes what was built,\n"
+    "   how it was built, or where it was saved, delete the entry from your output.\n"
+    "9. Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
+    "10. USER-SOURCE CHECK: every entry must rest on something the USER explicitly stated about\n"
+    "    themselves, their environment, or how they want things done (a fact, preference, or\n"
+    "    correction). A task request is NOT a memory source: 'make a 3D render of a bus' or\n"
+    "    'fix this bug' describes work to do, not a durable fact. If the only support for an\n"
+    "    entry is a task request or the assistant's own output, add nothing.\n"
 )
 
 _SUPERSession_RULES = (
@@ -99,8 +141,10 @@ _MERGE_EXISTING_RULES = (
 
 _RETRIEVAL_FIELDS_INSTRUCTIONS = (
     "RETRIEVAL FIELDS (required for ALL non-protected entries):\n\n"
-    "- \"source_query\": The EXACT user message that caused this memory. Verbatim, unedited.\n"
-    "  This is a primary retrieval signal — never paraphrase or shorten it.\n\n"
+    "- \"source_query\": The EXACT user message that caused this memory, verbatim and unedited.\n"
+    "  This is a primary retrieval signal — never paraphrase or shorten it. If only a\n"
+    "  conversation summary is available and the exact message is not, use the user's request\n"
+    "  as phrased in the summary. Never invent a quote.\n\n"
     "- \"tags\": 4-8 lowercase single-word or short-phrase keywords.\n"
     "  MUST include: (a) domain terms from the key name, (b) tool/library names,\n"
     "  (c) synonyms a future user might type, (d) the broader topic category.\n"
@@ -125,9 +169,15 @@ _RETRIEVAL_FIELDS_INSTRUCTIONS = (
     "- Bad: 'config_stuff', 'fix_1', 'notes_about_the_thing'\n\n"
     "VALUE WRITING:\n"
     "- Self-contained: understandable with ZERO conversation context.\n"
-    "- Lead with the core fact, then specifics (paths, numbers, exact syntax).\n"
+    "- Lead with the core fact, then specifics (numbers, exact syntax).\n"
+
     "- Naturally include searchable terms — don't stuff, but don't omit.\n"
-    "- If there's a file path, command, or config snippet, include it verbatim.\n"
+    "- Include a file path, command, or config snippet verbatim only when it is part of the\n"
+    "  user's standing environment setup. Never include generated code or the location of\n"
+    "  generated output files.\n\n"
+    "RETRIEVAL PRIORITY: Triggers are the #1 search signal. Spend the most effort there.\n"
+    "A memory with perfect content but weak triggers will NEVER be found.\n"
+    "Write triggers as if you're predicting what the user will type in 2 weeks.\n"
 )
 
 _OUTPUT_FORMAT = (
@@ -137,41 +187,36 @@ _OUTPUT_FORMAT = (
     '  "add": {\n'
     '    "semantic": [{"key": "short_label", "value": "dense specific fact", "source_query": "exact user message that caused this", "tags": ["tag1", "tag2", "..."], "triggers": ["same as source_query", "alt phrasing"]}],\n'
     '    "episodic": [{"key": "short_label", "value": "context-rich event record", "source_query": "...", "tags": ["..."], "triggers": ["..."]}],\n'
-    '    "procedural": [{"key": "short_label", "value": "workflow description", "trigger": "when X happens", "keywords": ["kw1", "kw2"], "source_query": "...", "tags": ["..."], "triggers": ["..."]}],\n'
+    '    "procedural": [{"key": "short_label", "value": "imperative numbered steps", "trigger": "when X happens", "keywords": ["kw1", "kw2"], "source_query": "...", "tags": ["..."], "triggers": ["..."]}],\n'
     '    "protected": [{"key": "short_label", "value": "credential or sensitive config"}],\n'
-    '    "ephemeral": [{"key": "short_label", "value": "temporary note", "expires_at": "2026-08-15T00:00:00", "source_query": "...", "tags": ["..."], "triggers": ["..."]}]\n'
+    '    "ephemeral": [{"key": "short_label", "value": "temporary note", "expires_at": "YYYY-MM-DDTHH:MM:SS", "source_query": "...", "tags": ["..."], "triggers": ["..."]}]\n'
     '  },\n'
     '  "delete": ["exact_existing_key_to_remove"]\n'
     '}\n'
-'Rules:\n'
-'- Keys: short, descriptive, snake_case (3-6 words). Must be unique within category.\n'
-'- Values: self-contained, specific, searchable. No vague summaries. Include paths/commands verbatim.\n'
-'- Procedural entries MUST include "trigger" (string) and "keywords" (array of 2-5 strings).\n'
-'- Triggers: 3-6 phrases. First = source_query verbatim. Rest = diverse alternative phrasings.\n'
-'  Each trigger should use DIFFERENT vocabulary. Cover synonyms, abbreviations, question forms.\n'
-'- Tags: 4-8 terms. Include key words, tool names, synonyms, broader category.\n'
-'- ALL non-protected entries MUST include "source_query", "tags", and "triggers".\n'
-'- Delete list: exact key strings from CURRENT MEMORY STORE. NEVER delete protected keys.\n'
-'- If nothing qualifies: {"add":{"semantic":[],"episodic":[],"procedural":[],"protected":[],"ephemeral":[]},"delete":[]}\n'
+    'Rules:\n'
+    '- Keys: short, descriptive, snake_case (3-6 words). Must be unique within category.\n'
+    '- Values: self-contained, specific, searchable. No vague summaries.\n'
+    '- Procedural entries MUST include "trigger" (string) and "keywords" (array of 2-5 strings).\n'
+    '- Triggers: 3-6 phrases. First = source_query verbatim. Rest = diverse alternative phrasings.\n'
+    '  Each trigger should use DIFFERENT vocabulary. Cover synonyms, abbreviations, question forms.\n'
+    '- Tags: 4-8 terms. Include key words, tool names, synonyms, broader category.\n'
+    '- ALL non-protected entries MUST include "source_query", "tags", and "triggers".\n'
+    '- Ephemeral "expires_at" must be a real future ISO 8601 timestamp, never the placeholder.\n'
+    '- Delete list: exact key strings from CURRENT MEMORY STORE. NEVER delete protected keys.\n'
+    '- If nothing qualifies (the expected result for most conversations): {"add":{"semantic":[],"episodic":[],"procedural":[],"protected":[],"ephemeral":[]},"delete":[]}\n'
 )
 
 _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     "[SYSTEM: Memory consolidation pass. Full conversation is above — do NOT re-summarize.]\n\n"
     "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
-    "TASK: Extract durable facts from the conversation above that would help future sessions.\n"
-    "You are a strict filter, not a vacuum. Most conversations produce zero new memories.\n\n"
+    "TASK: Extract durable facts about the USER from the conversation above that would help\n"
+    "future sessions. You are a strict filter, not a vacuum. Most conversations produce zero\n"
+    "new memories, and returning nothing is a correct and expected answer.\n\n"
     f"{_CATEGORY_DEFS}\n"
     f"{_SELECTIVITY_RULES}\n"
     f"{_SUPERSession_RULES}\n"
     f"{_MERGE_EXISTING_RULES}\n"
     f"{_RETRIEVAL_FIELDS_INSTRUCTIONS}\n"
-    "ADDITIONAL RULES:\n"
-    "- Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
-    "- Each entry must be self-contained — understandable without conversation context.\n"
-    "- If an existing entry needs updating, put its key in 'delete' and add the improved version.\n"
-    "- RETRIEVAL PRIORITY: Triggers are the #1 search signal. Spend the most effort there.\n"
-    "  A memory with perfect content but weak triggers will NEVER be found.\n"
-    "  Write triggers as if you're predicting what the user will type in 2 weeks.\n\n"
     f"{_OUTPUT_FORMAT}"
 )
 
@@ -179,27 +224,17 @@ _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
     "[SYSTEM: Memory consolidation pass. Use the conversation summary below — do NOT request more context.]\n\n"
     "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
     "CONVERSATION CONTEXT:\n<<CONVERSATION_SUMMARY>>\n\n"
-    "TASK: Extract durable facts from the conversation that would help future sessions.\n"
-    "You are a strict filter, not a vacuum. Most conversations produce zero new memories.\n\n"
+    "TASK: Extract durable facts about the USER from the conversation that would help\n"
+    "future sessions. You are a strict filter, not a vacuum. Most conversations produce zero\n"
+    "new memories, and returning nothing is a correct and expected answer.\n\n"
     f"{_CATEGORY_DEFS}\n"
     f"{_SELECTIVITY_RULES}\n"
     f"{_SUPERSession_RULES}\n"
     f"{_MERGE_EXISTING_RULES}\n"
     f"{_RETRIEVAL_FIELDS_INSTRUCTIONS}\n"
-    "ADDITIONAL RULES:\n"
-    "- Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
-    "- Each entry must be self-contained — understandable without conversation context.\n"
-    "- If an existing entry needs updating, put its key in 'delete' and add the improved version.\n"
-    "- RETRIEVAL PRIORITY: Triggers are the #1 search signal. Spend the most effort there.\n"
-    "  A memory with perfect content but weak triggers will NEVER be found.\n"
-    "  Write triggers as if you're predicting what the user will type in 2 weeks.\n\n"
     f"{_OUTPUT_FORMAT}"
 )
 
-
-# ---------------------------------------------------------------------------
-# User Personality Assessment — purely analytical, clinical, data-driven
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Merge / Dedup Resolution — second-pass LLM call for conflicting candidates
@@ -215,7 +250,8 @@ _MERGE_RESOLUTION_PROMPT = (
     "- accept: The candidate is genuinely distinct. Add it as-is.\n"
     "- skip: The candidate is redundant with the existing entry. Discard the candidate.\n"
     "- merge: Combine the candidate and existing entry into ONE better entry. "
-    "Provide the merged key+value. The existing entry will be replaced.\n"
+    "Provide the merged value and retrieval fields; the existing key is kept. "
+    "The existing entry will be replaced.\n"
     "- replace: The candidate supersedes the existing entry. "
     "The existing entry will be deleted and the candidate added.\n\n"
     "RULES:\n"
@@ -232,19 +268,25 @@ _MERGE_RESOLUTION_PROMPT = (
     '      "category": "semantic|episodic|procedural|protected|ephemeral",\n'
     '      "action": "accept|skip|merge|replace",\n'
     '      "existing_key": "key of matched existing entry (null if accept with no match)",\n'
-    '      "merged_value": "combined value text (only when action=merge, null otherwise)",\n'
-    '      "merged_trigger": "merged trigger phrase (only for procedural merge, null otherwise)",\n'
-    '      "merged_keywords": ["merged keyword array"] (only for procedural merge, null otherwise),\n'
-    '      "merged_source_query": "best source_query from either entry (only when action=merge, null otherwise)",\n'
-    '      "merged_tags": ["combined deduplicated tags from both entries"] (only when action=merge, null otherwise),\n'
-    '      "merged_triggers": ["combined triggers, source_query first"] (only when action=merge, null otherwise)\n'
+    '      "merged_value": "combined value text",\n'
+    '      "merged_trigger": "merged trigger phrase",\n'
+    '      "merged_keywords": ["kw1", "kw2"],\n'
+    '      "merged_source_query": "best source_query from either entry",\n'
+    '      "merged_tags": ["combined deduplicated tags from both entries"],\n'
+    '      "merged_triggers": ["combined triggers, source_query first"]\n'
     '    }\n'
     '  ]\n'
     '}\n'
     '- One decision per candidate. Every candidate MUST have exactly one decision.\n'
+    '- All "merged_*" fields apply only when action=merge; set them to null for any other action.\n'
+    '- "merged_trigger" and "merged_keywords" apply only to procedural merges; set them to null otherwise.\n'
     '- If no candidates were provided: {"decisions": []}\n'
 )
 
+
+# ---------------------------------------------------------------------------
+# User Personality Assessment — purely analytical, clinical, data-driven
+# ---------------------------------------------------------------------------
 
 _PERSONALITY_OUTPUT_FORMAT = (
     'OUTPUT: Raw JSON only. No markdown fences, no commentary.\n'
@@ -269,7 +311,9 @@ _PERSONALITY_OUTPUT_FORMAT = (
     '- "Strengths" = measurable positive patterns: follow-through, precision, creativity, discipline.\n'
     '- "Weaknesses" = measurable negative patterns: avoidance, inconsistency, over-engineering, deflection.\n'
     '- Confidence levels: high = 3+ instances, medium = 2 instances, low = 1 instance.\n'
-    '- Minimum 2 items per list (strengths and weaknesses). If insufficient data, return empty with reason.\n'
+    '- Report up to as many items as the evidence supports. Never invent an item to fill a list.\n'
+    '  If the evidence supports fewer than 2 strengths or weaknesses, return only what it supports\n'
+    '  (an empty array is valid) and say why in "summary".\n'
     '- Contradictions and blind_spots can be empty arrays if no data supports them.\n'
     '- Summary: write like a behavioral analyst filing a report. Zero emotional language.\n'
 )
@@ -296,4 +340,3 @@ _PERSONALITY_ASSESSMENT_TEMPLATE = (
     '  {"strengths":[],"weaknesses":[],"contradictions":[],"blind_spots":[],"summary":"Insufficient data for assessment."}\n\n'
     f"{_PERSONALITY_OUTPUT_FORMAT}"
 )
-#
