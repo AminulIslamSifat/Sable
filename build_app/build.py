@@ -20,6 +20,7 @@ move on, so a second run is safe.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -37,7 +38,18 @@ SERVER_DIR = DIST / "sable-server"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 APP_NAME = "Sable"
-VERSION = "2.0.3"
+VERSION = "3.0.0"
+
+# ── publish targets ─────────────────────────────────────────────────────────
+# Where finished artifacts are staged for upload, and where the AUR package
+# source lives. Kept outside the build tree so a clean rebuild never eats them.
+SABLEM = Path("/home/sifat/hdd/projects/Sablem")
+SABLEM_RELEASES = SABLEM / "releases"
+AUR_DIR = SABLEM / "aur" / "sable-bin"
+
+REPO_SLUG = "AminulIslamSifat/Sable"
+PKG_DESC = "Sable — agentic chat platform with a bundled local server and native browser pane"
+MAINTAINER = "Sifat <aminulislamsifat5@gmail.com>"
 
 
 # ── output helpers ──────────────────────────────────────────────────────────
@@ -355,6 +367,114 @@ def verify_appimage() -> None:
             print("  \033[33mwarning: larger than expected — check for junk\033[0m")
 
 
+# ── publishing ──────────────────────────────────────────────────────────────
+
+def sha256_of(path: Path) -> str:
+    """Streaming SHA-256 — the AppImage is 350+ MB, don't slurp it."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def publish_to_sablem() -> None:
+    """Copy the built AppImage + deb into the Sablem release staging dir."""
+    with Stage("Staging artifacts into Sablem"):
+        if not SABLEM.is_dir():
+            die(f"Sablem repo not found at {SABLEM}")
+        SABLEM_RELEASES.mkdir(parents=True, exist_ok=True)
+        artifacts = sorted(RELEASE.glob("*.AppImage")) + sorted(RELEASE.glob("*.deb"))
+        if not artifacts:
+            die("nothing to stage — release/ has no AppImage or deb")
+        for a in artifacts:
+            dest = SABLEM_RELEASES / a.name
+            shutil.copy2(a, dest)
+            mb = dest.stat().st_size / (1024 * 1024)
+            print(f"  {dest.relative_to(SABLEM)}  ({mb:.0f} MB)")
+        print(f"  → {SABLEM_RELEASES}")
+
+
+# @@TOKENS@@ are substituted by generate_aur(). A .format() call would explode on
+# bash's ${var} / $(cmd) syntax, so the template stays inert until replaced.
+PKGBUILD_TEMPLATE = '''# Maintainer: @@MAINTAINER@@
+pkgname=sable-bin
+pkgver=@@PKGVER@@
+pkgrel=1
+pkgdesc="@@PKGDESC@@"
+arch=('x86_64')
+url="https://github.com/@@REPO_SLUG@@"
+license=('MIT')
+depends=('gtk3' 'nss' 'libxss' 'libxtst' 'alsa-lib' 'libcups' 'libdrm' 'mesa'
+         'libxkbcommon' 'at-spi2-core' 'libnotify' 'libsecret' 'libglvnd' 'fuse2')
+provides=('sable')
+conflicts=('sable' 'sable-git')
+options=('!strip' '!debug')
+source=("Sable-$pkgver-x86_64.AppImage::@@URL@@")
+sha256sums=('@@SHA256@@')
+
+package() {
+  # The AppImage itself
+  install -Dm755 "$srcdir/Sable-$pkgver-x86_64.AppImage" \
+    "$pkgdir/opt/sable/sable.AppImage"
+  ln -s /opt/sable/sable.AppImage "$pkgdir/usr/bin/sable"
+
+  # Pull the launcher + icon out of the AppImage. They exist inside the squashfs
+  # but nothing on the host can see them until we copy them into place.
+  cd "$srcdir"
+  ./Sable-$pkgver-x86_64.AppImage --appimage-extract 'sable.png' >/dev/null
+  ./Sable-$pkgver-x86_64.AppImage --appimage-extract 'sable.desktop' >/dev/null
+
+  install -Dm644 squashfs-root/sable.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/sable.png"
+
+  # Exec=AppRun only resolves inside the mounted AppImage. Point it at the
+  # installed file or the menu icon appears but launches nothing.
+  sed -e 's|^Exec=.*|Exec=/opt/sable/sable.AppImage %U|' \
+      -e '/^X-AppImage-Version=/d' \
+      squashfs-root/sable.desktop > sable.desktop
+
+  install -Dm644 sable.desktop "$pkgdir/usr/share/applications/sable.desktop"
+}
+'''
+
+
+def generate_aur() -> None:
+    """Write aur/sable-bin/{PKGBUILD,.SRCINFO} into Sablem, hash pinned to the build."""
+    with Stage("Generating AUR package (sable-bin)"):
+        appimage = RELEASE / f"Sable-{VERSION}-x86_64.AppImage"
+        if not appimage.is_file():
+            die(f"missing {appimage.name} — cannot hash it for the PKGBUILD")
+        digest = sha256_of(appimage)
+        url = (
+            f"https://github.com/{REPO_SLUG}/releases/download/"
+            f"v{VERSION}/{appimage.name}"
+        )
+        AUR_DIR.mkdir(parents=True, exist_ok=True)
+        pkgbuild = (
+            PKGBUILD_TEMPLATE
+            .replace("@@PKGVER@@", VERSION)
+            .replace("@@URL@@", url)
+            .replace("@@SHA256@@", digest)
+            .replace("@@PKGDESC@@", PKG_DESC)
+            .replace("@@MAINTAINER@@", MAINTAINER)
+            .replace("@@REPO_SLUG@@", REPO_SLUG)
+        )
+        (AUR_DIR / "PKGBUILD").write_text(pkgbuild)
+        print(f"  PKGBUILD   sha256 {digest[:16]}…")
+        print(f"  source     {url}")
+
+        proc = subprocess.run(
+            ["makepkg", "--printsrcinfo"],
+            cwd=str(AUR_DIR), capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            die(f"makepkg --printsrcinfo failed:\n{proc.stderr[-1500:]}")
+        (AUR_DIR / ".SRCINFO").write_text(proc.stdout)
+        print(f"  .SRCINFO   {len(proc.stdout.splitlines())} lines (generated)")
+        print(f"  → {AUR_DIR}")
+
+
 # ── main ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -363,7 +483,9 @@ def main() -> int:
     ap.add_argument("--verify-only", action="store_true", help="only verify an existing build")
     ap.add_argument("--launch", action="store_true", help="run the AppImage when done")
     ap.add_argument("--clean", action="store_true", help="wipe work/dist/release first")
-    ap.add_argument("--target", default="AppImage", help="AppImage | deb | all")
+    ap.add_argument("--target", default="all", help="AppImage | deb | all (default: all)")
+    ap.add_argument("--no-sablem", action="store_true", help="don't stage artifacts into Sablem/releases")
+    ap.add_argument("--no-aur", action="store_true", help="don't regenerate the sable-bin PKGBUILD")
     args = ap.parse_args()
 
     t0 = time.monotonic()
@@ -397,6 +519,11 @@ def main() -> int:
     verify_run_script()
     build_appimage(args.target)
     verify_appimage()
+
+    if not args.no_sablem:
+        publish_to_sablem()
+    if not args.no_aur:
+        generate_aur()
 
     elapsed = time.monotonic() - t0
     print(f"\n\033[1;32mBuild complete in {elapsed:.0f}s\033[0m")

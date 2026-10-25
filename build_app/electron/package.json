@@ -1,7 +1,7 @@
 {
   "name": "sable",
   "productName": "Sable",
-  "version": "2.0.3",
+  "version": "3.0.0",
   "description": "Sable — agentic chat platform",
   "desktopName": "sable.desktop",
   "main": "main.js",
