@@ -506,18 +506,159 @@
     // until the user opens it (tier 1), which keeps 700-message chats cheap:
     // no DOM, no markdown, no Mermaid/MathJax until a click. Events are passed
     // in when the history payload carried them, otherwise fetched on expand.
+    // ── Trace summary for the Process card ──
+    // Collapsed cards hide everything that happened, so the header carries a
+    // one-line digest: how many tools ran, how long they took, and whether
+    // anything failed. Derived from skill_end.duration_ms, which the backend
+    // populates on 98% of skill_end events (7202/7348 in the live DB).
+    function _traceStats(events) {
+      if (!Array.isArray(events) || !events.length) return null;
+      let tools = 0, total = 0, failed = 0, timed = 0;
+      // Round = one dispatch burst: consecutive skill_start blocks with no
+      // model output (round_text / round_thinking) in between. That is the
+      // model "spawning N tools at once".
+      // round_thinking alone is NOT the delimiter — plenty of rounds carry no
+      // thinking at all, so the burst boundary has to be either model event.
+      const _MODEL = { round_thinking: 1, round_text: 1 };
+      let rounds = 0, inBurst = false;
+      for (const e of events) {
+        if (!e) continue;
+        const t = e.type;
+        if (t === "skill_start") {
+          if (!inBurst) { inBurst = true; rounds++; }
+        } else if (_MODEL[t]) {
+          inBurst = false;
+        }
+        if (t !== "skill_end") continue;
+        tools++;
+        if (e.ok === false) failed++;
+        const d = e.duration_ms;
+        if (typeof d === "number" && isFinite(d)) {
+          timed++;
+          total += d;
+        }
+      }
+      if (!tools) return null;
+      return { tools, total, timed, failed, rounds };
+    }
+
+    function _fmtMs(ms) {
+      if (ms < 1000) return Math.round(ms) + "ms";
+      if (ms < 60000) return (ms / 1000).toFixed(1) + "s";
+      const m = Math.floor(ms / 60000);
+      const s = Math.round((ms % 60000) / 1000);
+      return m + "m " + s + "s";
+    }
+
+    // Build the meta chip row for a process summary. `stats` is from
+    // _traceStats(); returns a DocumentFragment so callers can append it.
+    function _renderTraceMeta(stats) {
+      const frag = document.createDocumentFragment();
+      if (!stats) return frag;
+      const add = (text, cls, title) => {
+        const s = document.createElement("span");
+        s.className = "trace-meta" + (cls ? " " + cls : "");
+        s.textContent = text;
+        if (title) s.title = title;
+        frag.appendChild(s);
+      };
+      add(stats.tools + (stats.tools === 1 ? " tool" : " tools"), "tm-tools");
+      if (stats.rounds) {
+        add(stats.rounds + (stats.rounds === 1 ? " round" : " rounds"), "tm-rounds",
+          stats.rounds + " dispatch round(s) — model output between tool bursts");
+      }
+
+      if (stats.timed) {
+        add(_fmtMs(stats.total), "tm-time", "Total time across " + stats.timed + " tool runs");
+      }
+
+      if (stats.failed) {
+        add(stats.failed + " failed", "tm-fail", stats.failed + " tool call(s) reported ok:false");
+      }
+      return frag;
+    }
+
     function _buildProcessCard(message, events, pane) {
       pane = pane || activePane;
-      const details = document.createElement("details");
-      details.className = "process";
-      details.open = false;   // explicit: never render a history card expanded
-      if (message && message.id) details.dataset.msgId = String(message.id);
-      const summary = document.createElement("summary");
-      summary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Process';
-      details.appendChild(summary);
-      const body = document.createElement("div");
-      body.className = "process-body";
-      details.appendChild(body);
+
+      // ── Split BEFORE building: trailing answer block only ──
+      // CARD  = everything the agent DID — tool cards, status, approvals, AND
+      //         the narration interleaved with them. Tool-call text belongs with
+      //         the tool call, so it stays collapsed.
+      // TURN  = only the FINAL response: the contiguous run of answer events at
+      //         the very end of the list. That is the block the user actually
+      //         reads without opening anything.
+      //
+      // Not a type partition: splitting every round_text/ui_block out pulled
+      // mid-round tool narration into the turn, which is wrong. Not a cut at
+      // the last work event either: 475 of 2209 messages in system/sable.db end
+      // on skill_end/round_thinking with no final answer at all, so that rule
+      // left the turn empty and hid the answer inside the card.
+      //
+      // A trailing run is the honest boundary — it exists only when the agent
+      // actually produced a closing response, and it keeps a ui_block that is
+      // part of that closing response outside the card where it renders inline.
+      // Done before the card exists so an answer-only message (202 of 2209 in
+      // the live DB) never produces an empty Process card.
+      const _ANSWER_TYPES = new Set([
+        "round_text", "ui_block",
+        "html_start", "html_chunk", "html_end",
+      ]);
+      let inside = null;
+      let outside = null;
+      if (Array.isArray(events)) {
+        outside = [];
+        // 1. Skip work events TRAILING the answer. Some turns end with a
+        //    skill_start/skill_end after the closing text (a final save or
+        //    bookkeeping call). Those are process noise — they belong in the
+        //    card, and they must not hide the answer that precedes them.
+        let end = events.length;
+        while (end > 0) {
+          const t = events[end - 1] && events[end - 1].type;
+          if (_ANSWER_TYPES.has(t)) break;
+          end--;
+        }
+        if (end > 0) {
+          // 2. Walk back over the contiguous answer run that ends there.
+          let start = end;
+          while (start > 0) {
+            const t = events[start - 1] && events[start - 1].type;
+            if (!_ANSWER_TYPES.has(t)) break;
+            start--;
+          }
+          // 3. Drop leading empty round_text separators so a blank line can't
+          //    drag the run's start into the card.
+          while (start < end) {
+            const e = events[start];
+            if (e.type === "round_text" && !(e.text || "").trim()) start++;
+            else break;
+          }
+          outside = events.slice(start, end);
+          inside = events.slice(0, start).concat(events.slice(end));
+        } else {
+          // No answer content at all — everything is process.
+          inside = events.slice();
+        }
+
+        // 4. Render components are widgets, not narration. A quiz, form or HTML
+        //    pane is interactive and must stay visible — burying it in a
+        //    collapsed Process card hides it and kills the interaction. Lift
+        //    every ui_block / html_* out of the card, wherever it fell.
+        const _WIDGET_TYPES = new Set([
+          "ui_block", "html_start", "html_chunk", "html_end",
+        ]);
+        const _hoisted = [];
+        const _kept = [];
+        for (const e of inside) {
+          if (e && _WIDGET_TYPES.has(e.type)) _hoisted.push(e);
+          else _kept.push(e);
+        }
+        if (_hoisted.length) {
+          inside = _kept;
+          outside = outside.concat(_hoisted);
+        }
+      }
+
       // Wrap in the same `.turn` container the live stream uses. Without it the
       // card is a direct child of the flex pane, so `width:100%` resolves to the
       // FULL pane width instead of the chat column, and its children (which carry
@@ -527,24 +668,46 @@
       // overrides that keep the internals aligned.
       const turn = document.createElement("div");
       turn.className = "turn";
-      turn.appendChild(details);
       pane.appendChild(turn);
+
+      // No work at all → no card. Render the answer segment directly.
+      const hasInside = Array.isArray(inside) ? inside.length > 0 : true;
+      if (!hasInside) {
+        if (outside && outside.length) {
+          const host = document.createElement("div");
+          turn.appendChild(host);
+          _renderSkillEvents(outside, host);
+          const parent = host.parentNode;
+          while (host.firstChild) parent.insertBefore(host.firstChild, host);
+          host.remove();
+        }
+        return null;
+      }
+
+      const details = document.createElement("details");
+      details.className = "process";
+      details.open = false;   // explicit: never render a history card expanded
+      if (message && message.id) details.dataset.msgId = String(message.id);
+      const summary = document.createElement("summary");
+      summary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i><span class="process-title">Process</span>';
+      // Digest of the work behind the collapsed card. Wrapped in the same
+      // container the live path uses so `margin-left:auto` pushes the chips to
+      // the right edge instead of butting against the title.
+      const _tstats = _traceStats(inside);
+      if (_tstats) {
+        const _metaWrap = document.createElement("span");
+        _metaWrap.className = "trace-meta-wrap";
+        _metaWrap.appendChild(_renderTraceMeta(_tstats));
+        summary.appendChild(_metaWrap);
+      }
+      details.appendChild(summary);
+      const body = document.createElement("div");
+      body.className = "process-body";
+      details.appendChild(body);
+      turn.appendChild(details);
       if (!window._historyLoading) activateLucideIcons(details);
 
-      // Split ONCE, up front. Everything from the last non-empty round_text
-      // onward is the final answer, and it must render OUTSIDE the collapsed
-      // card — callers that skip main content (hasRoundText) rely on it.
-      let inside = null;
-      if (Array.isArray(events)) {
-        let cut = events.length;
-        for (let i = events.length - 1; i >= 0; i--) {
-          const e = events[i];
-          if (e && e.type === "round_text" && e.text && e.text.trim()) { cut = i; break; }
-        }
-        inside = events.slice(0, cut);
-        const outside = events.slice(cut);
-        if (outside.length) _renderOutside(outside, details);
-      }
+      if (outside && outside.length) _renderOutside(outside, details);
 
       let built = false;
       details.addEventListener("toggle", async () => {
@@ -1232,7 +1395,15 @@
       if (!s || !s.t0) return;
       if (!s.tEnd) s.tEnd = performance.now();   // ordering-safe fallback
 
-      const md = turn.querySelector(".msg.bot .md-content");
+      // Measure the ANSWER bubble, not the first .md-content in the turn.
+      // Mid-round text lives inside the collapsed Process card, and
+      // querySelector would return that one first — innerText on a collapsed
+      // element is ~empty, so the length guard silently killed the badge on
+      // every tool-using turn. Skip anything inside details.process.
+      let md = null;
+      for (const el of turn.querySelectorAll(".msg.bot .md-content")) {
+        if (!el.closest("details.process")) { md = el; break; }
+      }
       const chars = md ? md.innerText.trim().length : 0;
       if (chars < 24) return;   // skip empty / trivial replies
 
@@ -1295,6 +1466,12 @@
         } catch (_) { /* never let stats break the UI */ }
       }
     }
+    // msg-actions.js lives in a different file and a different IIFE, so it can
+    // only see this through window. Without the export its
+    // `typeof attachSpeedBadge === "function"` guard was ALWAYS false and the
+    // speed badge never rendered on any path — live or history, injection or
+    // normal.
+    window.attachSpeedBadge = attachSpeedBadge;
 
     function addBotStreaming(pane = activePane, chatId = activeChatId) {
       clearPaneEmptyState(pane);
@@ -1344,12 +1521,59 @@
       processCard.className = "process";
       processCard.open = true;
       const _procSummary = document.createElement("summary");
-      _procSummary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Process';
+      _procSummary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i><span class="process-title">Process</span>';
+      // Live digest — updated as each tool finishes (see noteToolTiming below).
+      const _procMeta = document.createElement("span");
+      _procMeta.className = "trace-meta-wrap";
+      _procSummary.appendChild(_procMeta);
       processCard.appendChild(_procSummary);
+
+      // Running tool counters for the header digest.
+      // Feed the digest the raw event, not a squeezed summary — rounds are
+      // counted from skill_start bursts and need the round_text/thinking
+      // boundaries too, so the original sequence has to be preserved here.
+      const _liveTools = [];
+      function _paintMeta() {
+        const st = _traceStats(_liveTools);
+        _procMeta.textContent = "";
+        if (st) _procMeta.appendChild(_renderTraceMeta(st));
+      }
+      function noteToolTiming(evt) {
+        if (!evt) return;
+        _liveTools.push(evt);
+        _paintMeta();
+      }
+      // Marks the end of a tool burst. Called on the first model output of a
+      // round (and on round_thinking). Deduped: two answer chunks in the same
+      // round must not look like two rounds, and pushing every streamed chunk
+      // would also make _traceStats re-scan a growing array on each token.
+      function noteModelOutput() {
+        const last = _liveTools[_liveTools.length - 1];
+        if (last && last.type === "round_text") return;
+        _liveTools.push({ type: "round_text" });
+        _paintMeta();
+      }
       turn.appendChild(processCard);
       let processBody = document.createElement("div");
       processBody.className = "process-body live";
       processCard.appendChild(processBody);
+      // The body is height-capped in CSS (chat.css) so a long run scrolls
+      // inside the card instead of running off the pane. That cap means new
+      // cards land BELOW the fold as the turn progresses — so follow the
+      // bottom the same way the thinking block does. One observer on the body
+      // beats patching all ~12 appendChild sites, and it can never be missed
+      // by a path added later.
+      processBody._procFollow = true;
+      processBody.addEventListener("scroll", () => {
+        const gap = processBody.scrollHeight - processBody.scrollTop - processBody.clientHeight;
+        processBody._procFollow = gap < 40;
+      }, { passive: true });
+      const _procFollowObs = new MutationObserver(() => {
+        if (processBody._procFollow !== false) {
+          processBody.scrollTop = processBody.scrollHeight;
+        }
+      });
+      _procFollowObs.observe(processBody, { childList: true, subtree: true });
       // Turns abandoned by a mid-stream user injection. finalize() has to sweep
       // these too — they hold a real, user-visible answer that still needs a
       // toolbar, a speed badge and a settled pending-card state.
@@ -2069,6 +2293,8 @@
       return {
         injectUserMessage,
         appendInlineUser,
+        noteToolTiming,
+        noteModelOutput,
         appendThinking(text) {
           hidePending();
           ensureThinkingBlock();
@@ -3282,6 +3508,7 @@
               else if (userMsgDiv) attachMemoryChip(userMsgDiv, evt.memories);
             }
           } else if (evt.type === "round_thinking") {
+            if (typeof ui.noteModelOutput === "function") ui.noteModelOutput();
             ui.showRoundThinking(evt.text || "");
           } else if (evt.type === "thinking") {
             // Legacy fallback — backend no longer sends raw thinking tokens
@@ -3300,6 +3527,8 @@
             ui._pendingRateLimit = null;
             ui._pendingCaptchaBlock = null;
             ui._pendingNoSlot = null;
+            // Close the current tool burst for the round counter.
+            if (typeof ui.noteModelOutput === "function") ui.noteModelOutput();
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
@@ -3386,6 +3615,7 @@
             ui.closeBurst();
             ui.addSkillStart(evt);
             // Track path for preview card injection at skill_end
+            if (typeof ui.noteToolTiming === "function") ui.noteToolTiming(evt);
             if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {
               const _d = evt.data && (evt.data.attrs || evt.data);
               _lastSkillPath = (_d && (_d.path || _d.filename)) || "";
@@ -3401,6 +3631,10 @@
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
             if (_toolDepth > 0) _toolDepth--;
+            // Feed the header digest. The card is collapsed for most of the
+            // turn, so the summary line is the only running feedback the user
+            // gets: tool count, elapsed tool time, failures.
+            if (typeof ui.noteToolTiming === "function") ui.noteToolTiming(evt);
 
           } else if (evt.type === "doc_changed") {
             // A study tool mutated a document (highlights / notes / progress /

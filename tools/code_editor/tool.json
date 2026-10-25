@@ -44,7 +44,7 @@
       "properties": {
         "path": {"type": "string", "description": "File path to create"},
         "content": {"type": "string", "description": "Full file content to write"},
-        "overwrite": {"type": "boolean", "description": "Overwrite if exists"},
+        "overwrite": {"type": "boolean", "description": "If the file already exist, Or you created before and now wants to write the whole file again."},
         "dry_run": {
           "type": "boolean",
           "description": "Report what would be written without touching disk. Default false."

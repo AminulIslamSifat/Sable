@@ -543,7 +543,12 @@
       /* overflow-y:auto silently forces overflow-x to auto. State it, or a
          long unbroken token (URL, hash, minified code) adds a horizontal bar. */
       overflow-x: hidden;
-      overscroll-behavior: contain;
+      /* overscroll-behavior:contain used to sit here. Its whole purpose is to
+         BLOCK scroll chaining, so reaching the end of the reasoning block
+         trapped the wheel and the chat pane never moved. `auto` (the default)
+         lets the scroll fall through to the parent once this one bottoms out —
+         which is what a nested scroller should do. */
+      overscroll-behavior: auto;
       /* And wrap those tokens instead of letting them overflow at all. */
       overflow-wrap: anywhere;
       word-break: break-word;
@@ -627,12 +632,76 @@
       transition: transform 0.15s;
     }
     details.process[open] > summary .thinking-chevron { transform: rotate(90deg); }
+    /* Trace digest in the summary line: "3 tools · 4.2s · slow: grep 1.9s".
+       Collapsed cards hide the work, so the header has to say what happened.
+       Pushed right and de-emphasised so it reads as metadata, not a title. */
+    details.process > summary .process-title { flex: 0 0 auto; }
+    details.process > summary .trace-meta-wrap {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      overflow: hidden;
+      flex-wrap: nowrap;
+    }
+    /* Quiet by default: pills, borders and a mono font made the summary read
+       like a dashboard bolted onto the chat. Plain dim text with middots is
+       enough — it is metadata, not content. */
+    .trace-meta {
+      flex: 0 0 auto;
+      font-size: calc(var(--font-size-system) * 0.9);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.5;
+      white-space: nowrap;
+      color: var(--muted-2);
+      opacity: 0.75;
+      transition: color 0.15s, opacity 0.15s;
+    }
+    /* Separator between chips, drawn from the flex gap instead of a border. */
+    .trace-meta + .trace-meta::before {
+      content: "·";
+      margin-right: 5px;
+      color: var(--muted-2);
+      opacity: 0.6;
+    }
+    details.process > summary:hover .trace-meta { color: var(--text-dim); opacity: 1; }
+    /* Only failure earns colour — everything else stays quiet. */
+    .trace-meta.tm-fail {
+      color: var(--danger, #e06c75);
+      opacity: 1;
+    }
+
     details.process .process-body {
 
       display: flex;
       flex-direction: column;
       gap: 6px;
       margin-top: 6px;
+      /* Cap the stack so a long run (thinking + N tool cards + status) scrolls
+         INSIDE the card instead of growing without bound and running off the
+         bottom of the pane. Each child is already capped (thinking 40vh, tool
+         results 280px) but nothing capped their SUM — 6 cards stacked = a
+         2000px card with the rest of the chat pushed out of reach.
+         Same fix, same reason, as details.thinking .thinking-body above. */
+      max-height: min(60vh, 560px);
+      overflow-y: auto;
+      /* overflow-y:auto silently forces overflow-x to auto. State it, or a
+         long unbroken token inside a card adds a horizontal scrollbar. */
+      overflow-x: hidden;
+      /* auto, not contain: at the top/bottom of the stack the wheel must keep
+         travelling to the chat pane. contain swallowed it and left the user
+         stuck inside the card with no way to scroll the page. */
+      overscroll-behavior: auto;
+    }
+    /* The cap above makes this a constrained flex column, and flex items
+       shrink by default — which squashed each card instead of letting it keep
+       its own height. The thinking block was the visible casualty: compressed
+       below its max-height:40vh, so its internal scroll never engaged and it
+       just looked clipped. Pin every child to its natural (already capped)
+       height; the body scrolls the stack, the cards scroll their contents. */
+    details.process .process-body > * {
+      flex-shrink: 0;
     }
     /* Only for settled cards. A live turn keeps this off so the browser never
        skips painting the block that is actively streaming into it. */
@@ -663,12 +732,13 @@
     .inline-user-note .iun-icon svg { width: 13px; height: 13px; }
     .inline-user-note .iun-text { flex: 1; min-width: 0; }
 
-    details.process .process-body:not(.live) {
-      /* No contain-intrinsic-size: `auto 200px` reserves 200px of intrinsic
-         height for a card whose real content is usually far shorter, which
-         shows up as an oversized collapsed card. */
-      content-visibility: auto;
-    }
+    /* content-visibility:auto was a paint optimisation for the settled body.
+       It had to go: the body is now a fixed-height scroll container, and
+       content-visibility makes the browser SKIP layout for offscreen children,
+       so scrollHeight is an estimate rather than the truth. The scroller then
+       clamps to a bottom that isn't the real bottom — content reads as stuck
+       past the margin — until a DOM change forces layout and it snaps back.
+       That was the intermittent "locked at the bottom, then fixes itself" bug. */
     /* Live turn: same look, no collapsed card yet. */
     .turn > .process-body.live {
       display: flex;
