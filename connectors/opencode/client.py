@@ -27,6 +27,7 @@ Model list, capabilities and thinking modes are refreshed from
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -57,7 +58,7 @@ _DEFAULT_MODEL = "deepseek-v4.1-flash-free"
 # package data in frozen builds. system/ is checked second for older dev trees.
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 _JA3_FILE = _DATA_DIR / "opencode_ja3.json"
-_JA3_FILE_LEGACY = Path(__file__).resolve().parent.parent.parent / "system" / "opencode_ja3.json"
+_JA3_FILE_LEGACY = PERSISTENT_ROOT / "system" / "opencode_ja3.json"
 _JA3_FALLBACK = (
     "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-"
     "49162-49172-156-157-47-53,"
@@ -93,7 +94,7 @@ def _is_closed(session: Any) -> bool:
 # persona and its full tool set; the harness is prepended/mixed in, not swapped.
 # Captured from upstream opencode — ships as package data beside the connector.
 _HARNESS_FILE = _DATA_DIR / "opencode_harness.json"
-_HARNESS_FILE_LEGACY = Path(__file__).resolve().parent.parent.parent / "system" / "opencode_harness.json"
+_HARNESS_FILE_LEGACY = PERSISTENT_ROOT / "system" / "opencode_harness.json"
 _HARNESS_MARKER = "You are an AI agent running in OpenCode"
 
 

@@ -1,6 +1,7 @@
 """FastAPI-friendly service layer for Sable chat engine."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import codecs
@@ -33,7 +34,7 @@ logger = logging.getLogger("sable")
 
 # --- Raw response logger (Qwen only, server path) -----------------------
 # Disk-write on every SSE chunk. Diagnostic only → OFF unless SABLE_RAW_LOG=1.
-_QWEN_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
+_QWEN_LOG_DIR = PERSISTENT_ROOT / "output" / "qwen_raw"
 _qwen_raw_log = logging.getLogger("sable.qwen.raw")
 
 

@@ -225,6 +225,95 @@ def verify_server() -> None:
         print(f"  no junk, all required assets present")
 
 
+def verify_frozen_paths() -> None:
+    """No shipped code may write into a __file__-derived path.
+
+    Inside the AppImage, __file__ points into a read-only squashfs mount. Any
+    write there raises Errno 30 — and most call sites swallow it in a bare
+    `except: pass`, so the feature just silently never works. This has bitten
+    tools/ (perchance key), instruction/ (persona config) and Brain/ (memory).
+
+    Walks the AST rather than grepping, because the path is usually assigned to
+    a module constant and the write happens far away.
+    """
+    import ast
+
+    WRITE_METHODS = {
+        "write_text", "write_bytes", "mkdir", "unlink", "rename",
+        "touch", "rmdir",
+    }
+
+    def _opens_for_write(call: ast.Call) -> bool:
+        """`open(p, 'rt')` reads. `open(p, 'w')` writes. Bare `open(p)` reads.
+
+        Without this the gate flags every gzip.open/read_text-style call that
+        happens to sit next to a __file__-derived constant.
+        """
+        mode = None
+        if len(call.args) >= 2 and isinstance(call.args[1], ast.Constant):
+            mode = call.args[1].value
+        for kw in call.keywords:
+            if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                mode = kw.value.value
+        if not isinstance(mode, str):
+            return False
+        return any(c in mode for c in ("w", "a", "x", "+"))
+
+    SOURCE_DIRS = ["server", "engine", "tools", "skills", "connectors", "telegram_bot"]
+    findings: list[str] = []
+
+    for sub in SOURCE_DIRS:
+        base = ROOT / sub
+        if not base.is_dir():
+            continue
+        for py in base.rglob("*.py"):
+            if any(p in py.parts for p in ("__pycache__", ".editor_tools_backups")):
+                continue
+            try:
+                tree = ast.parse(py.read_text(encoding="utf-8", errors="ignore"))
+            except (SyntaxError, OSError):
+                continue
+
+            suspects: dict[str, int] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                    if "__file__" not in ast.dump(node.value):
+                        continue
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for t in targets:
+                        if isinstance(t, ast.Name):
+                            suspects[t.id] = node.lineno
+
+            if not suspects:
+                continue
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                attr = node.func.attr
+                if attr not in WRITE_METHODS:
+                    if attr != "open" or not _opens_for_write(node):
+                        continue
+                blob = " ".join(ast.dump(a) for a in node.args)
+                blob += " " + ast.dump(node.func.value)
+                hit = [v for v in suspects if f"id='{v}'" in blob]
+                if hit:
+                    findings.append(
+                        f"{py.relative_to(ROOT)}:{node.lineno} "
+                        f".{node.func.attr}() on {hit[0]}"
+                    )
+
+    with Stage("Verifying frozen-safe paths"):
+        if findings:
+            for f in findings:
+                print(f"  \033[31m✗ {f}\033[0m")
+            die(
+                "writable path derived from __file__ — would raise Errno 30 "
+                "inside the read-only AppImage mount. Use PERSISTENT_ROOT."
+            )
+        print(f"  {len(SOURCE_DIRS)} source dirs clean, no bundle-relative writes")
+
+
 def verify_run_script() -> None:
     """The frozen binary must run a script, not boot a second server."""
     with Stage("Verifying --run-script dispatch"):
@@ -277,6 +366,7 @@ def main() -> int:
         if not SERVER_DIR.is_dir():
             die("no server bundle to verify — run a full build first")
         verify_server()
+        verify_frozen_paths()
         verify_run_script()
         verify_appimage()
         print(f"\n\033[32mdone in {time.monotonic() - t0:.0f}s\033[0m")
@@ -296,6 +386,7 @@ def main() -> int:
 
     build_server()
     verify_server()
+    verify_frozen_paths()
     verify_run_script()
     build_appimage(args.target)
     verify_appimage()

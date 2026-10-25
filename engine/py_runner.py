@@ -54,6 +54,18 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _BIND_VARS}
     # A child must never inherit a half-initialised bytecode setting.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    # Bundled scripts import `engine.*` (for PERSISTENT_ROOT). In a frozen
+    # build that resolves out of the PYZ. In a source checkout the child is
+    # started as `python path/to/script.py`, which puts the *script's own
+    # directory* on sys.path[0] — so `engine` is not importable and the child
+    # dies with ModuleNotFoundError before it prints anything. Supplying the
+    # project root here fixes every bundled script at once.
+    if not is_frozen():
+        root = str(Path(__file__).resolve().parent.parent)
+        prev = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = root + ((os.pathsep + prev) if prev else "")
+
     if extra:
         env.update({k: str(v) for k, v in extra.items()})
     return env

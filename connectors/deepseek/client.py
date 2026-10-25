@@ -12,6 +12,7 @@ Yields events matching Sable's stream interface:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import base64
@@ -116,7 +117,7 @@ def _log_raw(direction: str, payload: str) -> None:
 # Per-account token store: {"browser-data-acc1": ["jwt1", "jwt2", ...], ...}
 # Tokens never expire, so we accumulate them in a list per account.
 # Capped at MAX_TOKENS_PER_ACCOUNT to prevent unbounded file growth.
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".deepseek_tokens.json"
 MAX_TOKENS_PER_ACCOUNT = 10
 
@@ -176,7 +177,7 @@ def _auto_rotate_enabled(provider: str) -> bool:
         return True
 
 # Legacy single-token cache (migrated on first access)
-_LEGACY_TOKEN_CACHE = Path(__file__).resolve().parent / ".token_cache.json"
+_LEGACY_TOKEN_CACHE = PERSISTENT_ROOT / "system" / ".token_cache.json"
 _LEGACY_MIGRATED = False  # guard so migration only runs once
 
 

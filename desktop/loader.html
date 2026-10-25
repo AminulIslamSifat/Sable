@@ -31,6 +31,8 @@
     -webkit-user-select: none;
     user-select: none;
     overflow: hidden;
+    position: relative;
+    padding: 16px;
   }
 
   .scene { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
@@ -126,7 +128,7 @@
     justify-self: center;
     border-radius: 50%;
     border: 1.5px solid currentColor;
-    opacity: .55;
+    opacity: .8;
     transition: opacity .3s, border-color .3s, background .3s;
   }
   .step .lbl { letter-spacing: .15px; }
@@ -235,8 +237,8 @@
   .log {
     margin: 0;
     /* right gutter keeps text clear of the scrollbar */
-    padding: 11px 26px 11px 13px;
-    max-height: 208px;
+    padding: 9px 24px 9px 12px;
+    max-height: 118px;
     overflow-y: auto;
     font: 11.5px/1.65 ui-monospace, "JetBrains Mono", monospace;
     color: #948c7e;
@@ -276,7 +278,7 @@
   button.act.primary:hover { background: linear-gradient(180deg, #352c19 0%, #241d12 100%); }
 
   .foot {
-    margin-top: 22px;
+    margin-top: 14px;
     font-size: 10.5px;
     color: #4a453c;
     letter-spacing: .7px;
@@ -287,18 +289,645 @@
   }
   .foot .sep { opacity: .4; }
   .foot code { color: #857c6c; font-family: ui-monospace, "JetBrains Mono", monospace; letter-spacing: .2px; }
+
+  /* ── polish layer ───────────────────────────────────────────── */
+
+  /* vignette — pulls the eye to the card instead of the flat void */
+  .scene::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse 96% 78% at 50% 45%, transparent 40%, rgba(0,0,0,.38) 100%);
+    pointer-events: none;
+  }
+
+  /* a soft band of light sweeping down the card while booting.
+     Purely kinetic — it reads as "working" without a spinner. */
+  /* (scan band removed — it read as a moving stripe, not progress) */
+
+  /* hairline rail linking the three pips */
+  .steps { position: relative; }
+  /* single hairline through the pip centres — no glow, no second line.
+     The pips are centred in a 22px column, so 11px is their true centre. */
+  .steps::before {
+    content: "";
+    position: absolute;
+    left: 11px; top: 16px; bottom: 16px;
+    width: 1px;
+    background: linear-gradient(180deg, rgba(201,169,97,.20), rgba(201,169,97,.06));
+    pointer-events: none;
+  }
+
+  /* indeterminate hairline under the status box — the honest "in progress"
+     signal, since we cannot know a real percentage. */
+  .progress {
+    position: relative;
+    height: 2px;
+    margin-top: 9px;
+    border-radius: 2px;
+    overflow: hidden;
+    background: #14120e;
+    opacity: 0;
+    transition: opacity .35s ease;
+  }
+  body[data-stage="checking"] .progress,
+  body[data-stage="booting"]  .progress,
+  body[data-stage="loading"]  .progress { opacity: 1; }
+  .progress::after {
+    content: "";
+    position: absolute; top: 0; bottom: 0; left: -40%; width: 38%;
+    background: linear-gradient(90deg, transparent, var(--gold), transparent);
+    animation: slide 1.7s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0%   { left: -40%; }
+    100% { left: 100%; }
+  }
+
+  /* counter-rotating inner ring gives the mark depth without noise */
+  .mark .ring {
+    position: absolute; inset: 7px;
+    border-radius: 17px;
+    border: 1px solid rgba(201,169,97,.14);
+    animation: spinBack 9s linear infinite;
+  }
+  @keyframes spinBack { to { transform: rotate(-360deg); } }
+  body[data-stage="idle"]  .mark .ring,
+  body[data-stage="error"] .mark .ring { animation-play-state: paused; }
+
+  /* active step drifts a touch right — cheap sense of motion */
+  .step { transition: color .35s ease; }
+
+  /* blinking caret in the log head while output is streaming */
+  .logwrap { position: relative; }
+  body[data-stage="booting"] .loghead .ltitle i,
+  body[data-stage="loading"] .loghead .ltitle i { background: var(--gold); }
+
+  .foot #elapsed { color: #6f6657; font-variant-numeric: tabular-nums; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card::before, .progress::after, .mark .ring { animation: none; }
+    .card > * { animation: none; }
+  }
+
+  .scene {
+    background:
+      radial-gradient(ellipse 130% 85% at 50% -12%, #13110c 0%, transparent 58%),
+      radial-gradient(ellipse 95% 70% at 82% 112%, #0b1210 0%, transparent 60%),
+      var(--bg);
+  }
+
+  .scene::before {
+    content: "";
+    position: absolute; inset: 0;
+    opacity: .045;
+    mix-blend-mode: overlay;
+    pointer-events: none;
+    background-size: 150px 150px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/></filter><rect width='150' height='150' filter='url(%23n)'/></svg>");
+  }
+
+  .g1 { opacity: .62; }
+
+  .mark {
+    width: 96px; height: 96px;
+    margin: 0 auto 28px;
+    border-radius: 27px;
+    border-color: #332c1e;
+    background: linear-gradient(158deg, #1e1a13 0%, #0a0908 100%);
+    box-shadow:
+      0 26px 74px -24px rgba(0,0,0,.98),
+      inset 0 1px 0 rgba(255,255,255,.07),
+      0 0 110px -30px rgba(201,169,97,.75);
+  }
+  .mark svg { width: 46px; height: 46px; }
+  .mark::after { border-radius: 27px; }
+
+  h1 {
+    font-size: 27px;
+    font-weight: 500;
+    letter-spacing: 7.5px;
+    text-indent: 7.5px;
+    margin: 0 0 8px;
+    background: linear-gradient(180deg, #fdf9ef 0%, #bfae86 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .sub {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 13px;
+    font-size: 10px;
+    letter-spacing: 3.4px;
+    text-transform: uppercase;
+    color: #6b6457;
+    margin: 0 0 30px;
+  }
+  .sub::before,
+  .sub::after {
+    content: "";
+    height: 1px;
+    width: 32px;
+    flex: 0 0 auto;
+    background: linear-gradient(90deg, transparent, #3c3629);
+  }
+  .sub::after { background: linear-gradient(90deg, #3c3629, transparent); }
+
+  .step[data-state="active"] .lbl { text-shadow: 0 0 18px rgba(201,169,97,.45); }
+
+  .status {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.03),
+      0 12px 30px -20px rgba(0,0,0,.9);
+  }
+
+  .logwrap {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.02),
+      0 16px 36px -24px rgba(0,0,0,.95);
+  }
+
+  /* ── glass card: gives the content a real container ─────────── */
+  .card {
+    padding: 46px 42px 34px;
+    border-radius: 22px;
+    background:
+      linear-gradient(180deg, rgba(22,19,14,.72) 0%, rgba(10,9,8,.55) 100%);
+    border: 1px solid rgba(201,169,97,.09);
+    box-shadow:
+      0 48px 120px -48px rgba(0,0,0,.95),
+      0 0 0 1px rgba(0,0,0,.4),
+      inset 0 1px 0 rgba(255,255,255,.045);
+    backdrop-filter: blur(22px) saturate(120%);
+    -webkit-backdrop-filter: blur(22px) saturate(120%);
+  }
+  /* a hairline of gold light along the top edge */
+  .card::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 14%; right: 14%; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(201,169,97,.45), transparent);
+    pointer-events: none;
+  }
+
+  /* stronger presence for the mark */
+  .mark::before {
+    inset: -34px;
+    background: radial-gradient(circle, rgba(201,169,97,.22) 0%, transparent 66%);
+  }
+
+  /* title gets a slow living gradient */
+  h1 {
+    background-size: 200% auto;
+    animation: titleShift 8s ease-in-out infinite;
+  }
+  @keyframes titleShift {
+    0%, 100% { background-position: 0% center; }
+    50%      { background-position: 100% center; }
+  }
+
+  /* steps read as a real progress rail */
+
+
+  @media (prefers-reduced-motion: reduce) {
+    h1 { animation: none; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     AESTHETIC LAYER — quiet luxury, cosmic minimal
+     ═══════════════════════════════════════════════════════════ */
+
+  /* ── backdrop: deep space, slow warm aurora ── */
+  .scene {
+    background:
+      radial-gradient(ellipse 140% 90% at 50% -25%, #191510 0%, transparent 52%),
+      radial-gradient(ellipse 100% 70% at 12% 108%, #0c1311 0%, transparent 58%),
+      radial-gradient(ellipse 90% 65% at 92% 102%, #141019 0%, transparent 56%),
+      #060609;
+  }
+  .g1 {
+    width: 1100px; height: 1100px; top: -55%; margin-left: -550px;
+    background: radial-gradient(circle, rgba(201,169,97,.13) 0%, rgba(201,169,97,0) 62%);
+    opacity: .78; filter: blur(72px);
+    animation: drift1 34s ease-in-out infinite alternate;
+  }
+  .g2 {
+    width: 900px; height: 900px; bottom: -45%; right: -20%;
+    background: radial-gradient(circle, rgba(125,211,160,.09) 0%, transparent 66%);
+    opacity: .72;
+    animation: drift2 40s ease-in-out infinite alternate;
+  }
+  .grid {
+    background-size: 64px 64px;
+    background-image:
+      linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px);
+    mask-image: radial-gradient(ellipse 52% 46% at 50% 46%, #000 10%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 52% 46% at 50% 46%, #000 10%, transparent 100%);
+  }
+
+  /* ── card: slab of dark glass, light caught along the top ── */
+  .card {
+    width: min(420px, 88vw);
+    padding: 26px 32px 20px;
+    border-radius: 26px;
+    background:
+      linear-gradient(168deg, rgba(30,26,19,.78) 0%, rgba(12,11,10,.62) 46%, rgba(8,8,9,.72) 100%);
+    border: 1px solid rgba(201,169,97,.10);
+    box-shadow:
+      0 60px 140px -60px rgba(0,0,0,1),
+      0 24px 60px -32px rgba(0,0,0,.9),
+      inset 0 1px 0 rgba(255,255,255,.055),
+      inset 0 -34px 64px -52px rgba(201,169,97,.38);
+    backdrop-filter: blur(28px) saturate(125%);
+    -webkit-backdrop-filter: blur(28px) saturate(125%);
+  }
+  .card::after {
+    top: 0; left: 18%; right: 18%; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,226,163,.55), transparent);
+  }
+
+  /* ── mark ── */
+  .mark {
+    width: 68px; height: 68px;
+    border-radius: 20px;
+    margin-bottom: 18px;
+    background: radial-gradient(circle at 32% 22%, #2a2418 0%, #131110 58%, #0a0908 100%);
+    border: 1px solid rgba(201,169,97,.22);
+    box-shadow:
+      0 30px 80px -26px rgba(0,0,0,1),
+      inset 0 1px 0 rgba(255,255,255,.09),
+      inset 0 -12px 26px -18px rgba(201,169,97,.5),
+      0 0 130px -34px rgba(201,169,97,.85);
+  }
+  .mark svg { width: 34px; height: 34px; }
+  .mark::before { inset: -26px; }
+  .mark::after { border-radius: 20px; }
+  .mark .ring { inset: 6px; border-radius: 14px; border-color: rgba(201,169,97,.16); }
+
+  /* ── type ── */
+  h1 {
+    font-size: 24px;
+    font-weight: 300;
+    letter-spacing: 9px;
+    text-indent: 9px;
+    margin: 0 0 6px;
+    background: linear-gradient(180deg, #fffdf7 0%, #e4d5ad 44%, #a08e64 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 2px 20px rgba(201,169,97,.22));
+  }
+  .sub {
+    font-size: 9px;
+    letter-spacing: 3.8px;
+    gap: 12px;
+    color: #6a6355;
+    margin-bottom: 20px;
+  }
+  .sub::before, .sub::after { width: 40px; }
+
+  /* ── steps ── */
+  .step { font-size: 12px; padding: 5.5px 0; }
+  .step[data-state="pending"] { color: #46423a; }
+  .step[data-state="active"] { color: #e8cf94; }
+  .step[data-state="active"] .pip {
+    box-shadow: 0 0 0 4px rgba(201,169,97,.08), 0 0 22px rgba(201,169,97,.5);
+  }
+  .step[data-state="done"] .lbl { color: #9a9183; }
+
+  /* ── status panel ── */
+  .status {
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(23,20,15,.9) 0%, rgba(13,12,10,.85) 100%);
+    border-color: rgba(201,169,97,.12);
+    padding: 14px 16px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.035),
+      0 14px 34px -22px rgba(0,0,0,.95);
+  }
+
+  /* ── log panel ── */
+  .logwrap {
+    border-radius: 14px;
+    border-color: rgba(201,169,97,.09);
+    background: rgba(7,7,8,.82);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.025),
+      0 18px 40px -26px rgba(0,0,0,1);
+  }
+  .loghead { border-bottom-color: rgba(201,169,97,.08); }
+  .log { color: #8f8778; }
+
+  /* ── footer ── */
+  .foot { margin-top: 24px; letter-spacing: .9px; color: #4f4a41; }
+  .foot code { color: #8d8372; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .g1, .g2 { animation: none; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     AMBIENT LAYER — fills the void, adds life
+     ═══════════════════════════════════════════════════════════ */
+
+  /* orbiting ring around the mark */
+  .orbit {
+    position: absolute;
+    inset: -26px;
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: .7;
+  }
+  .orbit::before {
+    content: "";
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    border: 1px solid rgba(201,169,97,.07);
+  }
+  .orbit .sat {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 100%; height: 100%;
+    margin: -50% 0 0 -50%;
+    animation: orbitSpin 14s linear infinite;
+  }
+  .orbit .sat::after {
+    content: "";
+    position: absolute;
+    top: -2px; left: 50%;
+    width: 4px; height: 4px;
+    margin-left: -2px;
+    border-radius: 50%;
+    background: #e8cf94;
+    box-shadow: 0 0 10px 2px rgba(201,169,97,.75), 0 0 22px 6px rgba(201,169,97,.25);
+  }
+  .orbit .sat.s2 { animation-duration: 22s; animation-direction: reverse; }
+  .orbit .sat.s2::after {
+    width: 2.5px; height: 2.5px;
+    background: #7dd3a0;
+    box-shadow: 0 0 9px 2px rgba(125,211,160,.6), 0 0 18px 5px rgba(125,211,160,.2);
+  }
+  @keyframes orbitSpin { to { transform: rotate(360deg); } }
+
+  /* floating dust motes across the whole scene */
+  .dust {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .dust i {
+    position: absolute;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(232,207,148,.9), rgba(232,207,148,0) 70%);
+    animation: floatUp linear infinite;
+    opacity: 0;
+  }
+  @keyframes floatUp {
+    0%   { transform: translate3d(0, 18px, 0) scale(.6); opacity: 0; }
+    12%  { opacity: .55; }
+    70%  { opacity: .28; }
+    100% { transform: translate3d(0, -180px, 0) scale(1.15); opacity: 0; }
+  }
+
+  /* corner brackets — frames the card like a viewfinder */
+  .brackets {
+    position: absolute;
+    inset: -30px;
+    pointer-events: none;
+  }
+  .brackets span {
+    position: absolute;
+    width: 26px; height: 26px;
+    border-color: rgba(201,169,97,.22);
+    border-style: solid;
+    border-width: 0;
+  }
+  .brackets span:nth-child(1) { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; border-top-left-radius: 8px; }
+  .brackets span:nth-child(2) { top: 0; right: 0; border-top-width: 1px; border-right-width: 1px; border-top-right-radius: 8px; }
+  .brackets span:nth-child(3) { bottom: 0; left: 0; border-bottom-width: 1px; border-left-width: 1px; border-bottom-left-radius: 8px; }
+  .brackets span:nth-child(4) { bottom: 0; right: 0; border-bottom-width: 1px; border-right-width: 1px; border-bottom-right-radius: 8px; }
+
+  /* title shimmer sweep */
+  h1 { position: relative; }
+
+
+
+
+  @media (prefers-reduced-motion: reduce) {
+    .orbit .sat, .dust i, h1::after { animation: none; }
+    .dust i { display: none; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     SURROUND LAYER — real content flanking the card
+     ═══════════════════════════════════════════════════════════ */
+
+  .stage {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    max-width: 1180px;
+    padding: 0 24px;
+    max-height: 100vh;
+  }
+
+  /* vertical spine labels hugging the card */
+  .spine {
+    position: relative;
+    height: 100%;
+    min-height: 0;
+    max-height: 400px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .spine.left { align-items: flex-end; padding-right: 42px; }
+  .spine.right { align-items: flex-start; padding-left: 42px; }
+
+  .spine .vr {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    font: 9.5px/1 ui-monospace, "JetBrains Mono", monospace;
+    letter-spacing: 5.2px;
+    text-transform: uppercase;
+    color: #4a453d;
+    white-space: nowrap;
+  }
+  .spine.left .vr { transform: rotate(180deg); }
+  .spine .vr .hl { color: #8d7f5e; }
+
+  /* a tick column beside the card */
+  .ticks {
+    position: absolute;
+    top: 50%;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    transform: translateY(-50%);
+  }
+  .spine.left .ticks { right: 22px; align-items: flex-end; }
+  .spine.right .ticks { left: 22px; align-items: flex-start; }
+  .ticks i {
+    display: block;
+    height: 1px;
+    background: rgba(201,169,97,.18);
+    width: 12px;
+  }
+  .ticks i:nth-child(3n) { width: 20px; background: rgba(201,169,97,.32); }
+  .ticks i:nth-child(5n) { width: 7px; background: rgba(201,169,97,.11); }
+
+  /* readout block — small key/value lists in the void */
+  .readout {
+    position: absolute;
+    font: 9.5px/1.85 ui-monospace, "JetBrains Mono", monospace;
+    letter-spacing: .8px;
+    color: #454039;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  .readout .k { color: #3a362f; }
+  .readout .v { color: #7a705c; }
+  .readout .v.ok { color: #6f9d84; }
+
+  .readout.tl { top: 34px; left: 38px; text-align: left; }
+  .readout.br { bottom: 34px; right: 38px; text-align: right; }
+
+  /* expanding halo rings behind the card */
+  .halo {
+    position: fixed;
+    left: 50%; top: 50%;
+    width: 300px; height: 300px;
+    margin: -150px 0 0 -150px;
+    border-radius: 50%;
+    border: 1px solid rgba(201,169,97,.10);
+    pointer-events: none;
+    animation: haloPulse 7s cubic-bezier(.2,.6,.35,1) infinite;
+  }
+  .halo.h2 { animation-delay: 2.33s; }
+  .halo.h3 { animation-delay: 4.66s; }
+  @keyframes haloPulse {
+    0%   { transform: scale(.58); opacity: 0; }
+    18%  { opacity: .34; }
+    100% { transform: scale(1.55); opacity: 0; }
+  }
+
+  @media (max-width: 1080px) {
+    .spine, .readout { display: none; }
+    .stage { grid-template-columns: 1fr; justify-items: center; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .halo { animation: none; opacity: .18; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     AURORA FIELD — one continuous drifting colour field.
+     Three huge soft gradients, 14-22s cycles, offset phases so
+     the loop never lands on a beat. No discrete objects: the
+     calm comes from something you can't quite catch moving.
+     ═══════════════════════════════════════════════════════════ */
+
+  .aurora {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    will-change: transform;
+    pointer-events: none;
+  }
+
+  /* warm gold — upper, the anchor colour of the whole screen */
+  .aurora.a1 {
+    width: 1180px; height: 900px;
+    top: -46%; left: 50%;
+    margin-left: -590px;
+    background: radial-gradient(circle, rgba(201,169,97,.34) 0%, rgba(201,169,97,.10) 42%, rgba(201,169,97,0) 68%);
+    animation: drift1 22s ease-in-out infinite alternate;
+  }
+
+  /* cool teal — low right, gives the field a second temperature */
+  .aurora.a2 {
+    width: 980px; height: 860px;
+    bottom: -48%; right: -16%;
+    background: radial-gradient(circle, rgba(214,178,106,.22) 0%, rgba(214,178,106,.06) 46%, rgba(214,178,106,0) 72%);
+    animation: drift2 18s ease-in-out infinite alternate;
+    animation-delay: -7s;
+  }
+
+  /* faint violet — low left, barely there, breaks the two-colour symmetry */
+  .aurora.a3 {
+    width: 820px; height: 760px;
+    bottom: -40%; left: -14%;
+    background: radial-gradient(circle, rgba(178,146,88,.16) 0%, rgba(178,146,88,.04) 48%, rgba(178,146,88,0) 74%);
+    animation: drift3 26s ease-in-out infinite alternate;
+    animation-delay: -13s;
+  }
+
+  /* Tiny translations only — 40-70px over 20s is imperceptible frame to
+     frame but reads as a living surface over time. Scaling a blurred
+     radial is what makes it feel like gas rather than a moving circle. */
+  @keyframes drift1 {
+    to { transform: translate3d(-58px, 42px, 0) scale(1.13); }
+  }
+  @keyframes drift2 {
+    to { transform: translate3d(-46px, -54px, 0) scale(1.09); }
+  }
+  @keyframes drift3 {
+    to { transform: translate3d(38px, -34px, 0) scale(1.07); }
+  }
+
+  /* film grain — kills gradient banding on 8-bit displays, which is what
+     makes large soft gradients look cheap. Static, no animation. */
+  .grain {
+    position: absolute; inset: 0;
+    opacity: .035;
+    mix-blend-mode: overlay;
+    pointer-events: none;
+    background-size: 160px 160px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .aurora { animation: none; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     DOT FIELD — a canvas grid of small dots.
+     A slow travelling wave lifts their brightness and size as it
+     passes, so the surface breathes. Pure geometry: no gradients.
+     ═══════════════════════════════════════════════════════════ */
+
+  #field {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+    opacity: .55;
+  }
 </style>
 </head>
 <body data-stage="idle">
 
   <div class="scene" aria-hidden="true">
-    <div class="glow g1"></div>
-    <div class="glow g2"></div>
-    <div class="grid"></div>
+    <canvas id="field"></canvas>
   </div>
 
+  <div class="stage">
+
   <main class="card">
+    <div class="brackets" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
     <div class="mark">
+      <div class="ring" aria-hidden="true"></div>
+    
       <svg viewBox="0 0 24 24" fill="none" stroke="#c9a961" stroke-width="1.5"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 2.5 4.5 7v10L12 21.5 19.5 17V7L12 2.5Z"/>
@@ -332,6 +961,8 @@
       <span id="msg">Starting…</span>
     </div>
 
+    <div class="progress" aria-hidden="true"></div>
+
     <div class="logwrap">
       <div class="loghead">
         <span class="ltitle"><i></i> server log</span>
@@ -349,10 +980,115 @@
       <span>port <code id="port">—</code></span>
       <span class="sep">·</span>
       <span id="phase">initialising</span>
+      <span class="sep">·</span>
+      <span><code id="elapsed">0.0s</code></span>
     </div>
   </main>
 
+  </div>
+
 <script>
+  // ── dot field ──────────────────────────────────────────────
+  // A grid of dots. Two slow sine waves cross the screen at
+  // different angles; where they overlap they lift the dot's
+  // brightness and radius. Nothing moves position — only light.
+  ;(function dotField() {
+    const cv = document.getElementById('field')
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+
+    const GAP = 32          // px between dots
+    const BASE_R = 0.95     // resting radius
+    const MAX_R = 2.1       // radius at peak
+    const SPEED = 0.00035   // wave travel speed
+
+    let W = 0, H = 0, dpr = 1
+    let dots = []
+    let raf = null
+    let t0 = performance.now()
+
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    function build() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2)
+      W = cv.clientWidth
+      H = cv.clientHeight
+      cv.width = Math.floor(W * dpr)
+      cv.height = Math.floor(H * dpr)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+      dots = []
+      const cols = Math.ceil(W / GAP) + 1
+      const rows = Math.ceil(H / GAP) + 1
+      const ox = (W - (cols - 1) * GAP) / 2
+      const oy = (H - (rows - 1) * GAP) / 2
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          dots.push({ x: ox + c * GAP, y: oy + r * GAP })
+        }
+      }
+    }
+
+    function draw(now) {
+      const t = (now - t0) * SPEED
+      ctx.clearRect(0, 0, W, H)
+
+      // Two wave fronts, different angles, so the pattern never
+      // reads as a single bar sweeping across.
+      // Normalise by the diagonal so the wave count is the same on any
+      // window size. Without this the phase span depends on pixel width and
+      // the crests bunch up on one side of the screen.
+      const diag = Math.sqrt(W * W + H * H) || 1
+      const ax = Math.cos(0.62), ay = Math.sin(0.62)
+      const bx = Math.cos(-0.35), by = Math.sin(-0.35)
+      const k1 = 6.5 / diag
+      const k2 = 4.2 / diag
+
+      for (let i = 0; i < dots.length; i++) {
+        const d = dots[i]
+        const p1 = d.x * ax + d.y * ay
+        const p2 = d.x * bx + d.y * by
+        const w1 = Math.sin(p1 * k1 * 2.4 - t)
+        const w2 = Math.sin(p2 * k2 * 2.4 - t * 0.63 + 1.7)
+        let v = (w1 + w2) * 0.5          // -1 .. 1
+        v = v < 0 ? 0 : v * v            // only the crest glows
+
+        if (v < 0.01) continue
+
+        const r = BASE_R + (MAX_R - BASE_R) * v
+        const a = 0.08 + 0.42 * v
+        ctx.beginPath()
+        ctx.arc(d.x, d.y, r, 0, 6.28318)
+        ctx.fillStyle = 'rgba(201,169,97,' + a.toFixed(3) + ')'
+        ctx.fill()
+      }
+
+      raf = requestAnimationFrame(draw)
+    }
+
+    function start() {
+      build()
+      if (reduce) {
+        // static: paint one frame at t=0 and stop
+        draw(t0)
+        if (raf) cancelAnimationFrame(raf)
+        raf = null
+        return
+      }
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(draw)
+    }
+
+    let rz = null
+    window.addEventListener('resize', () => {
+      clearTimeout(rz)
+      rz = setTimeout(start, 160)
+    })
+
+    start()
+  })()
+
   const api = window.sableDesktop
   const body = document.body
   const statusEl = document.getElementById('status')
@@ -486,6 +1222,31 @@
     const m = /(\d+)s\b/.exec(String(text || ''))
     if (m && body.dataset.stage === 'booting') metaEls[2].textContent = m[1] + 's'
     if (tone === 'error') metaEls[3].textContent = ''
+  }
+
+  // Dust motes — seeded once, randomised position/size/duration so the field
+  // elapsed clock — starts on first status, stops when the stage settles.
+  const elapsedEl = document.getElementById('elapsed')
+  const t0 = Date.now()
+  let elapsedTimer = null
+  function startClock() {
+    if (elapsedTimer) return
+    elapsedTimer = setInterval(() => {
+      elapsedEl.textContent = ((Date.now() - t0) / 1000).toFixed(1) + 's'
+    }, 100)
+  }
+  function stopClock() {
+    if (!elapsedTimer) return
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+  startClock()
+
+  const _origSetStatus = setStatus
+  setStatus = function (payload) {
+    const tone = payload && payload.tone
+    if (tone === 'error') stopClock()
+    return _origSetStatus(payload)
   }
 
   if (api) {

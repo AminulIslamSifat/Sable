@@ -12,6 +12,7 @@ All output is JSON for agent consumption.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import asyncio
@@ -23,7 +24,7 @@ from typing import Any
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _CONFIG_PATHS = [
-    Path(__file__).resolve().parents[3] / "system" / ".telegram_config.json",
+    PERSISTENT_ROOT / "system" / ".telegram_config.json",
     Path.cwd() / "system" / ".telegram_config.json",
 ]
 

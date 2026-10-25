@@ -27,6 +27,7 @@ Yields Sable events:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -42,7 +43,7 @@ from curl_cffi.requests import AsyncSession
 
 logger = logging.getLogger("sable.gemini_web")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 TEMPLATE_PATH = _SYSTEM_DIR / ".gemini_web_template.json"
 COOKIE_URL = "https://gemini.google.com"
 REQID_STEP = 400000

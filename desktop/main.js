@@ -148,12 +148,8 @@ function startServer(attempt = "launcher") {
 
   // SABLE_HOST is deliberately left alone — the server may bind 0.0.0.0 for LAN
   // access, and we always talk to it over loopback anyway.
-  const launcher = path.join(ROOT, "sable-launch.sh")
-  const useLauncher = attempt === "launcher" && fs.existsSync(launcher)
-  const cmd = useLauncher ? "bash" : "uv"
-  const args = useLauncher
-    ? [launcher, "--no-browser", `--port=${PORT}`]
-    : ["run", "python", "server.py"]
+  const cmd = "uv"
+  const args = ["run", "python", "server.py"]
 
   const child = spawn(cmd, args, {
     cwd: ROOT,
@@ -229,35 +225,14 @@ async function boot() {
     }
 
     status("No server on that port — starting one…")
-    // SABLE_SKIP_STARTER=1 jumps straight to the plaintext server (useful when
-    // the sealed vault's token bridge on :8765 isn't running).
-    const skipStarter = process.env.SABLE_SKIP_STARTER === "1"
-    logPath = startServer(skipStarter ? "python" : "launcher")
+    logPath = startServer()
     status("Booting Sable (first run can take a while)…")
 
     if (await waitForServer()) {
       status("Server ready — loading Sable…")
       await win.loadURL(SERVER_URL)
-      return
-    }
-    if (quitting) return
-
-    // The sealed starter needs a token bridge (default :8765). If that isn't
-    // running it dies instantly — fall back to the plaintext dev tree.
-    if (skipStarter) {
-      status(`Sable never answered on :${PORT}.\nCheck the log: ${logPath}`, "error")
-      pushLog(true)
-      return
-    }
-    status("Starter failed — falling back to plaintext server…", "warn")
-    const log = startServer("python")
-    status("Booting plaintext server…")
-
-    if (await waitForServer()) {
-      status("Server ready — loading Sable…")
-      await win.loadURL(SERVER_URL)
     } else {
-      status(`Sable never answered on :${PORT}.\nCheck the log: ${log}`, "error")
+      status(`Sable never answered on :${PORT}.\nCheck the log: ${logPath}`, "error")
       pushLog(true)
     }
   } catch (err) {

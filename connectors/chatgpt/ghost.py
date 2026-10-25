@@ -48,6 +48,7 @@ The browser binary is resolved per account from system/accounts.json
 Chromium is used.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -61,7 +62,7 @@ from engine.platform_paths import pid_exists
 
 logger = logging.getLogger("sable.chatgpt_ghost")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 CHATGPT_URL = "https://chatgpt.com/"
 
 # ChatGPT migrated the composer (~2026-10) from `<textarea id="prompt-textarea">`

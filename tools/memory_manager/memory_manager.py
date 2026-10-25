@@ -7,6 +7,7 @@ Usage:
 Actions: list, get, add, update, delete, merge, search
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import json
@@ -15,7 +16,7 @@ import sys
 from pathlib import Path
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
-_BRAIN_DIR = Path(__file__).resolve().parent.parent.parent / "Brain"
+_BRAIN_DIR = PERSISTENT_ROOT / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROCEDURAL_PATH = _BRAIN_DIR / "Procedural.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"

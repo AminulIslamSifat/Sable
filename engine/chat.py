@@ -1,5 +1,7 @@
 """Qwen Chat — Main entry point and clean CLI interface."""
 
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
+
 import asyncio
 import codecs
 import json
@@ -22,7 +24,7 @@ from engine.session import BrowserManager, create_new_chat, sanitize_fetch_heade
 # anything that needs to be visible in normal operation.
 import logging as _logging
 
-_RAW_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
+_RAW_LOG_DIR = PERSISTENT_ROOT / "output" / "qwen_raw"
 _raw_log = _logging.getLogger("sable.qwen.raw")
 
 

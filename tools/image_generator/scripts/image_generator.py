@@ -10,6 +10,7 @@ Can also be imported as a module:
     from tools.image_generator.image_generator import generate_image, STYLES, SHAPES
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import json
@@ -40,7 +41,7 @@ from perchance_key import (
 
 BASE = "https://image-generation.perchance.org/api"
 AD_ACCESS_CODE = "a4c88828629d9d1e2c98fa76fd2b5eccb69ee18af472e567febff4b943e9bbd6"
-KEY_CACHE_FILE = Path(__file__).resolve().parent.parent.parent.parent / "system" / ".perchance_key"
+KEY_CACHE_FILE = PERSISTENT_ROOT / "system" / ".perchance_key"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",

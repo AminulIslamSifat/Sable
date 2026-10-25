@@ -1054,8 +1054,8 @@ function Main {
         "PYTHONUNBUFFERED"  = "1"
     }
     try {
-        # Hand off to the starter-first launcher (sable-launch.cmd), which
-        # resolves starter -> python boot -> server.py. Kept inside the same
+        # Hand off to the launcher (sable-launch.cmd), which
+        # resolves uv/python -> server.py. Kept inside the same
         # hidden-console machinery so no popup windows appear.
         $launcherCmd = Join-Path $SCRIPT_DIR "sable-launch.cmd"
         if (-not (Test-Path $launcherCmd)) {

@@ -12,6 +12,7 @@ Usage (import):
     from tools.image_generator.scripts.advanced_sdxl import generate, AdvancedSdxlOptions
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import json
@@ -34,7 +35,7 @@ except ImportError:
 BASE_URL = "https://image-generation.perchance.org/api"
 CHANNEL = "advanced-sdxl-generator"
 AD_ACCESS_CODE = "09c1642ec4202067172b320731ede6afa83b3d77917498fd8b92add6a9915180"
-KEY_CACHE_FILE = Path(__file__).resolve().parent.parent.parent.parent / "system" / ".advanced_sdxl_key"
+KEY_CACHE_FILE = PERSISTENT_ROOT / "system" / ".advanced_sdxl_key"
 OUTPUT_DIR = Path.home() / "sable_output" / "assets"
 
 HEADERS = {

@@ -11,6 +11,7 @@ All output is JSON for agent consumption.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import email
@@ -30,7 +31,7 @@ from typing import Any
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _CONFIG_PATHS = [
-    Path(__file__).resolve().parents[3] / "system" / ".email_config.json",  # PROJECT_ROOT/system/
+    PERSISTENT_ROOT / "system" / ".email_config.json",  # PROJECT_ROOT/system/
     Path.home() / "hdd/projects/Sable/system/.email_config.json",
 ]
 

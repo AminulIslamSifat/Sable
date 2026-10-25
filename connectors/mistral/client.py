@@ -1,12 +1,13 @@
 """Mistral AI API connector for Sable — thin shim over the unified OpenAI-compat client."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 from pathlib import Path
 
 from connectors.common.openai_compat import OpenAICompatClient
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 
 
 class MistralClient(OpenAICompatClient):

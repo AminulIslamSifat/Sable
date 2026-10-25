@@ -13,6 +13,7 @@ Yields events matching Sable's stream interface:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -38,7 +39,7 @@ import httpx
 logger = logging.getLogger("sable.gemini_api")
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 _KEYS_PATH = _SYSTEM_DIR / ".gemini_api_keys.json"
 # Legacy single-key file (migrated on first load)
 _LEGACY_KEY_PATH = _SYSTEM_DIR / ".gemini_api_key"
@@ -85,7 +86,7 @@ def _trim_history(history: list[dict[str, Any]], prefix_len: int, max_chars: int
     return prefix + msgs
 
 # Instruction files to prepend on first message
-_INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
+_INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 _INSTRUCTION_FILES = ["Maria.md", "personal.md", "output_format.md"]
 
 

@@ -4,6 +4,7 @@
 
 const { app, BrowserWindow, shell, ipcMain, dialog, Menu, WebContentsView } = require("electron")
 const { ensureInstalled } = require("./installer")
+const { capturePerchanceKey } = require("./perchance")
 const { spawn } = require("node:child_process")
 const path = require("node:path")
 const fs = require("node:fs")
@@ -81,10 +82,40 @@ function logPath() {
   return path.join(dir, "server.log")
 }
 
-function send(status, detail) {
-  if (win && !win.isDestroyed()) {
-    win.webContents.send("boot:status", { status, detail })
+// ── splash status plumbing ──────────────────────────────────────
+// The shipped loader.html drives itself from status TEXT (it regexes for
+// "looking for", "booting", "server ready"). Sending the wrong string does
+// not just look wrong — it leaves the step rail stuck.
+let splashLoaded = false
+let pendingStatus = null
+let lastLogSent = ""
+
+function send(text, tone) {
+  if (!win || win.isDestroyed()) return
+  const payload = { text, tone: tone || "info" }
+  if (!splashLoaded) {
+    pendingStatus = payload
+    return
   }
+  win.webContents.send("sable:status", payload)
+}
+
+function readLogTail(maxLines) {
+  try {
+    const raw = fs.readFileSync(logPath(), "utf8")
+    const lines = raw.split(/\r?\n/).filter((l) => l.length > 0)
+    return lines.slice(-(maxLines || 18)).join("\n")
+  } catch {
+    return ""
+  }
+}
+
+function pushLog(force) {
+  if (!win || win.isDestroyed() || !splashLoaded) return
+  const tail = readLogTail()
+  if (!force && tail === lastLogSent) return
+  lastLogSent = tail
+  win.webContents.send("sable:log", { text: tail })
 }
 
 // ── server lifecycle ────────────────────────────────────────────
@@ -100,7 +131,7 @@ async function ensureBrowser(bin, env) {
         windowsHide: true,
       })
     } catch (e) {
-      send("starting", `browser check skipped: ${e.message}`)
+      send(`browser check skipped: ${e.message}`)
       return resolve(true)
     }
 
@@ -114,17 +145,17 @@ async function ensureBrowser(bin, env) {
         const [, stage, ...rest] = line.split(" ")
         const detail = rest.join(" ").replace(/_/g, " ")
         if (stage === "found" || stage === "ready") {
-          send("starting", `using system browser: ${detail}`)
+          send(`using system browser: ${detail}`)
         } else if (stage === "missing") {
-          send("starting", "no browser found — downloading Chromium (one time)…")
+          send("no browser found — downloading Chromium (one time)…")
         } else if (stage === "download") {
           downloaded = true
-          if (detail === "starting") send("starting", "downloading Chromium…")
-          else if (detail === "done") send("starting", "browser download complete")
+          if (detail === "starting") send("downloading Chromium…")
+          else if (detail === "done") send("browser download complete")
         } else if (stage === "progress") {
-          send("starting", `downloading Chromium: ${detail}`)
+          send(`downloading Chromium: ${detail}`)
         } else if (stage === "error") {
-          send("starting", `browser setup warning: ${detail}`)
+          send(`browser setup warning: ${detail}`)
         }
       }
       out = out.split("\n").pop() || ""
@@ -133,13 +164,13 @@ async function ensureBrowser(bin, env) {
     // If it stalls for 4 minutes, move on — the server still runs without a browser.
     const timer = setTimeout(() => {
       try { child.kill() } catch {}
-      send("starting", "browser setup timed out — continuing")
+      send("browser setup timed out — continuing")
       resolve(true)
     }, 240_000)
 
     child.on("exit", (code) => {
       clearTimeout(timer)
-      if (code !== 0) send("starting", "browser setup failed — continuing without one")
+      if (code !== 0) send("browser setup failed — continuing without one")
       resolve(true)
     })
     child.on("error", () => {
@@ -152,7 +183,7 @@ async function ensureBrowser(bin, env) {
 async function startServer() {
   const bin = serverBin()
   if (!fs.existsSync(bin)) {
-    send("error", `server binary missing:\n${bin}`)
+    send(`server binary missing:\n${bin}`, "error")
     return null
   }
 
@@ -171,7 +202,7 @@ async function startServer() {
 
   // One-time browser check before the server starts. Uses an existing
   // Chrome/Edge if present; downloads Playwright Chromium only if not.
-  send("starting", "checking for a usable browser…")
+  send("checking for a usable browser…")
   await ensureBrowser(bin, env)
 
   logStream = fs.createWriteStream(logPath(), { flags: "a" })
@@ -188,17 +219,24 @@ async function startServer() {
   child.stderr.pipe(logStream)
 
   child.on("exit", (code, signal) => {
-    if (!quitting) send("error", `server exited (code ${code}${signal ? `, ${signal}` : ""})`)
+    if (!quitting)
+      send(`server exited (code ${code}${signal ? `, ${signal}` : ""})`, "error")
   })
-  child.on("error", (e) => send("error", `failed to spawn server: ${e.message}`))
+  child.on("error", (e) => send(`failed to spawn server: ${e.message}`, "error"))
 
-  send("starting", "server process launched, waiting for port…")
+  send("booting — server starting, waiting for port…")
+  // Stream the log into the splash while we wait — a static "starting" line
+  // for 40s reads as a hang, and the loader has a live log pane for exactly
+  // this. Poll cheaply; pushLog() no-ops when the tail hasn't changed.
+  const logPump = setInterval(() => pushLog(), 400)
   const up = await waitForPort(serverPort)
+  clearInterval(logPump)
+  pushLog(true)
   if (!up) {
-    send("error", "server did not open its port in time — check the log")
+    send("server did not open its port in time — check the log", "error")
     return null
   }
-  send("ready", `listening on 127.0.0.1:${serverPort}`)
+  send(`server ready — listening on 127.0.0.1:${serverPort}`)
   return `http://127.0.0.1:${serverPort}`
 }
 
@@ -247,6 +285,16 @@ function createWindow() {
 }
 
 function loadSplash() {
+  splashLoaded = false
+  lastLogSent = ""
+  win.webContents.once("did-finish-load", () => {
+    splashLoaded = true
+    if (pendingStatus) {
+      win.webContents.send("sable:status", pendingStatus)
+      pendingStatus = null
+    }
+    pushLog(true)
+  })
   win.loadFile(path.join(__dirname, "splash.html"))
 }
 
@@ -256,28 +304,25 @@ async function boot() {
   if (!url) return
   // give the splash a beat so it doesn't flash
   await new Promise((r) => setTimeout(r, 300))
-  if (win && !win.isDestroyed()) win.loadURL(url).catch((e) => send("error", e.message))
+  if (win && !win.isDestroyed()) win.loadURL(url).catch((e) => send(e.message, "error"))
 }
 
 // ── IPC ─────────────────────────────────────────────────────────
-ipcMain.handle("boot:retry", async () => {
+ipcMain.on("sable:retry", async () => {
   stopServer()
   await boot()
-  return true
 })
 
-ipcMain.handle("boot:log", () => {
+ipcMain.on("sable:open-external", (_e, url) => {
   try {
-    return fs.readFileSync(logPath(), "utf8").slice(-8000)
-  } catch {
-    return "(no log yet)"
-  }
+    if (url) shell.openExternal(url)
+  } catch {}
 })
 
-ipcMain.handle("boot:info", () => ({
+ipcMain.handle("sable:info", () => ({
   port: serverPort,
   persistentRoot: persistentRoot(),
-  logPath: logPath(),
+  log: logPath(),
   packaged: app.isPackaged,
   version: app.getVersion(),
 }))
@@ -444,6 +489,24 @@ function startSearchBridge() {
 
     if (req.headers["x-sable-token"] !== SEARCH_TOKEN) return send(403, { error: "forbidden" })
     if (req.method === "GET" && req.url === "/health") return send(200, { ok: true, pid: process.pid })
+
+    // The Python side calls this before falling back to spawning an external
+    // Chrome. Without it, perchance key refresh drops a visible browser window
+    // on the user's desktop.
+    if (req.method === "POST" && req.url === "/perchance-key") {
+      // Body is unused; drain it so the socket closes cleanly.
+      req.on("data", () => {})
+      req.on("end", async () => {
+        try {
+          const out = await capturePerchanceKey({ parentWindow: win })
+          if (out.key) return send(200, { userKey: out.key })
+          return send(504, { error: out.error || "no userKey captured" })
+        } catch (exc) {
+          send(500, { error: String(exc.message || exc) })
+        }
+      })
+      return
+    }
 
     if (req.method === "POST" && (req.url === "/search" || req.url === "/images")) {
       const isImages = req.url === "/images"

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Unified CRUD for notes, schedules, agent_ops in sable.db"""
+
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 import argparse, json, sqlite3, sys, uuid
 
 # ponytail: stdlib reconfigure; prevents UnicodeEncodeError on Windows CP1252 consoles
@@ -11,7 +13,7 @@ from pathlib import Path
 
 def find_db():
     candidates = [
-        Path(__file__).resolve().parent.parent.parent / "system" / "sable.db",
+        PERSISTENT_ROOT / "system" / "sable.db",
         Path.home() / "Projects" / "Sable" / "system" / "sable.db",
     ]
     for p in candidates:

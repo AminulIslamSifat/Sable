@@ -5,11 +5,13 @@
 const { contextBridge, ipcRenderer } = require("electron")
 
 contextBridge.exposeInMainWorld("sableDesktop", {
-  // boot / splash
-  onStatus: (cb) => ipcRenderer.on("boot:status", (_e, payload) => cb(payload)),
-  retry: () => ipcRenderer.invoke("boot:retry"),
-  info: () => ipcRenderer.invoke("boot:info"),
-  log: () => ipcRenderer.invoke("boot:log"),
+  // boot / splash — channel names match desktop/preload.js so the shipped
+  // loader.html drives the boot sequence without modification.
+  onStatus: (cb) => ipcRenderer.on("sable:status", (_e, payload) => cb(payload)),
+  onLog: (cb) => ipcRenderer.on("sable:log", (_e, payload) => cb(payload)),
+  retry: () => ipcRenderer.send("sable:retry"),
+  openExternal: (url) => ipcRenderer.send("sable:open-external", url),
+  info: () => ipcRenderer.invoke("sable:info"),
 
   // native browser pane — the web UI gates on hasNativeBrowser
   hasNativeBrowser: true,

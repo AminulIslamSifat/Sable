@@ -18,6 +18,7 @@ Handles ALL SSE event types:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import io
@@ -43,7 +44,7 @@ from telegram.ext import (
 logger = logging.getLogger("sable_tg_bot")
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 _CONFIG_PATH = _SYSTEM_DIR / ".telegram_bot_config.json"
 _SESSIONS_PATH = _SYSTEM_DIR / ".telegram_bot_sessions.json"
 _AUTH_TOKEN_PATH = _SYSTEM_DIR / ".auth_token"

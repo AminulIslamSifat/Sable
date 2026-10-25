@@ -37,7 +37,7 @@ try:
     from engine.config import PERSISTENT_ROOT as _PROOT
     _SYSTEM_DIR = _PROOT / "system"
 except Exception:  # pragma: no cover - fallback when engine not importable
-    _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+    _SYSTEM_DIR = PERSISTENT_ROOT / "system"
 
 logger = logging.getLogger("sable")
 

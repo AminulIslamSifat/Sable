@@ -8,12 +8,13 @@ Builds the system instruction payload with project-aware overrides:
 - Skills filtered by project skills_config
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 from pathlib import Path
 from typing import Any
 
-_INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
+_INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -336,7 +337,7 @@ def _named_format_for(provider: str | None) -> str:
 
     _settings: dict[str, Any] = {}
     try:
-        _settings_path = Path(__file__).resolve().parent.parent.parent / "system" / "settings.json"
+        _settings_path = PERSISTENT_ROOT / "system" / "settings.json"
         if _settings_path.is_file():
             import json as _json
             _settings = _json.loads(_settings_path.read_text(encoding="utf-8"))

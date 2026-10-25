@@ -2,6 +2,7 @@
 """Hardware detection and model compatibility scoring."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import logging
 import os
@@ -207,7 +208,7 @@ import fnmatch as _fnmatch
 import re as _re
 import json as _json
 
-_SIZE_CACHE_FILE = Path(__file__).parent / ".size_cache.json"
+_SIZE_CACHE_FILE = PERSISTENT_ROOT / "system" / ".size_cache.json"
 _size_cache: dict[str, float] = {}  # key: "repo_id|include" -> size_gb
 _SPLIT_RE = _re.compile(r'^(.+)-(\d{5})-of-(\d{5})\.gguf$')
 

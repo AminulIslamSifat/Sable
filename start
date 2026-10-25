@@ -531,16 +531,15 @@ install_systemd_service() {
         return 1
     fi
 
-    # Regenerate if an OLD service exists that does not point at our launcher.
-    local want="${SCRIPT_DIR}/sable-launch.sh --no-browser"
+    # Regenerate if an OLD service exists that does not point at this script.
     if systemctl --user cat "$SERVICE_NAME" >/dev/null 2>&1; then
         local have
         have="$(systemctl --user show -p ExecStart --value "$SERVICE_NAME" 2>/dev/null || true)"
-        if printf '%s' "$have" | grep -qF "${SCRIPT_DIR}/sable-launch.sh"; then
-            _ok "systemd service already installed (starter-first)"
+        if printf '%s' "$have" | grep -qF "${SCRIPT_DIR}/start"; then
+            _ok "systemd service already installed"
             return 0
         fi
-        _warn "systemd service is stale — regenerating to point at the launcher"
+        _warn "systemd service is stale — regenerating"
     fi
 
     _info "Installing systemd user service..."
@@ -557,7 +556,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${SCRIPT_DIR}/sable-launch.sh --no-browser
+ExecStart=${SCRIPT_DIR}/start --background
 Restart=on-failure
 RestartSec=3
 Environment=TERM=xterm-256color
@@ -648,26 +647,12 @@ install_desktop_file() {
 
     local app_dir="${HOME}/.local/share/applications"
     local desktop_file="${app_dir}/sable.desktop"
-    local launcher="${SCRIPT_DIR}/sable-launch.sh"
+    local launcher="${SCRIPT_DIR}/start"
 
-    # The launcher is a committed, starter-first script (sable-launch.sh).
-    # If it is missing, fall back to writing a minimal shim so the
-    # desktop entry still points somewhere sane.
-    if [ ! -f "$launcher" ]; then
-        _warn "sable-launch.sh missing — writing minimal shim"
-        cat > "$launcher" << 'LAUNCHER_EOF'
-#!/usr/bin/env bash
-# minimal shim — real launcher is sable-launch.sh in the repo root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR" || exit 1
-if [ -x "$SCRIPT_DIR/sable-tools/starter/sable-starter-bin" ]; then
-    exec "$SCRIPT_DIR/sable-tools/starter/sable-starter-bin" \
-        --vault "$SCRIPT_DIR/vault.sable" --port "${SABLE_PORT:-61770}" --run
-fi
-exec uv run python server.py
-LAUNCHER_EOF
+    if [ ! -x "$launcher" ]; then
+        _warn "start script missing or not executable — skipping desktop entry"
+        return 0
     fi
-    chmod +x "$launcher"
 
     mkdir -p "$app_dir"
     cat > "$desktop_file" << EOF
@@ -764,13 +749,12 @@ main() {
         _warn "Falling back to foreground mode..."
     fi
 
-    # Foreground fallback — hand off to the starter-first launcher.
-    # The launcher resolves starter -> sable-boot -> server.py and opens
-    # the browser itself, so nothing below needs to duplicate that logic.
-    _info "Starting via launcher (starter-first)..."
+    # Foreground fallback — run the server directly.
+    _info "Starting server in foreground..."
     export TERM="${TERM:-xterm-256color}"
     export SABLE_PORT
-    exec "${SCRIPT_DIR}/sable-launch.sh"
+    cd "$SCRIPT_DIR" || exit 1
+    exec uv run python server.py
 }
 
 # Trap unexpected exits

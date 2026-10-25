@@ -7,6 +7,7 @@ Stop sends taskkill on Windows, systemctl stop on Linux.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import os
 import signal
@@ -18,7 +19,7 @@ from engine.platform_paths import pid_exists
 
 IS_WINDOWS = sys.platform == "win32"
 _SERVICE_NAME = "sable.service"
-_PID_FILE = Path(__file__).resolve().parent.parent / ".sable_server.pid"
+_PID_FILE = PERSISTENT_ROOT / ".sable_server.pid"
 
 
 def _write_pid() -> None:

@@ -55,6 +55,7 @@ The browser binary is resolved per account from system/accounts.json
 Chromium is used.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import base64
@@ -71,7 +72,7 @@ from engine.platform_paths import pid_exists
 
 logger = logging.getLogger("sable.kimi_ghost")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".kimi_tokens.json"
 KIMI_URL = "https://www.kimi.ai/"
 CHAT_PATH = "/apiv2/kimi.gateway.chat.v1.ChatService/Chat"

@@ -12,6 +12,7 @@ Usage (import):
     from tools.image_generator.scripts.dreamforge import generate, DreamForgeOptions
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import json
@@ -34,7 +35,7 @@ except ImportError:
 BASE_URL = "https://image-generation.perchance.org/api"
 CHANNEL = "5yf90s8rdo"
 AD_ACCESS_CODE = "3edfca68e17690650f599c6ba1a71476b2bab44e27f4fc3907c76dbad206413f"
-KEY_CACHE_FILE = Path(__file__).resolve().parent.parent.parent.parent / "system" / ".dreamforge_key"
+KEY_CACHE_FILE = PERSISTENT_ROOT / "system" / ".dreamforge_key"
 OUTPUT_DIR = Path.home() / "sable_output" / "assets"
 
 HEADERS = {

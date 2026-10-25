@@ -26,6 +26,7 @@ Yields Sable-compatible events:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -40,7 +41,7 @@ from typing import Any
 logger = logging.getLogger("sable.zai_api")
 
 BASE_URL = "https://chat.z.ai"
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".zai_tokens.json"
 MAX_TOKENS_PER_ACCOUNT = 10
 

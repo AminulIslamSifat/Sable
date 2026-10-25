@@ -40,6 +40,7 @@ The browser binary is resolved per account from system/accounts.json
 Chromium is used.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -55,7 +56,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sable.deepseek_ghost")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 IDENTITY_STORE = _SYSTEM_DIR / ".deepseek_identity.json"
 IDENTITY_TTL_SEC = 24 * 3600
 

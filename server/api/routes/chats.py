@@ -807,7 +807,7 @@ def save_model_settings_route(chat_id: str, body: ChatModelSettings) -> dict[str
         raise HTTPException(status_code=500, detail=str(e))
 
 
-_CONTEXT_PASS_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "system" / "context_pass_settings.json"
+_CONTEXT_PASS_SETTINGS_PATH = PERSISTENT_ROOT / "system" / "context_pass_settings.json"
 
 def _load_ctx_pass_settings() -> dict[str, str]:
     defaults = {"summarizer_model": ""}

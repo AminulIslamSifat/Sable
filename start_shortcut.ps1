@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Sable launcher (Windows PowerShell) — boots the sealed vault via starter.
+#  Sable launcher (Windows PowerShell) — runs the plaintext dev tree.
 #  Thin wrapper over sable-launch.cmd so the shortcut has a visible window
 #  while the starter's own output stays live.
 # ─────────────────────────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path("/home/sifat/hdd/projects/test/Sable-exp")
-TARGETS = ["server", "engine"]
+TARGETS = ["server", "engine", "tools", "skills", "connectors", "telegram_bot", "scripts"]
 
 # <expr> / "instruction"   or   <expr> / "Brain"   where <expr> is a
 # __file__-derived chain or a module-level root constant.

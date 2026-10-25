@@ -14,6 +14,7 @@ Requires: strace, and the opencode binary on PATH (capture mode only).
 Output:   system/opencode_ja3.json
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 import datetime as _dt
@@ -32,7 +33,7 @@ GREASE = {
     0x8a8a, 0x9a9a, 0xaaaa, 0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
 }
 
-OUT_PATH = Path(__file__).resolve().parent.parent / "system" / "opencode_ja3.json"
+OUT_PATH = PERSISTENT_ROOT / "system" / "opencode_ja3.json"
 HEXPAIR = re.compile("\\\\x([0-9a-f]{2})")
 
 

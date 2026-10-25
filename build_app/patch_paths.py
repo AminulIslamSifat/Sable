@@ -12,10 +12,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path("/home/sifat/hdd/projects/test/Sable-exp")
-TARGETS = ["server", "engine"]
+# Every shipped directory that derives a writable path from __file__.
+# Missing one here means an Errno 30 at runtime inside the read-only mount:
+# the code silently points at the AppImage squashfs instead of userData.
+TARGETS = ["server", "engine", "tools", "skills", "connectors", "telegram_bot", "scripts"]
 
+# Two shapes in the tree:
+#   Path(__file__).resolve().parent.parent / "system"
+#   Path(__file__).resolve().parents[3] / "system"
 SYSTEM_PAT = re.compile(
-    r'Path\(__file__\)\.resolve\(\)(?:\.parent|\[\d+\])+\s*/\s*"system"'
+    r'Path\(__file__\)\.resolve\(\)(?:\.parents?\[\d+\]|\.parent|\[\d+\])+\s*/\s*"system"'
 )
 CONST_PAT = re.compile(r'\b(?:_ROOT|_BASE_DIR|BASE_DIR|_BASE|SABLE_ROOT)\s*/\s*"system"')
 

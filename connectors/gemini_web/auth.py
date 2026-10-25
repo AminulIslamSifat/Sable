@@ -10,6 +10,7 @@ so subsequent calls survive even if the active account is switched away.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -20,7 +21,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sable.gemini_web.auth")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 STORE_PATH = _SYSTEM_DIR / ".gemini_web_auth.json"
 
 # Consider a disk snapshot stale after this long; prefer a live re-read.

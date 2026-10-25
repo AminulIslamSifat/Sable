@@ -22,6 +22,7 @@ Streams SSE from ``/chat/completions`` and yields Sable-standard events:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -44,7 +45,7 @@ from connectors.common.context_summarizer import (
     rewrite_history_with_summary, compute_force_cut_index,
 )
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 
 # Max chars for session history (sliding window by character count)
 _MAX_SESSION_CHARS = 100_000

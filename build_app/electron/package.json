@@ -30,6 +30,7 @@
       "main.js",
       "preload.js",
       "installer.js",
+      "perchance.js",
       "splash.html",
       "search-engines.js"
     ],

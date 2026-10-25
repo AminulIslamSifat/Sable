@@ -8,6 +8,7 @@ Multi-key rotation, persisted to system/.puter_api_keys.json.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import base64
 import json
@@ -20,7 +21,7 @@ import httpx
 
 logger = logging.getLogger("sable.puter")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 _KEYS_PATH = _SYSTEM_DIR / ".puter_api_keys.json"
 
 
