@@ -49,6 +49,38 @@ function freePort() {
   })
 }
 
+// The UI keeps its session token in localStorage, which is scoped to the
+// ORIGIN — and the origin includes the port. Picking a random port each launch
+// (listen(0)) therefore handed the app a brand new origin every time, so the
+// token was never found and the user was asked to log in again on every start.
+// Prefer one stable port so the origin — and the session — survive restarts.
+// A random port is still used when the preferred one is taken, which costs at
+// most a single re-login instead of one on every launch.
+const PREFERRED_PORT = Number(process.env.SABLE_DESKTOP_PORT || 61774)
+
+function portIsFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer()
+    srv.unref()
+    srv.once("error", () => resolve(false))
+    srv.listen(port, "127.0.0.1", () => {
+      srv.close(() => resolve(true))
+    })
+  })
+}
+
+async function choosePort() {
+  if (PREFERRED_PORT > 0 && (await portIsFree(PREFERRED_PORT))) {
+    return PREFERRED_PORT
+  }
+  const fallback = await freePort()
+  console.warn(
+    `[port] ${PREFERRED_PORT} busy, falling back to ${fallback} — ` +
+      "session may not carry over from the previous launch",
+  )
+  return fallback
+}
+
 async function waitForPort(port, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -188,7 +220,7 @@ async function startServer() {
   }
 
   fs.mkdirSync(persistentRoot(), { recursive: true })
-  serverPort = await freePort()
+  serverPort = await choosePort()
 
   const env = {
     ...process.env,

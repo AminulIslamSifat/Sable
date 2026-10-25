@@ -535,7 +535,7 @@ install_systemd_service() {
     if systemctl --user cat "$SERVICE_NAME" >/dev/null 2>&1; then
         local have
         have="$(systemctl --user show -p ExecStart --value "$SERVICE_NAME" 2>/dev/null || true)"
-        if printf '%s' "$have" | grep -qF "${SCRIPT_DIR}/start"; then
+        if printf '%s' "$have" | grep -qF "${SCRIPT_DIR}/server.py"; then
             _ok "systemd service already installed"
             return 0
         fi
@@ -556,7 +556,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${SCRIPT_DIR}/start --background
+ExecStart=${SCRIPT_DIR}/.venv/bin/python ${SCRIPT_DIR}/server.py
 Restart=on-failure
 RestartSec=3
 Environment=TERM=xterm-256color
@@ -646,7 +646,7 @@ install_desktop_file() {
     [ "$BACKGROUND" -eq 1 ] && return 0
 
     local app_dir="${HOME}/.local/share/applications"
-    local desktop_file="${app_dir}/sable.desktop"
+    local desktop_file="${app_dir}/sable-dev.desktop"
     local launcher="${SCRIPT_DIR}/start"
 
     if [ ! -x "$launcher" ]; then
@@ -658,7 +658,7 @@ install_desktop_file() {
     cat > "$desktop_file" << EOF
 [Desktop Entry]
 Type=Application
-Name=Sable
+Name=Sable (dev)
 Comment=Sable Agentic Chat Platform
 Exec=${launcher}
 Icon=${SCRIPT_DIR}/web/assets/sable_icon.svg
@@ -722,6 +722,17 @@ main() {
     echo ""
 
     cd "$SCRIPT_DIR"
+
+    # --background = "systemd launched me, just run the server".
+    # Without this guard the installer would bootstrap, detect systemd, and
+    # call `systemctl start sable.service` on itself: an endless restart loop
+    # that also re-runs sudo/Playwright with no TTY and fails every pass.
+    if [ "$BACKGROUND" -eq 1 ]; then
+        _info "Background mode - starting server directly"
+        export TERM="${TERM:-xterm-256color}"
+        export SABLE_PORT
+        exec uv run python server.py
+    fi
 
     detect_platform
     ensure_python

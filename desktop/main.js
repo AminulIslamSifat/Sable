@@ -50,6 +50,14 @@ let browserBounds = null // last rect the renderer measured, replayed on attach
 
 app.setName("Sable")
 
+// The packaged AppImage and this dev wrapper both declare productName "Sable",
+// and Electron derives userData from getName() — so both landed on
+// ~/.config/Sable and shared one SingletonLock. Whichever started first won;
+// the other saw a live lock and exited silently. Point this wrapper's profile
+// somewhere of its own. setName stays "Sable" so the window class still matches
+// StartupWMClass=Sable in the existing .desktop entry.
+app.setPath("userData", path.join(app.getPath("appData"), "sable-desktop"))
+
 // Wayland hands Chromium chunky wheel-emulation scroll steps instead of the
 // high-resolution axis_value120 events Gecko consumes (upstream Chromium bug
 // 712737). Content then teleports in quantized jumps and every jump forces a
@@ -482,9 +490,9 @@ ipcMain.on("sable:browser-system-open", (_e, url) => {
 // Bound to 127.0.0.1 and guarded by a per-run token, so nothing else on the
 // machine can drive it.
 
-const SEARCH_PORT = Number(process.env.SABLE_SEARCH_PORT || 61772)
+const SEARCH_PORT = Number(process.env.SABLE_SEARCH_PORT || 61773)
 const SEARCH_TOKEN = require("node:crypto").randomBytes(24).toString("hex")
-const SEARCH_MARKER = path.join(os.homedir(), ".cache", "sable", "search-bridge.json")
+const SEARCH_MARKER = path.join(os.homedir(), ".cache", "sable", "search-bridge-desktop.json")
 
 function writeSearchMarker() {
   try {
