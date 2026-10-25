@@ -1387,7 +1387,7 @@
         // the bottom is only visually stale for 100ms, and a final pin on the
         // last frame guarantees we end up exactly at the bottom.
         const _now = performance.now();
-        if (_now - _thinkLastPin > 100) {
+        if (_now - _thinkLastPin > 32) {
           _thinkLastPin = _now;
           pinScrollIfAtBottom();
           scrollBottom();
@@ -1428,6 +1428,12 @@
           currentThinkBody._thinkTextNode = tn;
         }
         tn.appendData(text);
+        // The body is now height-capped (chat.css) and scrolls internally, so
+        // the newest reasoning would otherwise slide out of view. Follow it.
+        // Only when the user hasn't scrolled up inside the box to re-read.
+        const el = currentThinkBody;
+        const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if (el._thinkFollow !== false || gap < 40) el.scrollTop = el.scrollHeight;
       }
 
       function _flushThinkQueue() {

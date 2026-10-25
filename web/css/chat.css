@@ -531,6 +531,16 @@
       line-height: 1.55;
       font-family: var(--font-mono);
       font-size: var(--font-size-system);
+      /* Cap the reasoning block so it scrolls INSIDE itself instead of
+         growing the pane's scrollHeight on every streamed character.
+         Unbounded, a fast model (250 tok/s) grows this element ~180px/sec,
+         which the 100ms scroll-pin throttle in sse.js can only chase in
+         ~18px snaps — the visible "UI jumps like crazy" symptom.
+         With a cap the pane's scrollHeight stops moving once we hit the
+         limit, so there is nothing left to pin. */
+      max-height: 40vh;
+      overflow-y: auto;
+      overscroll-behavior: contain;
     }
 
     .event {
