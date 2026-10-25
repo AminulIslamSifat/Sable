@@ -8,5 +8,8 @@
   "scripts": {
     "start": "electron44 .",
     "start:port": "electron44 . --port=61771"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
   }
 }

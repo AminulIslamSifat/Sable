@@ -5,6 +5,7 @@ can be reused by the service manager / launcher scripts if needed.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import os
 import re
@@ -34,7 +35,7 @@ def _read_version() -> str:
 
 def _active_account() -> str:
     try:
-        p = Path(__file__).resolve().parent.parent / "system" / ".active_account"
+        p = PERSISTENT_ROOT / "system" / ".active_account"
         return p.read_text(encoding="utf-8").strip() or "default"
     except Exception:
         return "default"

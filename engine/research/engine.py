@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional, Tuple
 
 from engine.config import OUTPUT_ROOT
+from engine.py_runner import child_env, script_cmd  # frozen-safe subprocess
 from engine.research.llm import qwen_complete, extract_json
 from connectors import resolve_backend, get_connector
 
@@ -395,7 +396,7 @@ class DeepResearcher:
 
     # ── web helpers ──────────────────────────────────────────────────────────
     async def _run_search_script(self, args: list[str], timeout: int = 90) -> tuple[bool, str]:
-        cmd = [sys.executable, str(SEARCH_SCRIPT)] + args
+        cmd = script_cmd(SEARCH_SCRIPT, *args)
         logger.info("running search script | timeout=%d args=%s", timeout, args)
         await self._trace("search_script_start", timeout=timeout, args=" ".join(args[:10]))
         # Initialized before the try: if create_subprocess_exec itself raises

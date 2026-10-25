@@ -1,5 +1,7 @@
 """Qwen Session & Authentication Manager — handles headers, WAF tokens, and server session creation."""
 
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
+
 import asyncio
 import logging
 import os
@@ -26,7 +28,7 @@ def _get_user_name() -> str:
 
 
 # Persistent Playwright launch counter — survives restarts.
-_LAUNCH_COUNTER_PATH = Path(__file__).resolve().parent.parent / "system" / ".playwright_launches"
+_LAUNCH_COUNTER_PATH = PERSISTENT_ROOT / "system" / ".playwright_launches"
 
 
 def _increment_playwright_counter() -> int:

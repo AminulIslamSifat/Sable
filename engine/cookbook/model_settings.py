@@ -4,6 +4,7 @@ Stored in system/cookbook_model_settings.json — cookbook-native, no global tou
 Each model gets: use_maria, use_output_format, skills list, distilled flag.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -12,7 +13,7 @@ from typing import Any
 
 logger = logging.getLogger("sable.cookbook")
 
-_SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "system" / "cookbook_model_settings.json"
+_SETTINGS_FILE = PERSISTENT_ROOT / "system" / "cookbook_model_settings.json"
 
 # Default settings for a new model
 _DEFAULTS: dict[str, Any] = {
@@ -101,7 +102,7 @@ def build_system_prompt(model_id: str) -> str | None:
         return _distilled_prompt()
 
     parts: list[str] = []
-    instruction_dir = Path(__file__).resolve().parent.parent.parent / "instruction"
+    instruction_dir = PERSISTENT_ROOT / "instruction"
     _pcfg_path = instruction_dir / ".persona_config.json"
 
     if settings.get("use_maria"):

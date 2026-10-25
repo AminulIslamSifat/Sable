@@ -11,6 +11,7 @@ Bridge URL resolution order:
   3. DEFAULT_BRIDGE_URL
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import os
@@ -23,7 +24,7 @@ DEFAULT_BRIDGE_URL = "https://sable-bridge.onrender.com"
 _TIMEOUT = 20.0
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-_CONFIG_FILE = _BASE_DIR / "system" / ".bridge_config.json"
+_CONFIG_FILE = PERSISTENT_ROOT / "system" / ".bridge_config.json"
 
 
 class BridgeError(Exception):

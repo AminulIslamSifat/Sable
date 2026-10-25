@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+
+from engine.py_runner import child_env, script_cmd  # frozen-safe subprocess
 import sys
 import time
 from collections.abc import Generator
@@ -17,9 +19,9 @@ _SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "
 
 def _run_memory(cli_args: list[str]) -> tuple[bool, str]:
     """Run memory_manager.py with args, return (ok, output)."""
-    cmd = [sys.executable, _SCRIPT] + cli_args
+    cmd = script_cmd(_SCRIPT, *cli_args)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=child_env())
     except subprocess.TimeoutExpired:
         return False, "Error: memory_manager timed out after 15s"
     except Exception as e:

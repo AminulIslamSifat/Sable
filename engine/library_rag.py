@@ -17,6 +17,7 @@ Derived data lives in ``library/embeddings/``:
 Both are rebuildable from the page text, so losing them costs only time.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -67,7 +68,7 @@ def _load_embedder() -> Any:
         logger.info("fastembed not installed - RAG runs in lexical mode")
         return None
     try:
-        cache = _ROOT / "system" / "fastembed_cache"
+        cache = PERSISTENT_ROOT / "system" / "fastembed_cache"
         cache.mkdir(parents=True, exist_ok=True)
         _embedder = TextEmbedding(model_name=_EMBED_MODEL, cache_dir=str(cache))
         logger.info("RAG embedder ready: %s", _EMBED_MODEL)

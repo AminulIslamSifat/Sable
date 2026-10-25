@@ -1,4 +1,5 @@
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -552,7 +553,7 @@ async def projects_upload_instruction(project_id: str, body: dict[str, str]) -> 
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty instruction text")
     # Ensure project folder exists
-    proj_dir = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / project_id
+    proj_dir = PERSISTENT_ROOT / "system" / "projects" / project_id
     proj_dir.mkdir(parents=True, exist_ok=True)
     instr_path = proj_dir / "instruction.md"
     instr_path.write_text(text, encoding="utf-8")

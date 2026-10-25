@@ -32,7 +32,12 @@ from pathlib import Path
 # Paths & level
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).resolve().parent.parent
-_LOG_DIR = _ROOT / "output" / "logs"
+
+# Frozen builds mount the app read-only — logs must live somewhere writable.
+# SABLE_PERSISTENT_ROOT is set by the Electron shell; without it this is the
+# original project-relative path.
+_WRITABLE_ROOT = Path(os.getenv("SABLE_PERSISTENT_ROOT") or _ROOT)
+_LOG_DIR = _WRITABLE_ROOT / "output" / "logs"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 _LEVEL = getattr(

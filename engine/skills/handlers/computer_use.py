@@ -1,6 +1,7 @@
 """Computer use handler — dispatches to tools/computer_use/scripts/computer_use.py."""
 
 from __future__ import annotations
+from engine.py_runner import script_cmd, child_env  # frozen-safe subprocess
 
 import json
 import subprocess
@@ -64,7 +65,7 @@ def handle_computer_use(
 
     try:
         proc = subprocess.run(
-            [sys.executable, str(_COMPUTER_USE_SCRIPT), payload],
+            script_cmd(_COMPUTER_USE_SCRIPT, payload),
             capture_output=True,
             text=True,
             timeout=timeout,

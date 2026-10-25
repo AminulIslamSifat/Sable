@@ -7,6 +7,7 @@ discovered tools into Sable's skill routing layer.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import contextlib
@@ -19,7 +20,7 @@ from engine.config import _ROOT
 
 logger = logging.getLogger("sable.mcp")
 
-MCP_CONFIG_PATH = _ROOT / "system" / "mcp_servers.json"
+MCP_CONFIG_PATH = PERSISTENT_ROOT / "system" / "mcp_servers.json"
 
 
 class MCPServerConnection:

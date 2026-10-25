@@ -1,4 +1,5 @@
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -542,7 +543,7 @@ def _dedup_and_resolve_adds(
 def _load_consolidation_settings() -> dict[str, Any]:
     """Load consolidation settings from system/consolidation_settings.json."""
     defaults: dict[str, Any] = {"model": "", "fallback_models": []}
-    path = Path(__file__).resolve().parent.parent.parent.parent / "system" / "consolidation_settings.json"
+    path = PERSISTENT_ROOT / "system" / "consolidation_settings.json"
     if path.exists():
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
@@ -786,7 +787,7 @@ def _consolidation_prep(chat_id: str, payload: dict[str, Any]) -> dict[str, Any]
         if _proj_id:
             _proj = get_project(_proj_id)
             if _proj and _proj.get("project_memory_enabled"):
-                _proj_mem_dir = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / _proj_id
+                _proj_mem_dir = PERSISTENT_ROOT / "system" / "projects" / _proj_id
                 _proj_mem_dir.mkdir(parents=True, exist_ok=True)
                 _mem_path = _proj_mem_dir / "Memory.json"
     except Exception:

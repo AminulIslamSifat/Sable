@@ -20,6 +20,8 @@ The rule script is OPTIONAL at runtime — if it is missing, the endpoint still
 returns the LLM rewrite and flags ``rule_pass: false`` so the UI can say so.
 """
 from __future__ import annotations
+from engine.py_runner import script_cmd, child_env  # frozen-safe subprocess
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -116,7 +118,7 @@ def _overlap_ratio(a: str, b: str) -> float:
     return len(bigrams_a & bigrams_b) / len(bigrams_a)
 
 _ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_CONFIG_PATH = _ROOT / "system" / "study_humanize_config.json"
+_CONFIG_PATH = PERSISTENT_ROOT / "system" / "study_humanize_config.json"
 _SCRIPT = _ROOT / "skills" / "text_humanizer" / "scripts" / "humanize.py"
 
 _MAX_INPUT_CHARS = 60_000
@@ -273,7 +275,7 @@ async def _run_rule_pass(
         logger.warning("humanize.py not found at %s — skipping rule pass", _SCRIPT)
         return text, None
 
-    cmd = [sys.executable, str(_SCRIPT), "--stats", "--strength", f"{strength:.2f}"]
+    cmd = script_cmd(_SCRIPT, "--stats", "--strength", f"{strength:.2f}")
     if typos > 0:
         cmd += ["--typos", f"{typos:.2f}"]
     if seed is not None:

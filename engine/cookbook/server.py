@@ -2,6 +2,7 @@
 """Model serving lifecycle — llama-server process management."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -301,7 +302,7 @@ class ServeManager:
 
     def _register_model(self, task: ServeTask) -> None:
         """Add served model to Sable's .custom_models.json."""
-        custom_models_path = Path(__file__).resolve().parent.parent.parent / "system" / ".custom_models.json"
+        custom_models_path = PERSISTENT_ROOT / "system" / ".custom_models.json"
         try:
             models = json.loads(custom_models_path.read_text()) if custom_models_path.exists() else []
         except (json.JSONDecodeError, OSError):
@@ -333,7 +334,7 @@ class ServeManager:
 
     def _unregister_model(self, task: ServeTask) -> None:
         """Remove served model from .custom_models.json."""
-        custom_models_path = Path(__file__).resolve().parent.parent.parent / "system" / ".custom_models.json"
+        custom_models_path = PERSISTENT_ROOT / "system" / ".custom_models.json"
         try:
             models = json.loads(custom_models_path.read_text()) if custom_models_path.exists() else []
         except (json.JSONDecodeError, OSError):

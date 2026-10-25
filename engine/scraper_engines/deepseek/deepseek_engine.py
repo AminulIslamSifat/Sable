@@ -44,7 +44,9 @@ _INSTRUCTION_PATHS = [
     str(INSTRUCTIONS_DIR / "skills.md"),
 ]
 
-_MEMORY_PATH = str(PROJECT_ROOT / "Brain" / "Memory.json")
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
+
+_MEMORY_PATH = str(PERSISTENT_ROOT / "Brain" / "Memory.json")
 
 def _get_relevant_memories(message: str) -> str:
     """Retrieve relevant memories for a user message via semantic search."""

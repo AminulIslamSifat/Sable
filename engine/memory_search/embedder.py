@@ -1,6 +1,7 @@
 """Gemini API embedding backend for memory search."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -9,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger("sable.memory_search")
 
-_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_CACHE_DIR = PERSISTENT_ROOT / "system"
 _GEMINI_KEYS_PATH = _CACHE_DIR / ".gemini_api_keys.json"
 
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"

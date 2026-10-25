@@ -21,6 +21,7 @@ Payload routing (the 2026-09-21 size map):
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -44,7 +45,7 @@ logger = logging.getLogger("sable.inpage")
 def _read_system_settings() -> dict:
     """Read system/settings.json, returning {} on any failure."""
     try:
-        path = Path(__file__).resolve().parent.parent / "system" / "settings.json"
+        path = PERSISTENT_ROOT / "system" / "settings.json"
         if path.is_file():
             return json.loads(path.read_text(encoding="utf-8"))
     except Exception:

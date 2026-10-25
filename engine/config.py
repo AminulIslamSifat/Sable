@@ -26,7 +26,7 @@ def _host_from_settings() -> str | None:
     """Bind host persisted from web settings (Network Access option)."""
     try:
         import json as _json
-        p = _ROOT / "system" / "network_settings.json"
+        p = PERSISTENT_ROOT / "system" / "network_settings.json"
         host = _json.loads(p.read_text(encoding="utf-8")).get("host")
         return host if host in ("0.0.0.0", "127.0.0.1") else None
     except Exception:
@@ -99,12 +99,12 @@ PORT = int(os.getenv("PORT", os.getenv("SABLE_PORT", _DEFAULT_PORT)))
 # Runtime data paths — single source of truth used by server.py and any
 # other module that needs these files.
 # --------------------------------------------------------------------------
-BRAIN_DIR = _ROOT / "Brain"
+BRAIN_DIR = PERSISTENT_ROOT / "Brain"
 MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 PROCEDURAL_PATH = BRAIN_DIR / "Procedural.json"
 PERSONALITY_PATH = BRAIN_DIR / "user_personality.json"
-INSTRUCTION_DIR = _ROOT / "instruction"
+INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 PERSONAL_PATH = INSTRUCTION_DIR / "personal.md"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
@@ -118,7 +118,7 @@ MEMORY_SEARCH_MAX_PROMPT_CHARS = 20000
 
 # Browser profile directories — single source of truth for all browser data paths.
 # All profiles live under system/ to keep the project root clean.
-_SYSTEM = _ROOT / "system"
+_SYSTEM = PERSISTENT_ROOT / "system"
 # Legacy global active-account file — kept ONLY for one-time migration into the
 # per-provider store below. No provider reads it at runtime anymore.
 _ACTIVE_ACCOUNT_FILE = _SYSTEM / ".active_account"
@@ -910,7 +910,7 @@ def get_thinking_mode_config(model_id: str | None = None, thinking_mode_id: str 
 # --------------------------------------------------------------------------
 
 def _load_session_tokens() -> dict:
-    token_file = _ROOT / "system" / ".session_tokens.json"
+    token_file = PERSISTENT_ROOT / "system" / ".session_tokens.json"
     if token_file.exists():
         try:
             import json as _json

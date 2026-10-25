@@ -9,12 +9,13 @@ Usage:
     uv run python engine/account_login.py 3
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
-_SYSTEM = _ROOT / "system"
+_SYSTEM = PERSISTENT_ROOT / "system"
 
 
 def resolve_profile(arg: str) -> Path:

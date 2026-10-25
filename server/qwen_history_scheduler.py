@@ -6,6 +6,7 @@ If ≥5 days have elapsed (or never cleared), triggers deletion.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import logging
@@ -14,7 +15,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sable.qwen_scheduler")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 _CLEAR_INTERVAL_DAYS = 5
 _FIRE_HOUR = 18  # 6:00 PM
 _FIRE_MINUTE = 0

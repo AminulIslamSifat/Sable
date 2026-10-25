@@ -2,6 +2,7 @@
 """Cookbook state persistence — tracks downloads, servers, and settings."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import time
@@ -11,9 +12,9 @@ from typing import Any
 
 from engine.platform_paths import pid_exists
 
-_STATE_FILE = Path(__file__).resolve().parent.parent.parent / "system" / "cookbook_state.json"
-_MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "system" / "models" / "llm"
-_LOGS_DIR = Path(__file__).resolve().parent.parent.parent / "system" / "cookbook_logs"
+_STATE_FILE = PERSISTENT_ROOT / "system" / "cookbook_state.json"
+_MODELS_DIR = PERSISTENT_ROOT / "system" / "models" / "llm"
+_LOGS_DIR = PERSISTENT_ROOT / "system" / "cookbook_logs"
 
 
 @dataclass

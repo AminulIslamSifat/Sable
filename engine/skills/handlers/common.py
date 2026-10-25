@@ -2,6 +2,7 @@
 """Shared constants and helper functions for skill handlers."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import html as html_lib
 import os
@@ -23,11 +24,11 @@ _end_event = end_event
 # --- Paths ---
 SABLE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SKILLS_DIR = SABLE_ROOT / "skills"
-INSTRUCTION_DIR = SABLE_ROOT / "instruction"
+INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 # Use central config so output path stays in sync across the project
 from engine.config import OUTPUT_ROOT, NOTES_DIR, ASSETS_DIR
 SESSIONS_DIR = OUTPUT_ROOT / "sessions"
-UPLOAD_DIR = SABLE_ROOT / "system" / "uploads"
+UPLOAD_DIR = PERSISTENT_ROOT / "system" / "uploads"
 BACKUP_DIR = SABLE_ROOT / ".sable_backups"
 TOOLS_DIR = SABLE_ROOT / "tools"
 

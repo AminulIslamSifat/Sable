@@ -1,6 +1,7 @@
 """TrackNote handler: processes tracknote tag by calling the CLI script."""
 
 from __future__ import annotations
+from engine.py_runner import script_cmd, child_env  # frozen-safe subprocess
 
 import json
 import subprocess
@@ -17,7 +18,7 @@ _SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "
 
 def _run_tracknote(section: str, command: str, cli_args: list[str]) -> tuple[bool, str]:
     """Run tracknote.py <section> <command> [args], return (ok, output)."""
-    cmd = [sys.executable, _SCRIPT, section, command] + cli_args
+    cmd = script_cmd(_SCRIPT, section, command) + cli_args
     try:
         # ponytail: stdlib encoding param; prevents UnicodeDecodeError on Windows CP1252
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)

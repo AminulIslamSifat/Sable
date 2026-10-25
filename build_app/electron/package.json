@@ -1,0 +1,73 @@
+{
+  "name": "sable",
+  "productName": "Sable",
+  "version": "2.0.3",
+  "description": "Sable — agentic chat platform",
+  "main": "main.js",
+  "author": {
+    "name": "Sifat",
+    "email": "sifat@sable.local"
+  },
+  "homepage": "https://github.com/sifat/sable",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --linux AppImage deb --win nsis",
+    "dist:linux": "electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.sifat.sable",
+    "productName": "Sable",
+    "directories": {
+      "output": "../release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "installer.js",
+      "splash.html",
+      "search-engines.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/sable-server",
+        "to": "server",
+        "filter": ["**/*"]
+      }
+    ],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "maintainer": "Sifat <sifat@sable.local>",
+      "synopsis": "Sable - agentic chat platform",
+      "description": "Sable is an agentic chat platform with a bundled local server, native browser pane and multi-engine search.",
+      "desktop": {
+        "entry": {
+          "Name": "Sable",
+          "Comment": "Sable - agentic chat platform",
+          "Categories": "Development;Utility;",
+          "StartupWMClass": "Sable"
+        }
+      },
+      "artifactName": "Sable-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico",
+      "artifactName": "Sable-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "compression": "normal"
+  }
+}

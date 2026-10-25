@@ -12,6 +12,7 @@ inside the document's meta JSON under the ``ai_notes`` key (same store the
 reader already loads), so the frontend needs no second fetch.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import base64
 import json
@@ -49,8 +50,8 @@ router = APIRouter()
 logger = logging.getLogger("sable.study.ai")
 
 _ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_CONFIG_PATH = _ROOT / "system" / "study_ai_config.json"
-_INSTRUCTION_DIR = _ROOT / "instruction"
+_CONFIG_PATH = PERSISTENT_ROOT / "system" / "study_ai_config.json"
+_INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 
 _MAX_CTX_CHARS = 24_000      # context budget for selection / page scope
 _MAX_DOC_CTX = 60_000        # context budget for whole-document scope

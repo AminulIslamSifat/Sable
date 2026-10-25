@@ -43,7 +43,7 @@ elif not os.path.isabs(OUTPUT_ROOT):
     OUTPUT_ROOT = str(SABLE_ROOT / OUTPUT_ROOT)
 
 ASSETS_DIR = os.path.join(OUTPUT_ROOT, "assets")
-INSTRUCTIONS_DIR = Path(os.environ.get("SABLE_INSTRUCTION_DIR", str(SABLE_ROOT / "instruction")))
+INSTRUCTIONS_DIR = Path(os.environ.get("SABLE_INSTRUCTION_DIR", str(PERSISTENT_ROOT / "instruction")))
 
 os.makedirs(ASSETS_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_ROOT, "notes"), exist_ok=True)

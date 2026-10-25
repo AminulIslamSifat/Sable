@@ -1,6 +1,7 @@
 """Embedding vector cache (numpy .npz) for memory search."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -11,7 +12,7 @@ import numpy as np
 
 logger = logging.getLogger("sable.memory_search")
 
-_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+_CACHE_DIR = PERSISTENT_ROOT / "system"
 
 
 def _cache_path_for(model_name: str, base_dir: Path | None = None) -> Path:

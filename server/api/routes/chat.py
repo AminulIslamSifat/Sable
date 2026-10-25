@@ -1,4 +1,5 @@
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -1006,7 +1007,7 @@ async def chat(request: ChatRequest):
                     _allowed_mem_cats = {"protected"}
                 if _early_proj.get("project_memory_enabled"):
                     _proj_mem_enabled = True
-                    _proj_mem_path = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / _early_proj_id / "Memory.json"
+                    _proj_mem_path = PERSISTENT_ROOT / "system" / "projects" / _early_proj_id / "Memory.json"
     except Exception:
         pass
 

@@ -1,5 +1,6 @@
 """Persona management API — list, read, create, update, delete, set active."""
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 from pathlib import Path
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["personas"])
 
-_INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent.parent / "instruction"
+_INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 _CONFIG_PATH = _INSTRUCTION_DIR / ".persona_config.json"
 
 # Files that are NOT personas

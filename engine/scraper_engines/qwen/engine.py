@@ -28,6 +28,8 @@ import urllib.request
 from datetime import datetime
 from typing import Any
 
+from engine.py_runner import child_env, script_cmd  # frozen-safe subprocess
+
 logger = logging.getLogger(__name__)
 
 from config import (
@@ -1268,13 +1270,14 @@ class QwenEngine(BaseScraperEngine):
             if progress_callback:
                 await progress_callback(f"Summarizing Session {i + 1}: {os.path.basename(path)}")
             try:
-                args = [sys.executable, summarizer, path]
+                args = script_cmd(summarizer, path)
                 if is_last:
                     args.append("--detailed")
                 proc = await asyncio.create_subprocess_exec(
                     *args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=child_env(),
                 )
                 stdout, stderr = await proc.communicate()
                 if proc.returncode == 0:
@@ -1290,10 +1293,11 @@ class QwenEngine(BaseScraperEngine):
         try:
             combined = "\n\n---\n\n".join(summaries)
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, synthesizer, "--date", today,
+                *script_cmd(synthesizer, "--date", today),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env(),
             )
             stdout, stderr = await proc.communicate(input=combined.encode())
             if proc.returncode == 0:

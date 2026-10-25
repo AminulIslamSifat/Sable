@@ -24,6 +24,7 @@ Examples:
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import argparse
 from pathlib import Path
@@ -31,7 +32,7 @@ from pathlib import Path
 from engine.config import BROWSER_DATA_DIR
 
 _ROOT = Path(__file__).resolve().parent.parent
-_SYSTEM = _ROOT / "system"
+_SYSTEM = PERSISTENT_ROOT / "system"
 DEFAULT_URL = "https://chat.qwen.ai"
 
 

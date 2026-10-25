@@ -1,6 +1,7 @@
 """MemorySearcher — hybrid vector+keyword semantic search over Brain memory files."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import gc
 import json
@@ -637,7 +638,7 @@ def get_project_searcher(project_id: str) -> MemorySearcher:
     """Get or create a vector searcher scoped to a project's memory directory."""
     if project_id in _project_searchers:
         return _project_searchers[project_id]
-    proj_dir = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / project_id
+    proj_dir = PERSISTENT_ROOT / "system" / "projects" / project_id
     proj_dir.mkdir(parents=True, exist_ok=True)
     mem_path = proj_dir / "Memory.json"
     prot_path = proj_dir / "Protected.json"

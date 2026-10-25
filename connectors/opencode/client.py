@@ -53,7 +53,11 @@ _DEFAULT_MODEL = "deepseek-v4.1-flash-free"
 # Capturing at runtime would require the opencode binary on the user's machine;
 # it is not, so the value ships as data and is refreshed by re-running the
 # extractor when upstream opencode changes its handshake.
-_JA3_FILE = Path(__file__).resolve().parent.parent.parent / "system" / "opencode_ja3.json"
+# Ships beside the connector (connectors/opencode/data/) so it survives as
+# package data in frozen builds. system/ is checked second for older dev trees.
+_DATA_DIR = Path(__file__).resolve().parent / "data"
+_JA3_FILE = _DATA_DIR / "opencode_ja3.json"
+_JA3_FILE_LEGACY = Path(__file__).resolve().parent.parent.parent / "system" / "opencode_ja3.json"
 _JA3_FALLBACK = (
     "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-"
     "49162-49172-156-157-47-53,"
@@ -63,14 +67,15 @@ _JA3_FALLBACK = (
 
 def _load_ja3() -> tuple[str, str]:
     """Return (ja3, provenance). Falls back to the pinned value on any error."""
-    try:
-        meta = json.loads(_JA3_FILE.read_text(encoding="utf-8"))
-        ja3 = meta.get("ja3")
-        if isinstance(ja3, str) and ja3.count(",") == 4:
-            prov = f"opencode {meta.get('opencode_version', '?')}, captured {meta.get('captured_at', '?')}"
-            return ja3, prov
-    except Exception:
-        pass
+    for f in (_JA3_FILE, _JA3_FILE_LEGACY):
+        try:
+            meta = json.loads(f.read_text(encoding="utf-8"))
+            ja3 = meta.get("ja3")
+            if isinstance(ja3, str) and ja3.count(",") == 4:
+                prov = f"opencode {meta.get('opencode_version', '?')}, captured {meta.get('captured_at', '?')}"
+                return ja3, prov
+        except Exception:
+            continue
     return _JA3_FALLBACK, "built-in fallback"
 
 
@@ -86,22 +91,26 @@ def _is_closed(session: Any) -> bool:
 # The system prompt may be extended with Sable's own instructions, and extra
 # tools may be appended — only presence of both is required. So Sable keeps its
 # persona and its full tool set; the harness is prepended/mixed in, not swapped.
-_HARNESS_FILE = Path(__file__).resolve().parent.parent.parent / "system" / "opencode_harness.json"
+# Captured from upstream opencode — ships as package data beside the connector.
+_HARNESS_FILE = _DATA_DIR / "opencode_harness.json"
+_HARNESS_FILE_LEGACY = Path(__file__).resolve().parent.parent.parent / "system" / "opencode_harness.json"
 _HARNESS_MARKER = "You are an AI agent running in OpenCode"
 
 
 def _load_harness() -> tuple[str, list[dict]]:
     """Return (system_prompt, tools) captured from the real opencode client."""
-    try:
-        meta = json.loads(_HARNESS_FILE.read_text(encoding="utf-8"))
-        # Only the prefix through </env> is load-bearing; the rest is opencode's
-        # own tail and adds tokens without satisfying anything extra.
-        prompt = meta.get("system_prompt_core") or meta.get("system_prompt") or ""
-        tools = meta.get("tools") or []
-        if prompt and tools:
-            return prompt, tools
-    except Exception as exc:
-        logger.warning("opencode: harness file unreadable (%s)", exc)
+    for f in (_HARNESS_FILE, _HARNESS_FILE_LEGACY):
+        try:
+            meta = json.loads(f.read_text(encoding="utf-8"))
+            # Only the prefix through </env> is load-bearing; the rest is
+            # opencode's own tail and adds tokens without satisfying anything.
+            prompt = meta.get("system_prompt_core") or meta.get("system_prompt") or ""
+            tools = meta.get("tools") or []
+            if prompt and tools:
+                return prompt, tools
+        except Exception:
+            continue
+    logger.warning("opencode: harness file unreadable in %s or %s", _HARNESS_FILE, _HARNESS_FILE_LEGACY)
     return "", []
 
 

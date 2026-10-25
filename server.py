@@ -62,6 +62,23 @@ def _sigterm_deadman(signum, frame):
 signal.signal(signal.SIGTERM, _sigterm_deadman)
 
 if __name__ == "__main__":
+    # The Electron shell runs this once before the real server starts:
+    # "is a browser available, and if not, download one?". Exits immediately.
+    if "--ensure-browser" in sys.argv:
+        from engine.browser_bootstrap import ensure_browser
+        sys.exit(ensure_browser())
+
+    # In a frozen build, sys.executable is this binary, not an interpreter.
+    # Helper scripts are launched as `sable-server --run-script <path> …` and
+    # dispatched here BEFORE any logging, scheduler, or port binding happens —
+    # otherwise the child would claim the parent's port and crash.
+    if "--run-script" in sys.argv:
+        _idx = sys.argv.index("--run-script")
+        _script = sys.argv[_idx + 1] if _idx + 1 < len(sys.argv) else ""
+        _rest = sys.argv[_idx + 2:]
+        from engine.py_runner import run_script_by_path
+        sys.exit(run_script_by_path(_script, _rest))
+
     _write_pid()
     # Print a clear readiness box once the port is actually live, without
     # blocking startup. Runs in a daemon thread so uvicorn still owns the main

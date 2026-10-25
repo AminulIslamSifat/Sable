@@ -11,6 +11,7 @@ Thresholds (any one triggers):
   - error recoveries (failed tool calls) >= 3
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -20,11 +21,11 @@ from typing import Any
 
 logger = logging.getLogger("sable.agents.memory_trigger")
 
-_BRAIN_DIR = Path(__file__).resolve().parent.parent.parent / "Brain"
+_BRAIN_DIR = PERSISTENT_ROOT / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
 _PROCEDURAL_PATH = _BRAIN_DIR / "Procedural.json"
-_SETTINGS_PATH = Path(__file__).resolve().parent.parent.parent / "system" / "consolidation_settings.json"
+_SETTINGS_PATH = PERSISTENT_ROOT / "system" / "consolidation_settings.json"
 
 # Thresholds — any single condition triggers consolidation
 THRESHOLD_DISTINCT_TOOLS = 4
@@ -38,7 +39,7 @@ _MAX_AGENT_CONV_CHARS = 30_000
 _MERGE_SIMILARITY_THRESHOLD = 0.7
 
 # Consolidation audit log
-_CONSOLIDATION_LOG_PATH = Path(__file__).resolve().parent.parent.parent / "system" / "consolidation.txt"
+_CONSOLIDATION_LOG_PATH = PERSISTENT_ROOT / "system" / "consolidation.txt"
 
 
 def _log_consolidation(section: str, content: str) -> None:

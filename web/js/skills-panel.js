@@ -1413,6 +1413,12 @@
 
     async function loadSearchSettings() {
       try {
+        // The provider list is fetched here, not only at parse time: on a fresh
+        // install the token doesn't exist yet when this script first runs, so
+        // the module-init call 401s and the test dropdown stays empty forever.
+        // Re-fetching whenever Settings opens keeps it correct after login.
+        await _loadSearchProviders();
+
         const res = await fetch("/api/settings/search");
         if (!res.ok) return;
         const data = await res.json();

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import json
@@ -420,7 +421,7 @@ def skills() -> dict[str, list[dict[str, Any]]]:
 def skills_browse() -> dict[str, list[dict[str, Any]]]:
     return {"skills": browse_skills()}
 
-_DISABLED_SKILLS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "Brain" / "disabled_skills.json"
+_DISABLED_SKILLS_PATH = PERSISTENT_ROOT / "Brain" / "disabled_skills.json"
 
 @router.get("/api/settings/disabled-skills")
 def get_disabled_skills() -> dict[str, list[str]]:
@@ -452,7 +453,7 @@ def tools_list() -> dict[str, list[dict[str, Any]]]:
 def tools_browse() -> dict[str, list[dict[str, Any]]]:
     return {"tools": browse_tools()}
 
-_DISABLED_TOOLS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "Brain" / "disabled_tools.json"
+_DISABLED_TOOLS_PATH = PERSISTENT_ROOT / "Brain" / "disabled_tools.json"
 
 @router.get("/api/settings/disabled-tools")
 def get_disabled_tools() -> dict[str, list[str]]:
@@ -476,7 +477,7 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
     _DISABLED_TOOLS_PATH.write_text(json.dumps(disabled), encoding="utf-8")
     return {"status": "ok"}
 
-_SETTINGS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "system" / "settings.json"
+_SETTINGS_PATH = PERSISTENT_ROOT / "system" / "settings.json"
 _VALID_TOOL_FORMATS = {"qwen_json", "hermes", "dsml", "mimo", "native", "none", ""}
 
 # Display labels for the format picker (kept in sync with the frontend options).
@@ -711,7 +712,7 @@ def index() -> str:
     return _get_index_html()
 
 
-_INSTRUCTION_EXTRA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "instruction" / "extra"
+_INSTRUCTION_EXTRA_DIR = PERSISTENT_ROOT / "instruction" / "extra"
 
 @router.get("/api/instruction/{name}")
 def get_instruction(name: str) -> dict[str, str]:

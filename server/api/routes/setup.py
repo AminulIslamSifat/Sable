@@ -1,5 +1,6 @@
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import asyncio
 import re
@@ -17,7 +18,7 @@ _IS_WINDOWS = sys.platform == "win32"
 
 router = APIRouter()
 
-_SYSTEM_DIR = BASE_DIR / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 
 # Browser-login provider → landing URL. Keys must match the setup panel checkboxes.
 _PROVIDER_URLS: dict[str, str] = {
@@ -102,7 +103,7 @@ async def set_password(payload: SetPasswordRequest) -> dict[str, str]:
 def _set_default_persona() -> None:
     """Set the active persona to Agent.md for first-run setup."""
     import json as _json
-    instruction_dir = BASE_DIR / "instruction"
+    instruction_dir = PERSISTENT_ROOT / "instruction"
     config_path = instruction_dir / ".persona_config.json"
     try:
         cfg: dict[str, Any] = {}

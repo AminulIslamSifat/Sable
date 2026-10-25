@@ -10,6 +10,7 @@ A model touches five places. Deleting only the .gguf leaves four ghosts:
 purge_model() handles all five so the UI can never accumulate tombstones.
 """
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -31,7 +32,7 @@ def _model_id(label: str) -> str:
 
 def _unregister_custom(model_ids: set[str]) -> int:
     """Remove cookbook-registered entries from .custom_models.json."""
-    p = Path(__file__).resolve().parent.parent.parent / "system" / ".custom_models.json"
+    p = PERSISTENT_ROOT / "system" / ".custom_models.json"
     if not p.exists():
         return 0
     try:

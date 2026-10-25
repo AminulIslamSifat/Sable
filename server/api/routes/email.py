@@ -2,6 +2,7 @@
 """Email endpoints — IMAP read / SMTP send via Library panel."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import email
 import email.utils
@@ -23,7 +24,7 @@ from engine.config import _ROOT
 
 router = APIRouter()
 
-_CONFIG_PATH = _ROOT / "system" / ".email_config.json"
+_CONFIG_PATH = PERSISTENT_ROOT / "system" / ".email_config.json"
 
 
 # ── Models ────────────────────────────────────────────────────────────────────

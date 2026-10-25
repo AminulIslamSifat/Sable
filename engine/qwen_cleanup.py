@@ -5,6 +5,7 @@ WAF tokens (bx-ua, bx-umidtoken, JWT cookie), then calls the DELETE endpoint.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import logging
@@ -14,7 +15,7 @@ from typing import Any
 
 logger = logging.getLogger("sable.qwen_cleanup")
 
-_SYSTEM_DIR = Path(__file__).resolve().parent.parent / "system"
+_SYSTEM_DIR = PERSISTENT_ROOT / "system"
 _ACCOUNTS_JSON = _SYSTEM_DIR / "accounts.json"
 DELETE_URL = "https://chat.qwen.ai/api/v2/chats/"
 

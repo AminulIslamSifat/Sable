@@ -1,6 +1,7 @@
 """Chat CRUD, messages, projects, and checkpoints."""
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import json
 import sqlite3
@@ -561,7 +562,7 @@ def delete_project(project_id: str) -> bool:
             conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
             conn.execute("DELETE FROM chats WHERE id = ?", (cid,))
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    proj_dir = _Path(__file__).resolve().parent.parent.parent / "system" / "projects" / project_id
+    proj_dir = _PERSISTENT_ROOT / "system" / "projects" / project_id
     if proj_dir.exists():
         shutil.rmtree(proj_dir, ignore_errors=True)
     try:

@@ -73,12 +73,17 @@ async def _stream_script(body: dict[str, Any], request: Request) -> AsyncIterato
         yield sse({"type": "error", "error": "tool script not found"})
         return
 
+    # script_cmd() handles the frozen case: sys.executable there is this
+    # binary, so the child is launched as `sable-server --run-script <path>`
+    # and dispatched before any port binding. child_env() drops SABLE_PORT so
+    # the child can never fight the parent for it.
+    from engine.py_runner import child_env, script_cmd
+
     proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        str(_SCRIPT),
-        *_cli_args(body),
+        *script_cmd(_SCRIPT, *_cli_args(body)),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=child_env(),
     )
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()

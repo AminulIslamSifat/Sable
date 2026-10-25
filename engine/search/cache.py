@@ -1,5 +1,7 @@
 """Search caching with LRU eviction."""
 
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
+
 import hashlib
 import logging
 from datetime import datetime, timedelta
@@ -9,7 +11,7 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 
 # Cache directory relative to project root: <project>/system/cache/search
-SEARCH_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "system" / "cache" / "search"
+SEARCH_CACHE_DIR = PERSISTENT_ROOT / "system" / "cache" / "search"
 CACHE_MAX_ENTRIES = 1000
 
 try:

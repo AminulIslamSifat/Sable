@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from engine.config import (
     MODELS,
@@ -19,12 +20,18 @@ from engine.config import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Frozen builds (PyInstaller / Electron) mount the app read-only. Read-only
+# assets ship beside the bundle; everything mutable lives under
+# SABLE_PERSISTENT_ROOT. When the var is unset this is identical to before.
+_RUNTIME_ROOT = Path(os.getenv("SABLE_PERSISTENT_ROOT") or BASE_DIR)
+
 WEB_DIR = BASE_DIR / "web"
 INDEX_FILE = WEB_DIR / "index.html"
-DB_PATH = BASE_DIR / "system/sable.db"
-UPLOAD_DIR = BASE_DIR / "system/uploads"
+DB_PATH = _RUNTIME_ROOT / "system/sable.db"
+UPLOAD_DIR = _RUNTIME_ROOT / "system/uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-_AUTH_TOKEN_FILE = Path(__file__).resolve().parent.parent / "system/.auth_token"
+_AUTH_TOKEN_FILE = _RUNTIME_ROOT / "system/.auth_token"
 AUTH_EXEMPT_PREFIXES = (
     "/api/login", "/api/health", "/api/env", "/api/filesystem/",
     "/static/", "/system/uploads/", "/assets/",

@@ -131,3 +131,18 @@ engine/scraper/diagnostics/cache/
 # vault artifacts
 *.sable
 vault.sable
+
+# --- desktop build artifacts (generated, never commit) ---
+build_app/release/
+build_app/work/
+build_app/dist/
+*.AppImage
+*.deb
+*.asar
+
+# --- node dev deps (not shipped inside the asar) ---
+node_modules/
+
+# --- rejected vault-crypto demo, superseded by the real build ---
+desktop/test-sable/
+desktop/test-sable-dist/

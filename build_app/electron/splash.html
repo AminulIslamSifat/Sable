@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'">
+<title>Sable</title>
+<style>
+  :root { --bg:#0d1117; --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --ok:#3fb950; --bad:#f85149; --border:#30363d; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-user-select: none; user-select: none; overflow: hidden;
+  }
+  .wrap { width: 460px; max-width: calc(100vw - 60px); text-align: center; }
+  .logo {
+    font-size: 40px; font-weight: 700; letter-spacing: -1.5px;
+    margin-bottom: 4px; background: linear-gradient(135deg, #58a6ff, #a371f7);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .tag { color: var(--dim); font-size: 12.5px; margin-bottom: 34px; }
+  .track {
+    height: 3px; background: var(--border); border-radius: 99px; overflow: hidden; margin-bottom: 14px;
+  }
+  .fill {
+    height: 100%; width: 0%; border-radius: 99px;
+    background: linear-gradient(90deg, #58a6ff, #a371f7);
+    transition: width .35s ease;
+  }
+  .fill.indeterminate {
+    width: 35% !important;
+    animation: slide 1.15s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0% { transform: translateX(-110%); }
+    100% { transform: translateX(320%); }
+  }
+  .status { font-size: 12.5px; color: var(--dim); min-height: 20px; }
+  .status.err { color: var(--bad); }
+  .detail {
+    margin-top: 10px; font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: var(--dim); white-space: pre-wrap; word-break: break-word; max-height: 90px; overflow: auto;
+  }
+  .actions { margin-top: 20px; display: none; gap: 8px; justify-content: center; }
+  .actions.show { display: flex; }
+  button {
+    background: var(--accent); color: #04121f; border: 0; border-radius: 7px;
+    padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  button:hover { filter: brightness(1.12); }
+  pre.log {
+    display: none; margin-top: 16px; text-align: left; max-height: 220px; overflow: auto;
+    background: #161b22; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;
+    color: var(--dim); white-space: pre-wrap; word-break: break-all;
+  }
+  pre.log.show { display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">Sable</div>
+  <div class="tag">agentic chat platform</div>
+
+  <div class="track"><div class="fill indeterminate" id="fill"></div></div>
+  <div class="status" id="status">Starting…</div>
+  <div class="detail" id="detail"></div>
+
+  <div class="actions" id="actions">
+    <button id="retry">Retry</button>
+    <button class="ghost" id="showlog">Show log</button>
+  </div>
+  <pre class="log" id="log"></pre>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+
+function setStatus(text, isError, detail) {
+  const s = $("status")
+  s.textContent = text
+  s.className = "status" + (isError ? " err" : "")
+  $("detail").textContent = detail || ""
+  if (isError) {
+    $("fill").className = "fill"
+    $("fill").style.width = "100%"
+    $("fill").style.background = "#f85149"
+    $("actions").className = "actions show"
+  }
+}
+
+window.sableDesktop.onStatus(({ status, detail }) => {
+  if (status === "starting") {
+    setStatus("Starting Sable…", false, detail)
+  } else if (status === "ready") {
+    $("fill").className = "fill"
+    $("fill").style.width = "100%"
+    setStatus("Ready — loading interface…", false, detail)
+  } else if (status === "error") {
+    setStatus("Sable failed to start", true, detail)
+  }
+})
+
+$("retry").onclick = async () => {
+  $("actions").className = "actions"
+  $("fill").style.background = ""
+  $("fill").style.width = "0%"
+  $("fill").className = "fill indeterminate"
+  setStatus("Restarting…", false, "")
+  await window.sableDesktop.retry()
+}
+
+$("showlog").onclick = async () => {
+  const pre = $("log")
+  const showing = pre.className.includes("show")
+  if (showing) {
+    pre.className = "log"
+    $("showlog").textContent = "Show log"
+  } else {
+    pre.textContent = await window.sableDesktop.log()
+    pre.className = "log show"
+    $("showlog").textContent = "Hide log"
+    pre.scrollTop = pre.scrollHeight
+  }
+}
+
+setStatus("Starting Sable…", false, "launching the bundled server")
+</script>
+</body>
+</html>

@@ -278,14 +278,16 @@ def resolve_browser_for_profile(profile_name: str) -> str | None:
     """
     saved = get_account_browser_path(profile_name)
     if not saved:
-        # No saved browser — use Playwright bundled Chromium directly
-        return find_playwright_chrome()
+        # No saved browser — prefer a real system Chrome/Chromium over
+        # Playwright's bundled download. This is what makes a shipped app work
+        # with zero browser download: the user almost always has one.
+        return find_best_chrome()
     if saved == "default":
         return None  # Let Playwright use its own default
     if os.path.isfile(saved):
         return saved
-    # Saved path was deleted — fall back to Playwright
-    return find_playwright_chrome()
+    # Saved path was deleted — fall back to the best available browser
+    return find_best_chrome()
 
 
 def is_browser_available(browser_path: str | None) -> bool:

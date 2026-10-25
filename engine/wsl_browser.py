@@ -10,6 +10,7 @@ a portable Chromium for Windows from Playwright's CDN.
 """
 
 from __future__ import annotations
+from engine.config import PERSISTENT_ROOT  # frozen-build writable root
 
 import logging
 import os
@@ -25,7 +26,7 @@ logger = logging.getLogger("sable.wsl_browser")
 _BS = chr(92)  # backslash, avoids escape issues in string literals
 
 # Where bundled Windows Chromium lives (inside WSL filesystem)
-_BUNDLED_DIR = Path(__file__).resolve().parent.parent / "system" / "chromium-win"
+_BUNDLED_DIR = PERSISTENT_ROOT / "system" / "chromium-win"
 _BUNDLED_EXE = _BUNDLED_DIR / "chrome-win64" / "chrome.exe"
 
 

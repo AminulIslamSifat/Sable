@@ -1,6 +1,7 @@
 """Image Generator handler: Cloudflare → Pollinations → Perchance fallback chain."""
 
 from __future__ import annotations
+from engine.py_runner import script_cmd, child_env  # frozen-safe subprocess
 
 import json
 import logging
@@ -159,9 +160,9 @@ def _try_perchance(prompt: str, style: str, shape: str, count: str, neg: str, se
     if seed and seed != "-1":
         cli += ["--seed", seed]
 
-    cmd = [sys.executable, _SCRIPT] + cli
+    cmd = script_cmd(_SCRIPT, *cli)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=child_env())
     except subprocess.TimeoutExpired:
         logger.warning("Perchance: timed out")
         return None
@@ -199,9 +200,9 @@ def _try_dreamforge(prompt: str, style: str, shape: str, neg: str, seed: int, co
     }
     art_style = style_map.get(style, "photorealistic")
 
-    cmd = [sys.executable, _DREAMFORGE_SCRIPT, "generate",
+    cmd = script_cmd(_DREAMFORGE_SCRIPT, "generate",
            "--prompt", prompt, "--art-style", art_style,
-           "--dimensions", dimensions, "--batch", str(count)]
+           "--dimensions", dimensions, "--batch", str(count))
     if neg:
         cmd += ["--negative-prompt", neg]
     if seed >= 0:
@@ -245,9 +246,9 @@ def _try_advanced_sdxl(prompt: str, style: str, shape: str, neg: str, seed: int,
     }
     sdxl_style = style_map.get(style, "none")
 
-    cmd = [sys.executable, _ADVANCED_SDXL_SCRIPT, "generate",
+    cmd = script_cmd(_ADVANCED_SDXL_SCRIPT, "generate",
            "--prompt", prompt, "--aspect-ratio", aspect_ratio,
-           "--batch-size", str(min(count, 4))]
+           "--batch-size", str(min(count, 4)))
     if sdxl_style != "none":
         cmd += ["--style", sdxl_style]
     if neg:
