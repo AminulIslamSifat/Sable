@@ -1,0 +1,35 @@
+# Maintainer: Sifat <aminulislamsifat5@gmail.com>
+pkgname=sable-bin
+pkgver=3.0.0
+pkgrel=1
+pkgdesc="Sable — agentic chat platform with a bundled local server and native browser pane"
+arch=('x86_64')
+url="https://github.com/AminulIslamSifat/Sable"
+license=('MIT')
+depends=('gtk3' 'nss' 'libxss' 'libxtst' 'alsa-lib' 'libcups' 'libdrm' 'mesa'
+         'libxkbcommon' 'at-spi2-core' 'libnotify' 'libsecret' 'libglvnd' 'fuse2')
+provides=('sable')
+conflicts=('sable' 'sable-git')
+options=('!strip' '!debug')
+source=("Sable-$pkgver-x86_64.AppImage::https://github.com/AminulIslamSifat/Sable/releases/download/v3.0.0/Sable-3.0.0-x86_64.AppImage")
+sha256sums=('51ef4fcffaceaf1bc713ff499b2009888439561b48f332ad2e6e71ae416a88b9')
+
+package() {
+  # The AppImage itself
+  install -Dm755 "$srcdir/Sable-$pkgver-x86_64.AppImage"     "$pkgdir/opt/sable/sable.AppImage"
+  ln -s /opt/sable/sable.AppImage "$pkgdir/usr/bin/sable"
+
+  # Pull the launcher + icon out of the AppImage. They exist inside the squashfs
+  # but nothing on the host can see them until we copy them into place.
+  cd "$srcdir"
+  ./Sable-$pkgver-x86_64.AppImage --appimage-extract 'sable.png' >/dev/null
+  ./Sable-$pkgver-x86_64.AppImage --appimage-extract 'sable.desktop' >/dev/null
+
+  install -Dm644 squashfs-root/sable.png     "$pkgdir/usr/share/icons/hicolor/512x512/apps/sable.png"
+
+  # Exec=AppRun only resolves inside the mounted AppImage. Point it at the
+  # installed file or the menu icon appears but launches nothing.
+  sed -e 's|^Exec=.*|Exec=/opt/sable/sable.AppImage %U|'       -e '/^X-AppImage-Version=/d'       squashfs-root/sable.desktop > sable.desktop
+
+  install -Dm644 sable.desktop "$pkgdir/usr/share/applications/sable.desktop"
+}

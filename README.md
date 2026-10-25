@@ -1,72 +1,97 @@
 # Sablem
 
-> Release mirror for [Sable](https://github.com/AminulIslamSifat/Sable) — the zip packages live here.
+> Release mirror for [Sable](https://github.com/AminulIslamSifat/Sable) — built packages live here.
 
-This repo holds **built release packages** for Sable. It contains no application
-source. The Sable server's built-in updater pulls the correct package from this
-repo's GitHub Releases and installs it in place.
+This repo holds the **AUR package source** and stages **built release artifacts** for Sable. It contains no application source.
 
 ***
 
 ## Packages
 
-Each release ships three zips, one per platform. Every package contains the full
-runtime tree and **only** the solver binary for that platform.
+Each release ships prebuilt desktop packages. No runtime installation, no Python, no `uv sync` — the app is self-contained.
 
-| Package | Solver binary included | Platforms |
+| Package | Platform | Install |
 |:--|:--|:--|
-| `sable-<version>-linux.zip` | `pow-solver-linux-amd64`, `pow-solver-linux-arm64` | Linux x86_64 / arm64 |
-| `sable-<version>-windows.zip` | `pow-solver-windows-amd64.exe` | Windows x86_64 |
-| `sable-<version>-macos.zip` | `pow-solver-darwin-arm64` | macOS (Apple Silicon) |
+| `Sable-<version>-x86_64.AppImage` | Any Linux | `chmod +x` and run |
+| `Sable-<version>-amd64.deb` | Debian / Ubuntu | `sudo apt install ./Sable-<version>-amd64.deb` |
+| `sable-bin` (AUR) | Arch Linux | `yay -S sable-bin` |
 
 ***
 
 ## Install
 
+### Arch Linux (AUR)
+
 ```bash
-# Linux / macOS
-unzip sable-<version>-linux.zip -d Sable && cd Sable && chmod +x start && ./start
+yay -S sable-bin
 ```
 
-```powershell
-# Windows
-Expand-Archive sable-<version>-windows.zip -DestinationPath Sable
-cd Sable
-.\start.bat
+Installs the AppImage to `/opt/sable/`, adds `sable` to your `$PATH`, and registers the desktop entry and icon.
+
+### Debian / Ubuntu
+
+```bash
+sudo apt install ./Sable-<version>-amd64.deb
 ```
 
-The `start` script installs Python, uv, Playwright, and everything else on first
-run. The only prerequisite is `git` (for the MCP server binary).
+### Any Linux (AppImage)
 
-***
+```bash
+chmod +x Sable-<version>-x86_64.AppImage
+./Sable-<version>-x86_64.AppImage
+```
 
-## Updating
-
-Run Sable, open **Settings → Updates**, and hit **Check for Updates**. The server:
-
-1. Asks the GitHub API for the latest release on this repo
-2. Downloads the zip matching the current OS
-3. Extracts it over the install directory, preserving `system/`, `Brain/*.json`,
-   `instruction/Maria.md`, and your `.venv/`
-4. Runs `uv sync` and restarts
-
-> [!NOTE]
-> The updater never touches your personal data. Everything under `system/`,
-> `output/`, and your local persona/memory files survives an update untouched.
+The AppImage is portable — no install, no root. It carries its own server binary, so it does not need Python or any system runtime.
 
 ***
 
 ## Building a release
 
-The packaging script lives in the Sable source repo:
+Everything is driven by `build_app/build.py` in the Sable source repo:
 
 ```bash
-cd Sable-core
-python3 tools/build_packages.py --out ../Sablem/releases
+cd Sable-exp
+./build_app/build.py --clean
 ```
 
-Then attach the three zips to a GitHub Release on this repo, tagged `v<version>`
-(matching `version` in Sable's `pyproject.toml`). The updater reads that tag.
+By default this:
+
+1. Applies source patches (idempotent)
+2. Freezes the Python server with PyInstaller
+3. Runs the verification gates (bundle contents, frozen-safe paths, `--run-script` dispatch)
+4. Packages the Electron app as **AppImage + deb**
+5. Stages both artifacts into `Sablem/releases/`
+6. Regenerates `Sablem/aur/sable-bin/{PKGBUILD,.SRCINFO}` with a fresh `sha256`
+
+Useful flags:
+
+| Flag | Effect |
+|:--|:--|
+| `--target deb` | Build only the deb |
+| `--target AppImage` | Build only the AppImage |
+| `--no-sablem` | Don't stage into this repo |
+| `--no-aur` | Don't regenerate the PKGBUILD |
+| `--verify-only` | Re-run verification on an existing build |
+
+***
+
+## Publishing
+
+The build stages artifacts but never uploads. To publish a release:
+
+```bash
+gh release create v<version> \
+  Sablem/releases/Sable-<version>-x86_64.AppImage \
+  Sablem/releases/Sable-<version>-amd64.deb \
+  --repo AminulIslamSifat/Sable \
+  --title "Sable <version>" \
+  --notes "..."
+```
+
+The tag **must** match `version` in Sable's `pyproject.toml` — the AUR `PKGBUILD` points at the release asset URL.
+
+> [!IMPORTANT]
+> `releases/` is gitignored. Artifacts belong on GitHub Releases, never in git history. Only `aur/` is tracked here.
 
 ***
 
@@ -75,10 +100,13 @@ Then attach the three zips to a GitHub Release on this repo, tagged `v<version>`
 ```
 Sablem/
 ├── README.md
-└── releases/          # zips (gitignored — attach to GitHub Releases instead)
-    ├── sable-1.9.1-linux.zip
-    ├── sable-1.9.1-windows.zip
-    └── sable-1.9.1-macos.zip
+├── aur/
+│   └── sable-bin/
+│       ├── PKGBUILD        # generated by build.py
+│       └── .SRCINFO        # generated by makepkg --printsrcinfo
+└── releases/               # gitignored — stage only, upload to GitHub Releases
+    ├── Sable-<version>-x86_64.AppImage
+    └── Sable-<version>-amd64.deb
 ```
 
 ***
