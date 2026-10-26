@@ -179,14 +179,18 @@ def build_appimage(targets: str) -> None:
         # raw string through fails with "Unknown target: all" after the
         # (expensive) server build has already succeeded.
         if targets == "all":
-            target_list = ["AppImage", "deb"]
+            target_list = ["AppImage", "deb", "pacman"]
         else:
             target_list = [t for t in targets.replace(",", " ").split() if t]
         cmd = [str(eb), "--linux", *target_list, "--publish", "never"]
         log = BUILD / "electron-builder.log"
         with log.open("w") as fh:
             proc = subprocess.run(cmd, cwd=str(ELECTRON), stdout=fh, stderr=subprocess.STDOUT)
-        artifacts = sorted(RELEASE.glob("*.AppImage")) + sorted(RELEASE.glob("*.deb"))
+        artifacts = (
+            sorted(RELEASE.glob("*.AppImage"))
+            + sorted(RELEASE.glob("*.deb"))
+            + sorted(RELEASE.glob("*.pkg.tar.zst"))
+        )
         if not artifacts:
             print(f"  log: {log}")
             tail = log.read_text(errors="replace").strip().splitlines()[-15:]

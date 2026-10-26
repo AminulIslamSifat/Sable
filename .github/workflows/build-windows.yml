@@ -1,0 +1,85 @@
+name: Build Windows installer
+
+# Runs on a real Windows VM, because PyInstaller cannot cross-compile:
+# the bundled sable-server must be built on the OS it will run on.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # tool.uv: package = false, so sync installs deps only and never
+      # tries to build this project — no [build-system] section needed.
+      - name: Install Python dependencies
+        run: uv sync --frozen --no-dev
+
+      # --with layers PyInstaller on top of the synced env, so it never
+      # pollutes the project's locked dependencies.
+      - name: Build server (PyInstaller -> sable-server.exe)
+        working-directory: build_app
+        run: uv run --with pyinstaller pyinstaller --noconfirm sable.spec
+
+      - name: Verify server binary
+        working-directory: build_app
+        run: |
+          if (!(Test-Path "dist/sable-server/sable-server.exe")) {
+            Write-Error "sable-server.exe was not produced"
+            exit 1
+          }
+          Get-Item "dist/sable-server/sable-server.exe" | Select-Object Name, Length
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: build_app/electron/package-lock.json
+
+      - name: Install Electron dependencies
+        working-directory: build_app/electron
+        run: npm ci
+
+      - name: Build Windows installer
+        working-directory: build_app/electron
+        run: npx electron-builder --win --publish never
+
+      - name: List artifacts
+        working-directory: build_app
+        run: Get-ChildItem release -Recurse -Include *.exe | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sable-Windows
+          path: build_app/release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      # Attach straight to the release — no download/re-upload needed.
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build_app/release/*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true

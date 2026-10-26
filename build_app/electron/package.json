@@ -48,7 +48,7 @@
       }
     ],
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": ["AppImage", "deb", "pacman"],
       "category": "Development",
       "icon": "build/icon.png",
       "syncDesktopName": true,
@@ -65,9 +65,13 @@
       },
       "artifactName": "Sable-${version}-${arch}.${ext}"
     },
+    "pacman": {
+      "depends": ["gtk3", "nss", "libxss", "libxtst", "alsa-lib", "libcups", "libdrm", "mesa", "libxkbcommon", "at-spi2-core", "libnotify", "libsecret", "libglvnd"],
+      "artifactName": "Sable-${version}-${arch}.pkg.tar.zst"
+    },
     "win": {
       "target": ["nsis"],
-      "icon": "build/icon.ico",
+      "icon": "build/icon.png",
       "artifactName": "Sable-Setup-${version}.${ext}"
     },
     "nsis": {
