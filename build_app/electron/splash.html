@@ -913,6 +913,107 @@
     pointer-events: none;
     opacity: .55;
   }
+  /* ══════════════════════════════════════════════════════════════
+     THEME BRIDGE — colors injected at runtime from the main app.
+     This page loads as file:// and cannot read the app's localStorage,
+     so the main process resolves the theme and sets these on :root.
+     Falls back to the built-in gold when nothing is provided.
+     ══════════════════════════════════════════════════════════════ */
+  :root {
+    --t-bg: var(--bg);
+    --t-panel: var(--panel);
+    --t-line: var(--line);
+    --t-text: var(--text);
+    --t-dim: var(--dim);
+    --t-faint: var(--faint);
+    --t-accent: var(--gold);
+    --t-accent-rgb: 201,169,97;
+    --t-ok: var(--ok);
+    --t-ok-rgb: 125,211,160;
+    --t-danger: var(--error);
+  }
+  body { background: var(--t-bg); color: var(--t-text); }
+
+  .scene {
+    background:
+      radial-gradient(ellipse 140% 90% at 50% -25%, rgba(var(--t-accent-rgb),.10) 0%, transparent 52%),
+      radial-gradient(ellipse 100% 70% at 12% 108%, rgba(var(--t-ok-rgb),.07) 0%, transparent 58%),
+      radial-gradient(ellipse 90% 65% at 92% 102%, rgba(var(--t-accent-rgb),.06) 0%, transparent 56%),
+      var(--t-bg) !important;
+  }
+  .g1 { background: radial-gradient(circle, rgba(var(--t-accent-rgb),.13) 0%, rgba(var(--t-accent-rgb),0) 62%) !important; }
+  .g2 { background: radial-gradient(circle, rgba(var(--t-ok-rgb),.09) 0%, transparent 66%) !important; }
+  .grid {
+    background-image:
+      linear-gradient(rgba(var(--t-accent-rgb),.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(var(--t-accent-rgb),.05) 1px, transparent 1px) !important;
+  }
+  .card {
+    background: linear-gradient(168deg, color-mix(in srgb, var(--t-panel) 92%, transparent) 0%, color-mix(in srgb, var(--t-bg) 82%, transparent) 100%) !important;
+    border-color: rgba(var(--t-accent-rgb),.14) !important;
+    box-shadow:
+      0 60px 140px -60px rgba(0,0,0,.55),
+      0 24px 60px -32px rgba(0,0,0,.35),
+      inset 0 1px 0 rgba(255,255,255,.05),
+      inset 0 -34px 64px -52px rgba(var(--t-accent-rgb),.35) !important;
+  }
+  .card::after { background: linear-gradient(90deg, transparent, rgba(var(--t-accent-rgb),.55), transparent) !important; }
+  .mark {
+    background: radial-gradient(circle at 32% 22%, color-mix(in srgb, var(--t-accent) 18%, var(--t-panel)) 0%, var(--t-panel) 58%, var(--t-bg) 100%) !important;
+    border-color: rgba(var(--t-accent-rgb),.28) !important;
+    box-shadow:
+      0 30px 80px -26px rgba(0,0,0,.6),
+      inset 0 1px 0 rgba(255,255,255,.09),
+      inset 0 -12px 26px -18px rgba(var(--t-accent-rgb),.5),
+      0 0 130px -34px rgba(var(--t-accent-rgb),.7) !important;
+  }
+  .mark svg { stroke: var(--t-accent) !important; }
+  .mark .ring { border-color: rgba(var(--t-accent-rgb),.18) !important; }
+  .mark::before { background: radial-gradient(circle, rgba(var(--t-accent-rgb),.22) 0%, transparent 66%) !important; }
+  .mark::after { background: conic-gradient(from 0deg, transparent 0 52%, var(--t-accent) 76%, transparent 88%) !important; }
+  h1 {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--t-accent) 40%, var(--t-text)) 0%, var(--t-accent) 55%, color-mix(in srgb, var(--t-accent) 70%, var(--t-text)) 100%) !important;
+    -webkit-background-clip: text !important; background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    filter: drop-shadow(0 2px 20px rgba(var(--t-accent-rgb),.22)) !important;
+  }
+  .sub { color: var(--t-dim) !important; }
+  .sub::before { background: linear-gradient(90deg, transparent, rgba(var(--t-accent-rgb),.35)) !important; }
+  .sub::after { background: linear-gradient(90deg, rgba(var(--t-accent-rgb),.35), transparent) !important; }
+  .step[data-state="pending"] { color: var(--t-faint) !important; }
+  .step[data-state="active"] { color: var(--t-accent) !important; }
+  .step[data-state="done"] { color: var(--t-dim) !important; }
+  .step[data-state="active"] .pip { background: var(--t-accent) !important; border-color: var(--t-accent) !important; box-shadow: 0 0 0 4px rgba(var(--t-accent-rgb),.10), 0 0 22px rgba(var(--t-accent-rgb),.5) !important; }
+  .step[data-state="active"] .pip::after { background: var(--t-bg) !important; }
+  .step[data-state="done"] .pip { border-color: var(--t-accent) !important; }
+  .step[data-state="done"] .pip::after { border-color: var(--t-accent) !important; }
+  .step[data-state="active"] .lbl { text-shadow: 0 0 18px rgba(var(--t-accent-rgb),.45) !important; }
+  .steps::before { background: linear-gradient(180deg, rgba(var(--t-accent-rgb),.22), rgba(var(--t-accent-rgb),.06)) !important; }
+  .status {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--t-panel) 92%, transparent) 0%, color-mix(in srgb, var(--t-bg) 88%, transparent) 100%) !important;
+    border-color: rgba(var(--t-accent-rgb),.14) !important;
+    color: var(--t-dim) !important;
+  }
+  .status[data-tone="warn"] { color: var(--t-accent) !important; border-color: rgba(var(--t-accent-rgb),.3) !important; }
+  .status[data-tone="error"] { color: var(--t-danger) !important; border-color: var(--t-danger) !important; background: linear-gradient(180deg, color-mix(in srgb, var(--t-danger) 10%, var(--t-panel)) 0%, var(--t-bg) 100%) !important; }
+  .dot { background: var(--t-accent) !important; }
+  .logwrap { background: color-mix(in srgb, var(--t-bg) 92%, var(--t-text)) !important; border-color: var(--t-line) !important; }
+  .loghead { border-bottom-color: var(--t-line) !important; color: var(--t-faint) !important; }
+  .log { color: var(--t-dim) !important; }
+  .log:empty::before { color: var(--t-faint) !important; }
+  .foot { color: var(--t-faint) !important; }
+  .foot code, .foot #elapsed { color: var(--t-muted, var(--t-dim)) !important; }
+  .progress { background: var(--t-line) !important; }
+  .progress::after { background: linear-gradient(90deg, transparent, var(--t-accent), transparent) !important; }
+  .brackets span { border-color: rgba(var(--t-accent-rgb),.22) !important; }
+  .orbit::before { border-color: rgba(var(--t-accent-rgb),.08) !important; }
+  .orbit .sat::after { background: var(--t-accent) !important; box-shadow: 0 0 10px 2px rgba(var(--t-accent-rgb),.7), 0 0 22px 6px rgba(var(--t-accent-rgb),.25) !important; }
+  .orbit .sat.s2::after { background: var(--t-ok) !important; box-shadow: 0 0 9px 2px rgba(var(--t-ok-rgb),.6) !important; }
+  .dust i { background: radial-gradient(circle, rgba(var(--t-accent-rgb),.9), rgba(var(--t-accent-rgb),0) 70%) !important; }
+  button.act { background: color-mix(in srgb, var(--t-panel) 92%, transparent) !important; border-color: var(--t-line) !important; color: var(--t-text) !important; }
+  button.act:hover { background: color-mix(in srgb, var(--t-accent) 12%, var(--t-panel)) !important; border-color: rgba(var(--t-accent-rgb),.35) !important; }
+  button.act.primary { background: linear-gradient(180deg, rgba(var(--t-accent-rgb),.22), rgba(var(--t-accent-rgb),.10)) !important; border-color: rgba(var(--t-accent-rgb),.45) !important; color: var(--t-accent) !important; }
+  html[data-mode="light"] .logwrap { background: color-mix(in srgb, var(--t-panel) 96%, #000) !important; }
 </style>
 </head>
 <body data-stage="idle">
@@ -1008,6 +1109,30 @@
     let raf = null
     let t0 = performance.now()
 
+    // Canvas cannot read CSS custom properties, so resolve the accent here.
+    // Re-read whenever the theme bridge repaints (theme may arrive after boot).
+    let _accentCache = "201,169,97"
+    function readAccent() {
+      try {
+        const v = getComputedStyle(document.documentElement)
+          .getPropertyValue("--t-accent-rgb").trim()
+        if (v) _accentCache = v
+      } catch (e) {}
+      return _accentCache
+    }
+    function accentRgb() { return _accentCache }
+    readAccent()
+    // The splash repaints the dust on the next frame after a theme arrives.
+    if (window.sableDesktop && window.sableDesktop.onTheme) {
+      window.sableDesktop.onTheme(() => { readAccent() })
+    }
+    // Also catch the direct DOM style write from applyTheme().
+    try {
+      new MutationObserver(readAccent).observe(document.documentElement, {
+        attributes: true, attributeFilter: ["style"],
+      })
+    } catch (e) {}
+
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
     function build() {
@@ -1060,7 +1185,7 @@
         const a = 0.08 + 0.42 * v
         ctx.beginPath()
         ctx.arc(d.x, d.y, r, 0, 6.28318)
-        ctx.fillStyle = 'rgba(201,169,97,' + a.toFixed(3) + ')'
+        ctx.fillStyle = 'rgba(' + accentRgb() + ',' + a.toFixed(3) + ')'
         ctx.fill()
       }
 
@@ -1090,6 +1215,37 @@
   })()
 
   const api = window.sableDesktop
+
+  // ── theme bridge ───────────────────────────────────────────
+  // The main process owns the app's real theme (the app stores it in
+  // localStorage on http://localhost, which this file:// page cannot read).
+  // It sends resolved colors here; we paint :root with them.
+  function applyTheme(t) {
+    if (!t || typeof t !== "object") return
+    const r = document.documentElement.style
+    const set = (k, v) => { if (v) r.setProperty(k, v) }
+    set("--t-bg", t.bg)
+    set("--t-panel", t.panel)
+    set("--t-line", t.border)
+    set("--t-text", t.text)
+    set("--t-dim", t.dim)
+    set("--t-faint", t.faint)
+    set("--t-muted", t.muted)
+    set("--t-accent", t.accent)
+    set("--t-accent-rgb", t.accentRgb)
+    set("--t-ok", t.ok)
+    set("--t-ok-rgb", t.okRgb)
+    set("--t-danger", t.danger)
+    if (t.mode === "light") {
+      document.documentElement.setAttribute("data-mode", "light")
+    } else {
+      document.documentElement.removeAttribute("data-mode")
+    }
+  }
+  if (api && api.onTheme) api.onTheme(applyTheme)
+  if (api && api.getTheme) {
+    api.getTheme().then(applyTheme).catch(() => {})
+  }
   const body = document.body
   const statusEl = document.getElementById('status')
   const msgEl = document.getElementById('msg')

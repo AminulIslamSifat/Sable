@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld("sableDesktop", {
   openExternal: (url) => ipcRenderer.send("sable:open-external", url),
   info: () => ipcRenderer.invoke("sable:info"),
 
+  // Theme bridge — splash is file://, app is http://localhost; this is how
+  // the theme crosses that origin gap.
+  onTheme: (cb) => ipcRenderer.on("sable:theme", (_e, payload) => cb(payload)),
+  getTheme: () => ipcRenderer.invoke("sable:get-theme"),
+  setTheme: (t) => ipcRenderer.send("sable:set-theme", t),
+
   // native browser pane — the web UI gates on hasNativeBrowser
   hasNativeBrowser: true,
   openBrowser: (url) => ipcRenderer.invoke("sable:browser-open", url),

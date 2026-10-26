@@ -1502,6 +1502,22 @@ window.safeCopy = async function(text) {
       });
     }
 
+    // Report the current theme+mode to the Electron shell so the splash/loader
+    // (file:// origin) can paint itself to match. No-op in the plain web build.
+    function reportTheme() {
+      try {
+        if (!window.sableDesktop || !window.sableDesktop.setTheme) return;
+        let theme = null, mode = null;
+        try { theme = localStorage.getItem(THEME_KEY); } catch (e) {}
+        try { mode = localStorage.getItem(MODE_KEY); } catch (e) {}
+        if (!theme || theme === "sable") theme = "default";
+        if (!mode || mode === "auto") {
+          mode = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        window.sableDesktop.setTheme({ theme, mode });
+      } catch (e) {}
+    }
+
     themePicker.addEventListener("click", (e) => {
       const btn = e.target.closest(".theme-swatch");
       if (!btn) return;
@@ -1509,6 +1525,7 @@ window.safeCopy = async function(text) {
       applyTheme(name);
       themePicker.querySelectorAll(".theme-swatch").forEach((b) => b.classList.toggle("active", b === btn));
       try { localStorage.setItem(THEME_KEY, name); } catch (err) {}
+      reportTheme();
     });
 
     (function loadTheme() {
@@ -1523,6 +1540,9 @@ window.safeCopy = async function(text) {
       } else {
         updateFavicon();
       }
+      // Tell the Electron shell the theme on startup, so the splash of the
+      // *next* launch already matches. Delay a tick so MODE_KEY is settled.
+      setTimeout(reportTheme, 0);
     })();
 
     // ---------- Appearance Mode (Light / Dark / Auto) ----------
@@ -1569,6 +1589,7 @@ window.safeCopy = async function(text) {
         try { localStorage.setItem(MODE_KEY, mode); } catch(err) {}
         applyMode(mode);
         updateModeButtons(mode);
+        reportTheme();
       });
     }
 

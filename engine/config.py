@@ -104,6 +104,15 @@ MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 PROCEDURAL_PATH = BRAIN_DIR / "Procedural.json"
 PERSONALITY_PATH = BRAIN_DIR / "user_personality.json"
+# --------------------------------------------------------------------------
+# Instruction / personas
+# --------------------------------------------------------------------------
+# The shipped personas (Maria, Coder, Designer, Researcher, Writer, Study,
+# Reviewer, Agent, Maria-exp ...) are bundled into the app at
+# <root>/instruction. They are all user-editable, so on FIRST RUN the bundle
+# copies them into PERSISTENT_ROOT/instruction (see engine/first_run.py).
+# From then on every read and write targets the data folder, and upgrades
+# never overwrite a file the user already has.
 INSTRUCTION_DIR = PERSISTENT_ROOT / "instruction"
 PERSONAL_PATH = INSTRUCTION_DIR / "personal.md"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"

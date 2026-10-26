@@ -5,6 +5,7 @@
 const { app, BrowserWindow, shell, ipcMain, dialog, Menu, WebContentsView } = require("electron")
 const { ensureInstalled } = require("./installer")
 const { capturePerchanceKey } = require("./perchance")
+const { resolve: resolveTheme } = require("./theme-palette")
 const { spawn } = require("node:child_process")
 const path = require("node:path")
 const fs = require("node:fs")
@@ -121,6 +122,37 @@ function logPath() {
 let splashLoaded = false
 let pendingStatus = null
 let lastLogSent = ""
+
+// ── theme bridge ────────────────────────────────────────────────
+// The splash is file:// and cannot read the app's localStorage, so the app
+// reports its theme here, we persist it, and we hand it to the splash.
+let currentTheme = null
+let themeFile = null
+function themeStatePath() {
+  if (themeFile) return themeFile
+  themeFile = path.join(app.getPath("userData"), "theme-state.json")
+  return themeFile
+}
+function loadThemeState() {
+  try {
+    const j = JSON.parse(fs.readFileSync(themeStatePath(), "utf8"))
+    if (j && typeof j === "object") currentTheme = j
+  } catch {}
+}
+function saveThemeState(t) {
+  try {
+    fs.mkdirSync(path.dirname(themeStatePath()), { recursive: true })
+    fs.writeFileSync(themeStatePath(), JSON.stringify(t))
+  } catch {}
+}
+function resolvedTheme() {
+  const t = currentTheme && typeof currentTheme === "object" ? currentTheme : {}
+  return resolveTheme(t.theme || "sable", t.mode || "dark")
+}
+function pushThemeToSplash() {
+  if (!win || win.isDestroyed() || !splashLoaded) return
+  try { win.webContents.send("sable:theme", resolvedTheme()) } catch {}
+}
 
 function send(text, tone) {
   if (!win || win.isDestroyed()) return
@@ -326,6 +358,7 @@ function loadSplash() {
       pendingStatus = null
     }
     pushLog(true)
+    pushThemeToSplash()
   })
   win.loadFile(path.join(__dirname, "splash.html"))
 }
@@ -358,6 +391,15 @@ ipcMain.handle("sable:info", () => ({
   packaged: app.isPackaged,
   version: app.getVersion(),
 }))
+
+// Theme bridge IPC — the app pushes theme changes, the splash pulls on load.
+ipcMain.on("sable:set-theme", (_e, t) => {
+  if (!t || typeof t !== "object") return
+  currentTheme = { theme: String(t.theme || "sable"), mode: t.mode === "light" ? "light" : "dark" }
+  saveThemeState(currentTheme)
+  pushThemeToSplash()
+})
+ipcMain.handle("sable:get-theme", () => resolvedTheme())
 
 // ── native browser pane (WebContentsView) ───────────────────────
 // The web UI asks for `window.sableDesktop.hasNativeBrowser` and renders an
@@ -600,6 +642,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
+    loadThemeState()
 
     // Register with the desktop on first run. An AppImage does not do this by
     // itself — without it there is no menu entry and no icon, and the app is

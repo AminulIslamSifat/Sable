@@ -79,6 +79,13 @@ if __name__ == "__main__":
         from engine.py_runner import run_script_by_path
         sys.exit(run_script_by_path(_script, _rest))
 
+    # Seed bundled defaults (personas, Brain, skills) into the persistent root.
+    # In a source checkout this is a no-op; in the packaged app it fills the
+    # empty userData dir that SABLE_PERSISTENT_ROOT points at.
+    from engine.config import PERSISTENT_ROOT
+    from engine.first_run import seed_defaults
+    seed_defaults(PERSISTENT_ROOT)
+
     _write_pid()
     # Print a clear readiness box once the port is actually live, without
     # blocking startup. Runs in a daemon thread so uvicorn still owns the main

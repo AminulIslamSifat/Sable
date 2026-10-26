@@ -6,6 +6,7 @@ const fs = require("node:fs")
 const http = require("node:http")
 const path = require("node:path")
 const os = require("node:os")
+const { resolve: resolveTheme } = require("../build_app/electron/theme-palette")
 
 // ── Constants ───────────────────────────────────────────────────────────────
 // SABLE_ROOT lets you point the shell at any Sable tree (e.g. the non-exp copy).
@@ -17,6 +18,40 @@ const DEFAULT_PORT = 61771
 const BOOT_TIMEOUT_MS = 180_000
 const POLL_MS = 300
 const LOADER = path.join(__dirname, "loader.html")
+
+// ── Theme bridge ────────────────────────────────────────────────────────────
+// The web UI lives on http://localhost and stores its theme in localStorage.
+// The splash/loader live on file:// and cannot read that origin. So the UI
+// reports its theme here, we persist it, and we hand it to the splash on load.
+let currentTheme = null
+let themeFile = null
+function themeStatePath() {
+  if (themeFile) return themeFile
+  themeFile = path.join(app.getPath("userData"), "theme-state.json")
+  return themeFile
+}
+function loadThemeState() {
+  try {
+    const raw = fs.readFileSync(themeStatePath(), "utf8")
+    const j = JSON.parse(raw)
+    if (j && typeof j === "object") currentTheme = j
+  } catch {}
+}
+function saveThemeState(t) {
+  try {
+    fs.mkdirSync(path.dirname(themeStatePath()), { recursive: true })
+    fs.writeFileSync(themeStatePath(), JSON.stringify(t))
+  } catch {}
+}
+function resolvedTheme() {
+  const t = currentTheme && typeof currentTheme === "object" ? currentTheme : {}
+  return resolveTheme(t.theme || "sable", t.mode || "dark")
+}
+function pushThemeToSplash() {
+  if (!win || win.isDestroyed()) return
+  if (!win.webContents.getURL().startsWith("file://")) return
+  try { win.webContents.send("sable:theme", resolvedTheme()) } catch {}
+}
 
 // ── Port resolution: --port=N > SABLE_DESKTOP_PORT > SABLE_PORT > PORT > 61771
 function readPort() {
@@ -287,6 +322,7 @@ function createWindow() {
     if (splashLoaded) {
       lastLogSent = ""
       pushLog(true)
+      pushThemeToSplash()
     }
   })
 
@@ -364,6 +400,17 @@ ipcMain.on("sable:open-external", (_e, url) => {
 })
 
 ipcMain.handle("sable:info", () => ({ port: PORT, url: SERVER_URL, root: ROOT, log: logPath }))
+
+// Theme bridge IPC. The app calls sable:set-theme whenever the user changes
+// theme/mode; we persist it and repaint the splash if it's showing. The splash
+// calls sable:get-theme on load so it never flashes the default gold.
+ipcMain.on("sable:set-theme", (_e, t) => {
+  if (!t || typeof t !== "object") return
+  currentTheme = { theme: String(t.theme || "sable"), mode: t.mode === "light" ? "light" : "dark" }
+  saveThemeState(currentTheme)
+  pushThemeToSplash()
+})
+ipcMain.handle("sable:get-theme", () => resolvedTheme())
 
 // ── Native browser pane (WebContentsView) ──────────────────────────────────
 // An in-app browser is a WebContentsView layered above the renderer. The
@@ -811,6 +858,7 @@ let searchServer = null
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  loadThemeState()
   buildMenu()
   createWindow()
   searchServer = startSearchBridge()

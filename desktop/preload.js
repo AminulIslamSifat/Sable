@@ -9,6 +9,13 @@ contextBridge.exposeInMainWorld("sableDesktop", {
   openExternal: (url) => ipcRenderer.send("sable:open-external", url),
   info: () => ipcRenderer.invoke("sable:info"),
 
+  // ── Theme bridge ─────────────────────────────────────────────────────
+  // The splash (file://) can't read the app's (http://localhost) localStorage,
+  // so the app reports its theme here and the splash pulls it back.
+  onTheme: (cb) => ipcRenderer.on("sable:theme", (_e, payload) => cb(payload)),
+  getTheme: () => ipcRenderer.invoke("sable:get-theme"),
+  setTheme: (t) => ipcRenderer.send("sable:set-theme", t),
+
   // ── Native browser pane (Electron only) ──────────────────────────────
   // These are absent on the plain web build, so the web UI can check
   // `window.sableDesktop?.hasNativeBrowser` and fall back to window.open.

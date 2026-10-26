@@ -37,7 +37,8 @@
       "installer.js",
       "perchance.js",
       "splash.html",
-      "search-engines.js"
+      "search-engines.js",
+      "theme-palette.js"
     ],
     "extraResources": [
       {
