@@ -67,7 +67,7 @@
     },
     "pacman": {
       "depends": ["gtk3", "nss", "libxss", "libxtst", "alsa-lib", "libcups", "libdrm", "mesa", "libxkbcommon", "at-spi2-core", "libnotify", "libsecret", "libglvnd"],
-      "artifactName": "Sable-${version}-${arch}.pkg.tar.zst"
+      "artifactName": "Sable-${version}-x86_64.pkg.tar.zst"
     },
     "win": {
       "target": ["nsis"],
