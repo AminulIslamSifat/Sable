@@ -636,20 +636,45 @@ def chat_messages(
     """
     messages = get_messages(chat_id, limit=limit, before_id=before_id, include_skill_events=include_skill_events)
     # Compute total context chars for the full chat (not just the paginated slice)
-    from server.database import get_db
+    from server.database import get_db, get_compaction_state
+    # After a compaction the model no longer receives the transcript that the
+    # summary replaced. The ring must measure what the MODEL sees, not what the
+    # UI displays, or a reload restores the pre-compaction number and the ring
+    # sits pegged at 100% forever.
+    _summary, _cutoff = get_compaction_state(chat_id)
+    _cutoff = int(_cutoff) if _cutoff is not None else None
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(LENGTH(content)) + SUM(LENGTH(COALESCE(thinking, ''))), 0) AS total "
-            "FROM messages WHERE chat_id = ?",
-            (chat_id,),
-        ).fetchone()
-        msg_chars = row["total"] if row else 0
-        tool_row = conn.execute(
-            "SELECT COALESCE(SUM(LENGTH(se.event_data)), 0) AS tool_total "
-            "FROM skill_events se JOIN messages m ON se.message_id = m.id "
-            "WHERE m.chat_id = ?",
-            (chat_id,),
-        ).fetchone()
+        if _cutoff is None:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)) + SUM(LENGTH(COALESCE(thinking, ''))), 0) AS total "
+                "FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            msg_chars = row["total"] if row else 0
+            tool_row = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(se.event_data)), 0) AS tool_total "
+                "FROM skill_events se JOIN messages m ON se.message_id = m.id "
+                "WHERE m.chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        else:
+            # Measure the OUTBOUND SLICE, not the raw tables.
+            #
+            # The old arithmetic summed LENGTH(content) plus every skill_event
+            # blob. But skill_event rows are raw tool-trace JSON, and what the
+            # model actually receives is the much smaller reconstructed text
+            # (_reconstruct_message_content folds them into the message body).
+            # On a single post-cutoff turn that gap was 13_802 bytes of JSON vs
+            # 293 bytes of real content, so the ring read 88% when the model was
+            # being handed 3% of the budget. The ring would never "clear" after
+            # a compaction, which defeats the whole point.
+            #
+            # Building the slice the same way the connector does keeps the ring
+            # honest: it always equals what is really put in front of the model.
+            from server.api.routes.chat import _load_history_with_skills
+            _slice = _load_history_with_skills(chat_id)
+            msg_chars = sum(len(m.get("content") or "") for m in _slice)
+            tool_row = None
         context_chars = msg_chars + (tool_row["tool_total"] if tool_row else 0)
     # The system instruction occupies real context too — include it so the
     # status-bar ring matches the breakdown popup.

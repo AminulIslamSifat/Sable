@@ -315,6 +315,22 @@
         const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
         _atBottom = gap < 30;
       }, { passive: true });
+
+      // Any other way the pane can move: PageUp/PageDown, Home/End, arrow
+      // keys, middle-click autoscroll, trackpad momentum that arrives without
+      // a wheel event, or the scrollbar dragged from a spot we did not catch.
+      //
+      // NOTE the asymmetry: this listener can only ever RELEASE the follow
+      // (gap > 30 → _atBottom = false). It never sets _atBottom = true, even
+      // at gap ~0 — because our own yank writes scrollTop to scrollHeight
+      // every frame, and re-enabling follow from our own write would make
+      // scrolling up impossible: every wheel-up would be undone by the very
+      // next pin. Follow is only ever restored by an explicit user intent
+      // (wheel down that reaches the bottom, touch down, or the ↓ button).
+      pane.addEventListener("scroll", () => {
+        const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+        if (gap > 30) _atBottom = false;
+      }, { passive: true });
     }
 
     function resetScrollTracking() {
@@ -340,7 +356,21 @@
       _scrollRafPending = true;
       requestAnimationFrame(() => {
         _scrollRafPending = false;
-        if (activePane) activePane.scrollTop = activePane.scrollHeight;
+        if (!activePane) return;
+        // Re-check intent AT FIRE TIME, not just at schedule time.
+        //
+        // The old code wrote scrollTop unconditionally here. `_atBottom` was
+        // only tested when the rAF was queued, so this exact race happened
+        // constantly while the model streamed: a chunk schedules a pin (user
+        // still at bottom) → the user wheels up in the same frame, setting
+        // _atBottom = false → the already-queued rAF fires, ignores the new
+        // intent, and yanks them back to the bottom. During a live thinking
+        // block a pin is queued every ~32ms, so the user's scroll-up was
+        // being undone within a frame and the pane felt welded to the bottom
+        // until the stream stopped — exactly "can't scroll up while it's
+        // running, fixes itself when the response finishes".
+        if (!force && !_atBottom) return;
+        activePane.scrollTop = activePane.scrollHeight;
       });
     }
 

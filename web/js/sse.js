@@ -3510,6 +3510,31 @@
           } else if (evt.type === "round_thinking") {
             if (typeof ui.noteModelOutput === "function") ui.noteModelOutput();
             ui.showRoundThinking(evt.text || "");
+          } else if (evt.type === "compaction_start") {
+            // The ring was about to overflow. Show a card so the user can see
+            // the transcript being rewritten rather than silently truncated.
+            if (typeof window._sableCompactionStart === "function") {
+              window._sableCompactionStart(streamPane, evt);
+            }
+          } else if (evt.type === "compaction_summary") {
+            // The summary IS the model's message: render it in the transcript
+            // exactly like an answer, so a refresh shows the same thing.
+            if (typeof window._sableCompactionSummary === "function") {
+              window._sableCompactionSummary(streamPane, evt.text || "");
+            }
+          } else if (evt.type === "compaction_done") {
+            // Context ring resets; cumulative usage keeps climbing (it is a
+            // SQL sum over every message, including the ones just replaced).
+            if (typeof window._sableCompactionDone === "function") {
+              window._sableCompactionDone(streamPane, evt);
+            }
+          } else if (evt.type === "compaction_failed") {
+            // The summary call failed, so no done event is coming. Settle the
+            // card instead of leaving a spinner that never resolves - the chat
+            // itself continues normally, uncompacted.
+            if (typeof window._sableCompactionFailed === "function") {
+              window._sableCompactionFailed(streamPane, evt);
+            }
           } else if (evt.type === "thinking") {
             // Legacy fallback — backend no longer sends raw thinking tokens
             ui.appendThinking(evt.text || "");

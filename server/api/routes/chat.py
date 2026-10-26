@@ -108,6 +108,11 @@ def _load_history_with_skills(chat_id: str) -> list[dict[str, str]]:
     if cached is not None:
         return cached
 
+    # Compaction slice: after a compaction the model must NOT receive the
+    # transcript that the summary replaced, or the whole exercise is pointless.
+    # The DB keeps everything; only this outbound view is shortened.
+    summary, cutoff_id = get_compaction_state(chat_id)
+
     # CRITICAL: fetch only the newest N messages from SQLite. Loading the
     # whole table then trimming still materializes every row + every skill
     # event in RAM — that was the crash. The LIMIT must be in the query.
@@ -117,15 +122,36 @@ def _load_history_with_skills(chat_id: str) -> list[dict[str, str]]:
         include_skill_events=True,
     )
     history: list[dict[str, str]] = []
+    # The summary is stored as a real assistant row so the UI can render it.
+    # That row sits AFTER the cutoff (it is the newest message when written),
+    # so it would otherwise appear in the tail *and* be prepended below.
+    # Drop it here; `build_sliced_history` re-adds it at the head.
+    _summary_head = (summary or "").strip()[:200]
     for m in msgs:
         if m["role"] not in ("user", "assistant"):
             continue
+        # Post-compaction: only messages newer than the cutoff reach the model.
+        if cutoff_id is not None and int(m["id"]) <= int(cutoff_id):
+            continue
         content = _reconstruct_message_content(m)
-        if content:
-            history.append({"role": m["role"], "content": content})
+        if not content:
+            continue
+        if _summary_head and content.strip().startswith(_summary_head):
+            continue
+        # `_id` rides along so the compaction cutoff can be an exact row id
+        # instead of a content guess. Identical prefixes are common in real
+        # transcripts (a tool loop repeats the same output, a user restates a
+        # paragraph) and prefix matching silently picks the wrong row.
+        # build_sliced_history strips it before anything reaches a connector.
+        history.append({"role": m["role"], "content": content, "_id": int(m["id"])})
 
     # Safety trim (query already bounded it, but keep the invariant explicit).
     history = trim_history_messages(history)
+
+    # Prepend the summary as the leading context when one exists.
+    if summary:
+        from connectors.common.compaction import build_sliced_history
+        history = build_sliced_history(summary, history)
 
     # Keep the cache from growing without bound across many chats.
     if len(_HISTORY_CACHE) > 32:
@@ -145,6 +171,205 @@ def _get_skill_engine() -> SkillEngine:
         )
     return _skill_engine
 
+
+async def _collect_answer(agen) -> tuple[str, str]:
+    """Drain a connector async-generator, returning (answer_text, thinking_text)."""
+    answer_parts: list[str] = []
+    thinking_parts: list[str] = []
+    try:
+        async for ev in agen:
+            et = ev.get("type") if isinstance(ev, dict) else None
+            if et == "answer":
+                answer_parts.append(ev.get("text") or "")
+            elif et == "thinking":
+                thinking_parts.append(ev.get("text") or "")
+            elif et == "error":
+                raise RuntimeError(ev.get("message") or "connector error during compaction")
+    finally:
+        # Ensure the generator is closed so the connector releases its lock.
+        try:
+            await agen.aclose()
+        except Exception:
+            pass
+    return "".join(answer_parts), "".join(thinking_parts)
+
+
+async def _run_compaction(
+    *,
+    chat_id: str,
+    connector,
+    history: list[dict[str, Any]],
+    max_chars: int,
+    is_scraper: bool,
+    scraper_kwargs: dict[str, Any],
+    api_kwargs: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Compact the conversation for `chat_id`.
+
+    Returns an event payload for the caller to emit, or None when nothing was
+    done. The frontend gets a start card, then the summary as a normal model
+    message, then a done card that resets the context ring.
+
+    Two transports, one contract:
+
+      * API connectors accept a plain chat call, so we ask the SAME model for
+        the summary and then reset its in-memory session.
+      * Scrapers keep the conversation upstream, so we send the summary prompt
+        as an ordinary user message, collect the reply, wipe the upstream chat
+        with new_chat(), and re-seed it with the summary.
+
+    Either way the result is written to the chats row, so a reload slices
+    history from the same cutoff instead of replaying the full transcript.
+    """
+    split = split_for_summary(history, max_chars)
+    if split is None:
+        return None
+    to_summarize, to_keep = split
+    if not to_summarize:
+        return None
+
+    prompt = build_summary_prompt(to_summarize)
+    # Only the summarised block is actually reclaimed. `to_keep` survives
+    # verbatim, so measuring the whole history (the earlier bug) reported a
+    # number that had nothing to do with what the model stopped receiving.
+    current_chars = history_chars(to_summarize)
+    summary = ""
+
+    try:
+        if is_scraper:
+            # Upstream transport. The conversation lives on the remote site, so
+            # "compaction" means: ask for a summary as an ordinary turn, wipe
+            # the upstream chat, then start the fresh chat with that summary.
+            # raw=True keeps the summary prompt free of the persona + tool
+            # harness; it is a utility request, not a chat turn.
+            summary, _ = await _collect_answer(
+                scraper_service.stream_events(
+                    message=prompt,
+                    chat_id=chat_id,
+                    raw=True,
+                )
+            )
+            if not summary.strip():
+                return None
+            summary = summary.strip()
+
+            # Wipe upstream. Setting active_chat_id to None makes the next
+            # stream_events() call take the new_chat() branch, which also
+            # resets the engine's once-only instruction injection.
+            engine = getattr(scraper_service, "engine", None)
+            if engine is not None:
+                new_chat = getattr(engine, "new_chat", None)
+                if new_chat is not None:
+                    try:
+                        await new_chat()
+                    except Exception as exc:
+                        logger.warning("compaction new_chat failed (chat %s): %s", chat_id, exc)
+            try:
+                scraper_service.active_chat_id = None
+            except Exception:
+                pass
+
+            # Re-seed the fresh chat with the summary. raw=False so the engine
+            # injects its system instructions exactly once, as it would for any
+            # brand-new conversation.
+            try:
+                await _collect_answer(
+                    scraper_service.stream_events(
+                        message=summary,
+                        chat_id=chat_id,
+                        raw=False,
+                        system_instruction=scraper_kwargs.get("system_instruction"),
+                        layout_mode=scraper_kwargs.get("layout_mode"),
+                    )
+                )
+            except Exception as exc:
+                logger.warning("compaction seed failed (chat %s): %s", chat_id, exc)
+        else:
+            # API transport: same model, no tools, no persona.
+            akwargs = {
+                "message": prompt,
+                "model": api_kwargs.get("model"),
+                "thinking_mode": api_kwargs.get("thinking_mode"),
+                "chat_id": None,          # keep it out of the live session
+                "inject_instructions": False,
+                "db_history": None,
+            }
+            if akwargs["model"] is None:
+                akwargs.pop("model")
+            summary, _ = await _collect_answer(connector.stream_chat(**akwargs))
+            if not summary.strip():
+                return None
+    except Exception as exc:
+        logger.warning("compaction failed (chat %s): %s", chat_id, exc)
+        return None
+
+    summary = clean_summary(summary)
+    if not summary:
+        return None
+
+    # The cutoff is the last message that went into the summary. Everything
+    # up to and including it is replaced by the summary in the outbound view;
+    # everything after it (to_keep) is sent verbatim beside the summary.
+    #
+    # Prefer the exact row id carried on the history entry. The previous
+    # content-prefix scan picked the wrong row whenever two messages shared a
+    # prefix - which repeated tool output and restated paragraphs do all the
+    # time - and truncated the tail it was supposed to preserve.
+    from connectors.common.compaction import last_message_id
+    cutoff_msg_id = last_message_id(to_summarize)
+    if cutoff_msg_id is None:
+        try:
+            rows = get_messages(chat_id, limit=len(to_summarize) + 8, include_skill_events=False)
+            last_text = to_summarize[-1].get("content") or ""
+            for r in reversed(rows):
+                if (r.get("role") in ("user", "assistant")) and last_text[:200] and \
+                   (r.get("content") or "").startswith(last_text[:200]):
+                    cutoff_msg_id = int(r["id"])
+                    break
+            if cutoff_msg_id is None and rows:
+                cutoff_msg_id = int(rows[-1]["id"])
+        except Exception as exc:
+            logger.warning("compaction cutoff lookup failed (chat %s): %s", chat_id, exc)
+            return None
+
+    if cutoff_msg_id is None:
+        return None
+
+    # The summary is a real transcript row so the UI renders it as the model's
+    # message. It is deliberately saved AFTER to_keep, which means it lands in
+    # the tail as well - `_load_history_with_skills` drops it there by content
+    # match and re-adds it at the head, so the model sees it exactly once and
+    # in the right position (summary, then the kept recent turns).
+    try:
+        add_message(
+            chat_id, "assistant", summary, None, None,
+            prompt_tokens=0, completion_tokens=0,
+        )
+    except Exception as exc:
+        logger.warning("compaction summary row insert failed (chat %s): %s", chat_id, exc)
+
+    # Cutoff = the LAST SUMMARISED message, not the summary row.
+    #
+    # Cutting at the summary row (the earlier version) also discarded to_keep -
+    # the recent turns we promised to preserve verbatim - because those sit
+    # between the summarised block and the row. The payload dump proved it:
+    # `kept_messages: 3` reported, zero kept messages actually sent.
+
+    try:
+        set_compaction_state(chat_id, summary, cutoff_msg_id)
+    except Exception as exc:
+        logger.warning("compaction state save failed (chat %s): %s", chat_id, exc)
+        return None
+
+    return {
+        "type": "compaction_done",
+        "summary": summary,
+        "summary_chars": len(summary),
+        "freed_chars": max(0, current_chars - len(summary)),
+        "cutoff_msg_id": cutoff_msg_id,
+        "kept_messages": len(to_keep),
+    }
+
 from server.config import (
     SKILL_ROUND_WARN_THRESHOLD,
     _MEMORY_SEARCH_SETTINGS,
@@ -155,6 +380,15 @@ from server.database import (
     set_title_if_default, update_chat_title, get_injected_memory_keys, save_injected_memory_keys,
     touch_chat, save_chat_url, get_chat_url,
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
+    get_compaction_state, set_compaction_state,
+)
+from connectors.common.compaction import (
+    build_summary_prompt,
+    can_compact,
+    clean_summary,
+    history_chars,
+    should_compact,
+    split_for_summary,
 )
 from server.utils import retry_async, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
 from engine.token_counter import count_prompt_tokens, count_completion_tokens
@@ -2444,6 +2678,88 @@ async def chat(request: ChatRequest):
                         )
                     except Exception:
                         _round_prompt_tokens = 0
+                    # --- Context compaction (API transport) ---
+                    # Checked on round 0 only: later rounds are tool-loop
+                    # continuations of the same turn and must not be cut
+                    # mid-flight. The same model produces the summary.
+                    if round_index == 0 and active_chat_id and not _ephemeral and _max_session_chars_stream:
+                        try:
+                            _prompt_chars = _round_prompt_tokens * 4
+                            _hist_chars = history_chars(list(_db_history_s or []))
+                            # System instruction + tool schemas + this turn's
+                            # message: everything compaction cannot shrink.
+                            _overhead_chars = max(0, _prompt_chars - _hist_chars)
+                            if (should_compact(_prompt_chars, _max_session_chars_stream)
+                                    and can_compact(list(_db_history_s or []), _max_session_chars_stream, _overhead_chars)):
+                                yield sse({
+                                    "type": "compaction_start",
+                                    "pct": min(999, round(_prompt_chars / _max_session_chars_stream * 100)),
+                                    "max_chars": _max_session_chars_stream,
+                                })
+                                _compact_evt = await _run_compaction(
+                                    chat_id=active_chat_id,
+                                    connector=_connector,
+                                    history=list(_db_history_s or []),
+                                    max_chars=_max_session_chars_stream,
+                                    is_scraper=False,
+                                    scraper_kwargs={},
+                                    api_kwargs={
+                                        "model": _api_model,
+                                        "thinking_mode": request.thinking_mode,
+                                    },
+                                )
+                                if _compact_evt:
+                                    # Drop the connector's stale in-memory session
+                                    # so the next round sends the sliced history.
+                                    _reset = getattr(_connector, "reset_session", None)
+                                    if _reset is not None:
+                                        _reset(active_chat_id)
+                                    _HISTORY_CACHE.clear()
+                                    _db_history_s = _load_history_with_skills(active_chat_id)
+                                    # The connector appends this turn's user message
+                                    # itself from the `message` argument. The DB
+                                    # reload also contains it, because the user
+                                    # message is saved before dispatch. Drop that
+                                    # copy or the model receives the same turn twice
+                                    # (proved in the payload dump: two identical
+                                    # timestamped user messages back to back).
+                                    # Only reachable here because reset_session()
+                                    # empties the session, which re-enables the
+                                    # len(history) <= 1 seeding path.
+                                    if _db_history_s and _db_history_s[-1].get("role") == "user":
+                                        _db_history_s = _db_history_s[:-1]
+                                    # CRITICAL: `_stream_kwargs` was built BEFORE
+                                    # this block and captured the OLD pre-compaction
+                                    # list. Re-binding `_db_history_s` does not
+                                    # update the dict. Without this line the
+                                    # connector re-seeds its freshly-reset session
+                                    # from the stale full transcript and the model
+                                    # still receives everything - compaction would
+                                    # write correctly to the DB, render correctly in
+                                    # the UI, and do nothing at all to the request.
+                                    _stream_kwargs["db_history"] = _db_history_s
+                                    yield sse({"type": "compaction_summary", "text": _compact_evt["summary"]})
+                                    yield sse(_compact_evt)
+                                else:
+                                    # The start card is already on screen. If the
+                                    # summary call failed (provider error, rate
+                                    # limit, empty reply) there will never be a
+                                    # done event, and the card would sit on
+                                    # "Compacting context..." forever while the
+                                    # chat carried on underneath. Tell the UI to
+                                    # settle it, then let the turn proceed
+                                    # uncompacted - a failed compaction must
+                                    # never cost the user their message.
+                                    yield sse({
+                                        "type": "compaction_failed",
+                                        "reason": "summary unavailable",
+                                    })
+                        except Exception as _cexc:
+                            logger.warning("compaction skipped (chat %s): %s", active_chat_id, _cexc)
+                            yield sse({
+                                "type": "compaction_failed",
+                                "reason": "compaction error",
+                            })
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
                     # --- Token counting: prompt side (scraper) ---
@@ -2460,6 +2776,52 @@ async def chat(request: ChatRequest):
                         )
                     except Exception:
                         _round_prompt_tokens = 0
+                    # --- Context compaction (scraper transport) ---
+                    # The upstream conversation lives on the remote site, so the
+                    # summary is requested as an ordinary turn, the upstream chat
+                    # is wiped, and the fresh chat is re-seeded with the summary.
+                    if round_index == 0 and active_chat_id and _max_session_chars_stream:
+                        try:
+                            _prompt_chars_s = _round_prompt_tokens * 4
+                            _hist_chars_s = history_chars(list(_scraper_history or []))
+                            _overhead_chars_s = max(0, _prompt_chars_s - _hist_chars_s)
+                            if (should_compact(_prompt_chars_s, _max_session_chars_stream)
+                                    and can_compact(list(_scraper_history or []), _max_session_chars_stream, _overhead_chars_s)):
+                                yield sse({
+                                    "type": "compaction_start",
+                                    "pct": min(999, round(_prompt_chars_s / _max_session_chars_stream * 100)),
+                                    "max_chars": _max_session_chars_stream,
+                                })
+                                _compact_evt = await _run_compaction(
+                                    chat_id=active_chat_id,
+                                    connector=scraper_service,
+                                    history=list(_scraper_history or []),
+                                    max_chars=_max_session_chars_stream,
+                                    is_scraper=True,
+                                    scraper_kwargs={
+                                        "system_instruction": _study_system,
+                                        "layout_mode": _layout_mode,
+                                    },
+                                    api_kwargs={},
+                                )
+                                if _compact_evt:
+                                    _HISTORY_CACHE.clear()
+                                    yield sse({"type": "compaction_summary", "text": _compact_evt["summary"]})
+                                    yield sse(_compact_evt)
+                                else:
+                                    # Same reasoning as the API path: settle the
+                                    # start card so the chat is not left with a
+                                    # spinner that never resolves.
+                                    yield sse({
+                                        "type": "compaction_failed",
+                                        "reason": "summary unavailable",
+                                    })
+                        except Exception as _cexc:
+                            logger.warning("scraper compaction skipped (chat %s): %s", active_chat_id, _cexc)
+                            yield sse({
+                                "type": "compaction_failed",
+                                "reason": "compaction error",
+                            })
                     _scraper_msg = current_message
                     # Agent sub-chats still carry their own system prompt inline.
                     if request.system_prompt and "-agent-" in str(active_chat_id):
@@ -2561,15 +2923,27 @@ async def chat(request: ChatRequest):
                 # the send button silently becomes a stop button until pressed
                 # manually. 45s covers browser launch + session creation + jitter.
                 _MAIN_PRE_REQUEST_TIMEOUT = 45.0
+                # Events that arrive BEFORE the model produces any data.
+                #
+                # `request_sent` is a SCRAPER-ONLY sentinel — it is emitted by
+                # engine/service.py and engine/inpage.py, nowhere else. API
+                # connectors (opencode, deepseek, gemini, mistral, groq, …)
+                # never emit it. Requiring it therefore wedged every API turn
+                # in the 45s pre-request watchdog: every event fell through
+                # this branch, `_main_got_first` never flipped, and the 120s
+                # stall budget was never armed. Any gap >45s — precisely what
+                # a large create_file round produces — then fired a bogus
+                # "FIRST-CHUNK TIMEOUT" and tore down a live stream, discarding
+                # a tool call that had already succeeded.
+                _SETUP_EVENT_TYPES = frozenset({"meta", "status", "request_sent"})
                 _main_iter = round_event_source.__aiter__()
 
                 while True:
                     try:
                         if not _main_request_sent:
-                            # Pre-request phase: wait for request_sent with a hard
-                            # timeout. Setup events pass through; a timeout is
-                            # handled as a first-chunk timeout and retried below.
-                            print(f"[MAIN-STREAM]   ↳ waiting for request_sent (timeout={_MAIN_PRE_REQUEST_TIMEOUT}s)...")
+                            # Pre-request phase: setup events pass through. The
+                            # phase ends on `request_sent` (scraper backends) or
+                            # on the first real data event (API backends).
                             event = await asyncio.wait_for(
                                 _main_iter.__anext__(),
                                 timeout=_MAIN_PRE_REQUEST_TIMEOUT,
@@ -2578,7 +2952,11 @@ async def chat(request: ChatRequest):
                                 _main_request_sent = True
                                 print(f"[MAIN-STREAM]   ✓ request_sent — starting first-chunk timer ({_MAIN_FIRST_CHUNK_TIMEOUT}s)")
                                 continue
-                            # meta/status events during setup pass through normally
+                            if event.get("type") not in _SETUP_EVENT_TYPES:
+                                _main_request_sent = True
+                                _main_got_first = True
+                                print(f"[MAIN-STREAM]   ✓ first data (type={event.get('type')}) with no request_sent — arming stall timer ({_MAIN_STALL_TIMEOUT}s)")
+                            # setup events pass through without ending the phase
                         elif not _main_got_first:
                             print(f"[MAIN-STREAM]   ↳ waiting for first chunk (timeout={_MAIN_FIRST_CHUNK_TIMEOUT}s)...")
                             event = await asyncio.wait_for(
@@ -2595,9 +2973,17 @@ async def chat(request: ChatRequest):
                     except asyncio.TimeoutError:
                         if not _main_got_first:
                             _main_timeout_retries += 1
-                            print(f"[MAIN-STREAM]   ⏰ FIRST-CHUNK TIMEOUT ({_MAIN_FIRST_CHUNK_TIMEOUT}s), attempt {_main_timeout_retries}/3")
+                            # Report the timer that ACTUALLY fired. The old code
+                            # always printed the 15s first-chunk value even when
+                            # the 45s pre-request watchdog was the one that
+                            # tripped, which made these logs impossible to trust.
+                            _fired_timeout = (
+                                _MAIN_FIRST_CHUNK_TIMEOUT if _main_request_sent
+                                else _MAIN_PRE_REQUEST_TIMEOUT
+                            )
+                            print(f"[MAIN-STREAM]   ⏰ FIRST-CHUNK TIMEOUT ({_fired_timeout}s), attempt {_main_timeout_retries}/3")
                             logger.warning("[main-stream] First-chunk timeout (%ds), attempt %d/3 for chat %s",
-                                           _MAIN_FIRST_CHUNK_TIMEOUT, _main_timeout_retries, active_chat_id)
+                                           _fired_timeout, _main_timeout_retries, active_chat_id)
                             if _main_timeout_retries >= 3:
                                 # Synthesize waf_blocked to trigger auto-switch
                                 yield sse({"type": "status", "message": "first_chunk_timeout_triggering_switch"})
@@ -3560,6 +3946,19 @@ async def chat(request: ChatRequest):
                         )
                         if _incomplete_warn:
                             _guard_warnings.append(_incomplete_warn)
+                    # Prose-narrated tool call that never dispatched — no wrapper,
+                    # no JSON, e.g. "run execute_command with command='ls'". Count
+                    # only REAL skills: chat_title fires every turn and would
+                    # otherwise mask this check on every single message.
+                    _real_tools_executed = any(
+                        ev.get("type") == "skill_end" and ev.get("name") != "chat_title"
+                        for ev in round_skill_events
+                    )
+                    _scattered_warn = _guard.check_scattered_tool_call(
+                        _raw_round_text, _real_tools_executed
+                    )
+                    if _scattered_warn:
+                        _guard_warnings.append(_scattered_warn)
                 # ponytail: if the only tools this round were chat_title and the model
                 # already sent real answer text, don't inject [chat_title] OK back —
                 # the model doesn't need a confirmation nudge when it's already talking.

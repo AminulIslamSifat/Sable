@@ -362,6 +362,27 @@ class OpenAICompatClient:
     # Session management
     # ------------------------------------------------------------------
 
+    def reset_session(self, chat_id: str, history: list[dict[str, Any]] | None = None) -> None:
+        """Replace a live session with a compaction-sliced history.
+
+        Context compaction rewrites what the model may see, but a running
+        connector holds its own ``_sessions[chat_id]`` and would keep sending
+        the pre-compaction transcript. This drops that state and (optionally)
+        re-seeds it with the slice the route layer computed.
+
+        The system prompt is preserved: it is the first message when present,
+        and re-sending it after every compaction is exactly what the model
+        expects.
+        """
+        old = self._sessions.get(chat_id) or []
+        prefix = [old[0]] if old and old[0].get("role") == "system" else []
+        if history is None:
+            # Drop everything but the system prompt; the next turn re-seeds
+            # from the DB through the normal db_history path.
+            self._sessions[chat_id] = prefix
+            return
+        self._sessions[chat_id] = prefix + list(history)
+
     def _get_max_chars(self, chat_id: str | None) -> int:
         if chat_id and chat_id in self._session_max_chars:
             return self._session_max_chars[chat_id]

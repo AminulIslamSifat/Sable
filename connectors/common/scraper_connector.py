@@ -130,6 +130,47 @@ class BaseScraperConnector:
     def _url_key(self, scope: str, chat_id: str | None) -> str:
         return scope + ":" + (chat_id or "")
 
+    async def reset_session(self, chat_id: str, browser_data_dir: str | None = None) -> None:
+        """Start a brand-new upstream conversation for `chat_id`.
+
+        Scrapers keep no local history: the conversation lives on the remote
+        site. Context compaction therefore has to rebuild it. This calls the
+        engine's ``new_chat()`` so the upstream transcript is wiped, and drops
+        the remembered chat URL so the next send does not navigate back to the
+        old conversation.
+
+        The caller is responsible for sending the summary as the first message
+        of the fresh chat; this method only clears the slate.
+        """
+        scope, effective_dir = self._engine_key(self.account, browser_data_dir)
+        # Forget the old conversation URL - it now points at a chat we just left.
+        self._chat_urls.pop(self._url_key(scope, chat_id), None)
+        engine = self._engines.get(scope)
+        if engine is None or not await self._engine_alive(engine):
+            # Nothing live to reset. The next send will build a fresh engine,
+            # which by definition starts a fresh conversation.
+            return
+        async with self._lock_for(scope):
+            new_chat = getattr(engine, "new_chat", None)
+            if new_chat is None:
+                logger.warning(
+                    "[%s] engine has no new_chat(); cannot reset upstream for %s",
+                    self.backend_name, chat_id,
+                )
+                return
+            try:
+                await new_chat()
+                setattr(engine, "active_chat_id", chat_id)
+                logger.info(
+                    "[%s] upstream conversation reset for %s (compaction)",
+                    self.backend_name, chat_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] new_chat failed during compaction reset: %s",
+                    self.backend_name, exc,
+                )
+
     async def _get_engine(
         self, scope: str, account: str, browser_data_dir: str | None = None
     ) -> BaseBrowserEngine:

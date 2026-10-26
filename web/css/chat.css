@@ -1941,3 +1941,76 @@ body[data-chat-density="cramped"] .input-composite { max-width: none; padding: 4
 
 body[data-chat-density="ultra"] .input-area { padding: 6px 4px 4px; }
 body[data-chat-density="ultra"] .input-composite { max-width: none; padding: 3px 5px; }
+
+/* ---------- Context compaction card ---------- */
+.compaction-card {
+  margin: 10px 0 6px;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.compaction-card .compaction-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--accent-text);
+}
+.compaction-card .compaction-icon {
+  display: inline-block;
+  font-size: 13px;
+}
+.compaction-card.running .compaction-icon {
+  animation: compaction-spin 1.6s linear infinite;
+}
+@keyframes compaction-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.compaction-card .compaction-title { flex: 1; }
+.compaction-card .compaction-pct {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .03em;
+}
+.compaction-card .compaction-body {
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+.compaction-card.done {
+  border-left-color: var(--accent);
+  opacity: .92;
+}
+.compaction-card .compaction-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-soft);
+}
+.compaction-card .compaction-stats:empty { display: none; }
+.compaction-card .cstat {
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: .02em;
+}
+.compaction-card .cstat b {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Compaction could not produce a summary. The chat carries on uncompacted,
+   so this state is informational, never an error the user must act on. */
+.compaction-card.failed {
+  border-left-color: #8a6d3b;
+  background: rgba(138, 109, 59, 0.06);
+}
+.compaction-card.failed .compaction-head { color: #b99a5e; }

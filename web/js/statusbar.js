@@ -683,5 +683,9 @@
 
     // Expose loadModels globally so appearance.js can trigger reload on mode switch
     window.loadModels = loadModels;
+    // Context compaction rewrites window._statusContextChars; this lets the
+    // compaction handler repaint the ring immediately instead of waiting for
+    // the 5s fallback interval.
+    window._sableUpdateStatusBarContext = updateStatusBarContext;
 
 

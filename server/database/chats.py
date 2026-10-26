@@ -376,6 +376,42 @@ def append_skill_event(chat_id: str, event: dict[str, Any]) -> None:
 _DEFAULT_MESSAGE_LIMIT = 10000
 
 
+def get_compaction_state(chat_id: str) -> tuple[str | None, int | None]:
+    """Return (summary, compacted_until_msg_id) for a chat.
+
+    (None, None) when the chat has never been compacted.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT compaction_summary, compacted_until_msg_id FROM chats WHERE id = ?",
+            (chat_id,),
+        ).fetchone()
+    if not row:
+        return None, None
+    return row["compaction_summary"], row["compacted_until_msg_id"]
+
+
+def set_compaction_state(chat_id: str, summary: str, until_msg_id: int) -> None:
+    """Record a compaction: the summary replaces every message up to and
+    including `until_msg_id` in the model-facing history."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE chats SET compaction_summary = ?, compacted_until_msg_id = ?, "
+            "updated_at = ? WHERE id = ?",
+            (summary, int(until_msg_id), utcnow(), chat_id),
+        )
+
+
+def clear_compaction_state(chat_id: str) -> None:
+    """Drop the compaction marker (used when a chat is forked or reset)."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE chats SET compaction_summary = NULL, compacted_until_msg_id = NULL "
+            "WHERE id = ?",
+            (chat_id,),
+        )
+
+
 def get_messages(
     chat_id: str,
     limit: int | None = None,

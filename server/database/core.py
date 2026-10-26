@@ -92,6 +92,15 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN last_model TEXT")
         if "last_thinking_mode" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN last_thinking_mode TEXT")
+        # --- Context compaction ---
+        # compaction_summary: the structured handoff produced by the summariser.
+        # compacted_until_msg_id: every message with a LOWER id is replaced by
+        # that summary when history is handed to the model. The DB keeps the
+        # full transcript; only the outbound slice is shortened.
+        if "compaction_summary" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN compaction_summary TEXT")
+        if "compacted_until_msg_id" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN compacted_until_msg_id INTEGER")
 
         # --- Response speed stats (drives adaptive typewriter speed) ---
         conn.execute(

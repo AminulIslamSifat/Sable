@@ -6,6 +6,7 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -521,6 +522,28 @@ class TurnCapTracker:
         return None
 
 
+def _tool_param_map() -> dict[str, frozenset[str]]:
+    """Map tool name -> its declared parameter names (lowercased).
+
+    Reads the same live discovery cache the parser and the prompt use, so a
+    tool added at runtime is covered the moment ``reload_tools()`` runs. Built
+    per call rather than cached — ``discover_tools()`` is already cached, so
+    this is a cheap iteration over a small list, and it can never go stale.
+    """
+    out: dict[str, frozenset[str]] = {}
+    try:
+        from engine.tools_loader import discover_tools
+
+        for group in discover_tools():
+            for fn in group.functions:
+                props = (fn.get("parameters") or {}).get("properties") or {}
+                if isinstance(props, dict) and props:
+                    out[fn["name"].lower()] = frozenset(str(p).lower() for p in props)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("_tool_param_map unavailable: %s", exc)
+    return out
+
+
 class MainChatGuard:
     """Guards for the main chat loop — mirrors subagent LoopDetector but
     with warnings injected as feedback instead of hard stops.
@@ -557,6 +580,7 @@ class MainChatGuard:
         self._failure_warned: bool = False
         self._malformed_warned: bool = False
         self._incomplete_warned: bool = False
+        self._scattered_warned: bool = False
 
     def _format_tags(self) -> tuple[str, str, str]:
         """Resolve (open_tag, close_tag, example) for the ACTIVE tool format.
@@ -788,6 +812,93 @@ class MainChatGuard:
             )
         return None
 
+    def check_scattered_tool_call(self, raw_text: str, tools_executed: bool) -> str | None:
+        """Catch a tool call NARRATED in prose that never actually executed.
+
+        The failure mode: the model writes something like
+            "Let me run execute_command with command='ls -la' and cwd='/tmp'"
+        in plain text, with no wrapper. Nothing errors, nothing dispatches, the
+        turn just ends and the user sees a promise instead of an action.
+
+        False positives are the whole risk, so the match is deliberately narrow.
+        ALL of these must hold:
+          * a known tool name, AND
+          * one of that tool's REAL parameters, AND
+          * an assignment (``param=…`` / ``param: "…"`` / ``param("…")``),
+          * all inside ONE small window (a little before the name, ~160 chars
+            after it) — a long message that mentions a tool near the top and
+            "the command" twenty lines down never trips it,
+          * not inside a fenced block or inline code (that is an example, not
+            intent),
+          * with no wrapper tag present (broken-JSON is the other guards' job),
+          * and zero real tools executed this round.
+        Fires at most once per guard lifetime.
+        """
+        if self._scattered_warned:
+            return None
+        if tools_executed:
+            return None
+        if not raw_text or not raw_text.strip():
+            return None
+        # Native / no-prompt-format providers have no text wrapper to validate.
+        try:
+            from connectors.common.instruction_builder import get_tool_format_name
+
+            if get_tool_format_name(self._provider) in ("native", "none"):
+                return None
+        except Exception:
+            pass
+
+        import re as _re
+
+        # Code fences / inline code: an example call here is explanation.
+        _stripped = _re.sub(r"`{3}.*?`{3}", "", raw_text, flags=_re.S)
+        _stripped = _re.sub(r"`[^`\n]+`", "", _stripped)
+
+        # A wrapper exists -> broken JSON inside it is check_malformed_action's job.
+        if _re.search(r"<\s*/?\s*(?:action|tool_call|tool_calls)\b", _stripped, _re.I):
+            return None
+
+        param_map = _tool_param_map()
+        if not param_map:
+            return None
+
+        low = _stripped.lower()
+        # Longest name first so web_search beats a hypothetical search.
+        for tname in sorted(param_map, key=len, reverse=True):
+            params = param_map[tname]
+            if not params:
+                continue
+            for nm in _re.finditer(
+                r"(?<![A-Za-z0-9_])" + _re.escape(tname) + r"(?![A-Za-z0-9_])", low
+            ):
+                start = max(0, nm.start() - 40)
+                end = min(len(low), nm.end() + 160)
+                window = low[start:end]
+                for p in params:
+                    pat = (
+                        r"(?<![A-Za-z0-9_])" + _re.escape(p) + r"(?![A-Za-z0-9_])"
+                        r"\s*(?:=\s*[^\s,;]|:\s*[\"'\[\{]|\s*\(\s*[\"'])"
+                    )
+                    if _re.search(pat, window):
+                        logger.warning(
+                            "[SCATTERED_TOOL_GUARD] prose tool call not executed: "
+                            "tool=%s param=%s window=%r",
+                            tname, p, window[:200],
+                        )
+                        self._scattered_warned = True
+                        wrapper = self._wrapper_phrase()
+                        example = self._format_tags()[2]
+                        return (
+                            self._GUARD_PFX
+                            + "[FORMAT WARNING] Your message described a tool call in plain "
+                            f"text (`{tname}` with `{p}=…`) but no tool was executed. "
+                            "Text is not a tool call. If you meant to run it, emit it "
+                            f"properly wrapped in {wrapper} — for example: {example}\n"
+                            "If you were only explaining, ignore this."
+                        )
+        return None
+
     def reset(self) -> None:
         """Reset all guard state (e.g., on new user message)."""
         self._command_history.clear()
@@ -796,3 +907,4 @@ class MainChatGuard:
         self._failure_warned = False
         self._malformed_warned = False
         self._incomplete_warned = False
+        self._scattered_warned = False
