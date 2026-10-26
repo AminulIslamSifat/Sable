@@ -12,7 +12,7 @@ provides=('sable')
 conflicts=('sable' 'sable-git')
 options=('!strip' '!debug')
 source=("Sable-$pkgver-x86_64.AppImage::https://github.com/AminulIslamSifat/Sable/releases/download/v3.0.0/Sable-3.0.0-x86_64.AppImage")
-sha256sums=('51ef4fcffaceaf1bc713ff499b2009888439561b48f332ad2e6e71ae416a88b9')
+sha256sums=('f7cdf1538185f962b80dc7146b4b6647492b7e9ff57090587ad89145a1b9e4e7')
 
 package() {
   # The AppImage itself

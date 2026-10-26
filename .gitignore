@@ -2,6 +2,12 @@
 releases/
 *.zip
 
+# Build leftovers that must never enter the AUR package dir.
+# AUR holds only PKGBUILD + .SRCINFO; the binary is fetched from Releases.
+*.AppImage
+*.part
+*.pkg.tar.zst
+
 # OS junk
 .DS_Store
 Thumbs.db
@@ -10,3 +16,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Agent/editor scratch
+.editor_tools_backups/
+__pycache__/
