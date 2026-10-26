@@ -1100,7 +1100,36 @@
     window.SableEdits = window.SableEdits || [];
   })();
 
+  /* -------------------------------------------------- left sidebar sync */
+  // The preview pane eats a lot of horizontal room, so tuck the left
+  // sidebar away while it is open and put it back exactly as it was on
+  // close. null means "we are not currently holding a remembered state".
+  var _leftWasOpen = null;
+
+  function isWideViewport() {
+    return !window.matchMedia("(max-width: 860px)").matches;
+  }
+
+  function tuckLeftSidebar() {
+    if (_leftWasOpen !== null) return;      // already tucked (re-open of pane)
+    if (!isWideViewport()) return;          // mobile sidebar is an overlay
+    var open = !document.body.classList.contains("sidebar-collapsed");
+    _leftWasOpen = open;
+    if (open) document.body.classList.add("sidebar-collapsed");
+  }
+
+  function untuckLeftSidebar() {
+    if (_leftWasOpen === null) return;
+    var wasOpen = _leftWasOpen;
+    _leftWasOpen = null;
+    // If he re-opened it himself while the pane was up, leave it alone.
+    if (wasOpen && document.body.classList.contains("sidebar-collapsed")) {
+      document.body.classList.remove("sidebar-collapsed");
+    }
+  }
+
   function reveal() {
+    tuckLeftSidebar();
     root.style.width = savedWidth() + "px";
     root.classList.add("open");
     root.setAttribute("aria-hidden", "false");
@@ -1163,6 +1192,7 @@
     root.classList.remove("open");
     root.setAttribute("aria-hidden", "true");
     document.body.classList.remove("pp-open");
+    untuckLeftSidebar();
     closePopovers();
   }
 
