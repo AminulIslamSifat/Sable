@@ -38,7 +38,7 @@ SERVER_DIR = DIST / "sable-server"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 APP_NAME = "Sable"
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 
 # ── publish targets ─────────────────────────────────────────────────────────
 # Where finished artifacts are staged for upload, and where the AUR package
